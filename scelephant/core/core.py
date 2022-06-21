@@ -9,6 +9,7 @@ import scanpy
 # define version
 _version_ = '0.0.0'
 _scelephant_version_ = _version_
+_last_modified_time_ = '2022-06-21 17:49:48' 
 
 ''' previosuly written for biobookshelf '''
 def CB_Parse_list_of_id_cell( l_id_cell, dropna = True ) :
@@ -1687,19 +1688,24 @@ def _get_func_processed_bytes_to_arrays_mtx_and_other_settings_based_on_file_for
 
 ''' a class for Zarr-based DataFrame object '''
 class ZarrDataFrame( ) :
-    """ # 2022-06-21 01:59:23 
+    """ # 2022-06-21 16:05:00 
     on-demend persistant DataFrame backed by Zarr persistent arrays.
     each column can be separately loaded, updated, and unloaded.
     the primary aim of this class is to provide a Zarr-based dataframe object that is compatible with Zarr.js (javascript implementation of Zarr), with a categorical data type (the format used in zarr is currently not supported in zarr.js) compatible with zarr.js.
     
     'path_folder_zdf' : a folder to store persistant zarr dataframe.
     'df' : input dataframe.
+    
+    === settings that cannot be changed after initialization ===
     'int_num_rows_in_a_chunk' : chunk size.
     'flag_enforce_name_col_with_only_valid_characters' : if True, every column name should not contain any of the following invalid characters, incompatible with attribute names: '! @#$%^&*()-=+`~:;[]{}\|,<.>/?' + '"' + "'", if False, the only invalid character will be '/', which is incompatible with linux file system as file/folder name.
     'flag_store_string_as_categorical' : if True, for string datatypes, it will be converted to categorical data type.
-    'flag_retrieve_categorical_data_as_integers' : if True, accessing categorical data will return integer representations of the categorical values.
+    
+    === settings that can be changed anytime after initialization ===
+    'flag_retrieve_categorical_data_as_integers' : if True, accessing categorical data will return integer representations of the categorical values. 
+    'flag_load_data_after_adding_new_column' : if True, automatically load the newly added data to the object cache. if False, the newly added data will not be added to the object cache, and accessing the newly added column will cause reading the newly written data from the disk. It is recommended to set this to False if Zdf is used as a data sink
     """
-    def __init__( self, path_folder_zdf, df = None, int_num_rows_in_a_chunk = 10000, flag_enforce_name_col_with_only_valid_characters = True, flag_store_string_as_categorical = True, flag_retrieve_categorical_data_as_integers = False ) :
+    def __init__( self, path_folder_zdf, df = None, int_num_rows = None, int_num_rows_in_a_chunk = 10000, flag_enforce_name_col_with_only_valid_characters = False, flag_store_string_as_categorical = True, flag_retrieve_categorical_data_as_integers = False, flag_load_data_after_adding_new_column = True ) :
         """ # 2022-06-21 01:20:06 
         """
         # handle path
@@ -1708,6 +1714,7 @@ class ZarrDataFrame( ) :
             path_folder_zdf += '/'
         self._path_folder_zdf = path_folder_zdf
         self._flag_retrieve_categorical_data_as_integers = flag_retrieve_categorical_data_as_integers
+        self._flag_load_data_after_adding_new_column = flag_load_data_after_adding_new_column
             
         # open or initialize zdf and retrieve associated metadata
         if not os.path.exists( path_folder_zdf ) : # if the object does not exist, initialize ZarrDataFrame
@@ -1716,6 +1723,9 @@ class ZarrDataFrame( ) :
             
             self._root = zarr.open( path_folder_zdf, mode = 'a' )
             self._dict_zdf_metadata = { 'version' : _version_, 'columns' : set( ), 'int_num_rows_in_a_chunk' : int_num_rows_in_a_chunk, 'flag_enforce_name_col_with_only_valid_characters' : flag_enforce_name_col_with_only_valid_characters, 'flag_store_string_as_categorical' : flag_store_string_as_categorical  } # to reduce the number of I/O operations from lookup, a metadata dictionary will be used to retrieve/update all the metadata
+            # if 'int_num_rows' has been given, add it to the metadata
+            if int_num_rows is not None :
+                self._dict_zdf_metadata[ 'int_num_rows' ] = int_num_rows
             self._save_metadata_( ) # save metadata
         else :
             # read existing zdf object
@@ -1783,6 +1793,13 @@ class ZarrDataFrame( ) :
         # if values is not numpy.ndarray or the dtype is object datatype, use the type of the data returned by the type( ) python function.
         if not isinstance( values, np.ndarray ) or dtype is np.dtype( 'O' ) : 
             dtype = type( values[ 0 ] )
+            # handle the case when the first element is np.nan
+            if dtype is float and values[ 0 ] is np.nan :
+                # examine the values and set the dtype to string if at least one value is string
+                for e in values : 
+                    if type( e ) is str :
+                        dtype = str
+                        break
         # convert values that is not numpy.ndarray to numpy.ndarray object (for the consistency of the loaded_data)
         if not isinstance( values, np.ndarray ) :
             values = np.array( values, dtype = object if dtype is str else dtype ) # use 'object' dtype when converting values to a numpy.ndarray object if dtype is 'str'
@@ -1809,11 +1826,11 @@ class ZarrDataFrame( ) :
                 dict_col_metadata[ 'flag_contains_nan' ] = True # mark that the column contains np.nan values
                 set_value_unique.remove( np.nan ) # removes np.nan from the category
             
-            l_value_unique = list( set_value_unique ) # retrieve a list of unique values
-            dict_col_metadata[ 'l_value_unique' ] = l_value_unique # update metadata
+            l_value_unique = list( set_value_unique ) # retrieve a list of unique values # can contain mixed types (int, float, str)
+            dict_col_metadata[ 'l_value_unique' ] = list( str( e ) for e in set_value_unique ) # update metadata # convert entries to string (so that all values with mixed types can be interpreted as strings)
             
             # retrieve appropriate datatype for encoding unique categorical values
-            int_min_number_of_bits = int( np.ceil( math.log2( len( l_value_unique ) ) ) )
+            int_min_number_of_bits = int( np.ceil( math.log2( len( l_value_unique ) ) ) ) + 1 # since signed int will be used, an additional bit is required to encode the data
             if int_min_number_of_bits <= 8 :
                 dtype = np.int8
             elif int_min_number_of_bits <= 16 :
@@ -1841,8 +1858,9 @@ class ZarrDataFrame( ) :
             self._dict_zdf_metadata[ 'columns' ].add( name_col )
             self._save_metadata_( )
         
-        # add data to the loaded data dictionary
-        self._loaded_data[ name_col ] = values
+        # add data to the loaded data dictionary (object cache) if 'self._flag_load_data_after_adding_new_column' is True
+        if self._flag_load_data_after_adding_new_column :
+            self._loaded_data[ name_col ] = values
     def __delitem__( self, name_col ) :
         ''' # 2022-06-20 21:57:38 
         remove the column from the memory and the object on disk
@@ -1861,6 +1879,18 @@ class ZarrDataFrame( ) :
         return iter( self._dict_zdf_metadata[ 'columns' ] )
     def __repr__( self ) :
         return f"<ZarrDataFrame object stored at {self._path_folder_zdf}\n\twith the following metadata: {self._dict_zdf_metadata}>"
+    @property
+    def columns( self ) :
+        ''' # 2022-06-21 15:58:41 
+        return available column names
+        '''
+        return self._dict_zdf_metadata[ 'columns' ]
+    @property
+    def df( self ) :
+        ''' # 2022-06-21 16:00:11 
+        return loaded data as a dataframe
+        '''
+        return pd.DataFrame( self._loaded_data )
     def _save_metadata_( self ) :
         ''' # 2022-06-20 21:44:42 
         save metadata of the current ZarrDataFrame
@@ -1915,10 +1945,160 @@ class ZarrDataFrame( ) :
                 continue
             del self[ name_col ] # delete element from the current object
 
-
+''' a class for containing disk-backed AnnData objects '''
+class AnnDataContainer( ) :
+    """ # 2022-06-09 18:35:04 
+    AnnDataContainer
+    Also contains utility functions for handling multiple AnnData objects on the disk sharing the same list of cells
+    
+    this object will contain AnnData objects and their file paths on the disk, and provide a convenient interface of accessing the items.
+    
+    'flag_enforce_name_adata_with_only_valid_characters' : (Default : True). does not allow the use of 'name_adata' containing the following characters { ' ', '/', '-', '"', "'" ";", and other special characters... }
+    'path_prefix_default' : a default path of AnnData on disk. f'{path_prefix_default}{name_adata}.h5ad' will be used.
+    '** args' : a keyworded argument containing name of the AnnData and the path to h5ad file of an AnnData object and an AnnData object (optional) :
+            args = {
+                    name_adata_1 = { 'adata' : AnnDataObject }, # when AnnDataObject is given and file path is not given, the path composed from 'path_prefix_default' and 'name_adata' will be used.
+                    name_adata_2 = { 'path' : 'path/to/adata', 'adata' : AnnDataObject }, # when AnnDataObject is given, the validity of the path will not be checked.
+                    name_adata_3 = { 'path' : 'path/to/adata', 'adata' : None }, # when adata is not loaded in memory. in this case, the path should be valid (the path validility will be checked)
+                    name_adata_4 = { 'path' : 'path/to/adata' }, # same as the previous example. # when adata is not loaded in memory. in this case, the path should be valid (the path validility will be checked)
+                    name_adata_5 = 'path/to/adata', # same as the previous example. # when adata is not loaded in memory. in this case, the path should be valid (the path validility will be checked),
+                    name_adata_6 = AnnDataObject, # the default path will be used, but the validity will not be checkec
+                    name_adata_7 = None, # when None is given, the default path will be used, and the validity will be checked
+            }
+                in summary, (1) when AnnData is given, the validity of the path will not be checked, (2) when path is not given, the default path will be used.
+    """
+    def __init__( self, flag_enforce_name_adata_with_only_valid_characters = True, path_prefix_default = None, ** args ) :
+        self.__str_invalid_char = '! @#$%^&*()-=+`~:;[]{}\|,<.>/?' + '"' + "'" if flag_enforce_name_adata_with_only_valid_characters else ''
+        self.path_prefix_default = path_prefix_default
+        self._dict_name_adata_to_namespace = dict( )
+        # add items
+        for name_adata in args :
+            self.__setitem__( name_adata, args[ name_adata ] )
+    def __getitem__( self, name_adata ) :
+        return self._dict_name_adata_to_namespace[ name_adata ][ 'adata' ]
+    def __setitem__( self, name_adata, args ) :
+        # check whether the given name_adata contains invalid characters(s)
+        for char_invalid in self.__str_invalid_char :
+            if char_invalid in name_adata :
+                raise TypeError( f'the following characters cannot be used in "name_adata": {self.__str_invalid_char}' )
+        
+        # if the given argument is not a dictionary format, convert it to the dictionary format
+        if not isinstance( args, dict ) : 
+            # check the type of input value
+            if isinstance( args, scanpy.AnnData ) :
+                args = { 'adata' : args }
+            elif isinstance( args, str ) :
+                args = { 'path' : args }
+            else :
+                args = dict( )
+        
+        # set the default file path
+        if 'path' not in args :
+            args[ 'path' ] = f"{self.path_prefix_default}{name_adata}.h5ad"
+        # check validity of the path if AnnDataObject was not given
+        if 'adata' not in args :
+            if not os.path.exists( args[ 'path' ] ) :
+                raise FileNotFoundError( f"{args[ 'path' ]} does not exist, while AnnData object is not given" )
+            args[ 'adata' ] = None # put a placeholder value
+        
+        self._dict_name_adata_to_namespace[ name_adata ] = args
+        setattr( self, name_adata, args[ 'adata' ] )
+    def __delitem__( self, name_adata ) :
+        ''' # 2022-06-09 12:47:36 
+        remove the adata from the memory and the object
+        '''
+        # remove adata attribute from the dictionary
+        if name_adata in self._dict_name_adata_to_namespace :
+            del self._dict_name_adata_to_namespace[ name_adata ]
+        # remove adata attribute from the current object
+        if hasattr( self, name_adata ) :
+            delattr( self, name_adata )
+    def __contains__( self, name_adata ) :
+        return name_adata in self._dict_name_adata_to_namespace
+    def __iter__( self ) :
+        return iter( self._dict_name_adata_to_namespace )
+    def __repr__( self ) :
+        return f"<AnnDataContainer object with the following items: {list( self._dict_name_adata_to_namespace )}\n\t default prefix is {self.path_prefix_default}>"
+    def load( self, * l_name_adata ) :
+        ''' # 2022-05-24 02:33:36 
+        load given anndata object(s) of the given list of 'name_adata' 
+        '''
+        for name_adata in l_name_adata :
+            if name_adata not in self : # skip the 'name_adata' that does not exist in the current container
+                continue
+            args = self._dict_name_adata_to_namespace[ name_adata ]
+            # if current AnnData has not been loaded
+            if args[ 'adata' ] is None :
+                args[ 'adata' ] = scanpy.read_h5ad( args[ 'path' ] )
+                self[ name_adata ] = args # update the current name_adata
+    def unload( self, * l_name_adata ) :
+        """ # 2022-06-09 12:47:42 
+        remove the adata object from the memory
+        similar to __delitem__, but does not remove the attribute from the current 'AnnDataContainer' object
+        """
+        for name_adata in l_name_adata :
+            if name_adata not in self : # skip the 'name_adata' that does not exist in the current container
+                continue
+            args = self._dict_name_adata_to_namespace[ name_adata ]
+            # if current AnnData has been loaded
+            if args[ 'adata' ] is not None :
+                args[ 'adata' ] = None
+                self[ name_adata ] = args # update the current name_adata
+    def delete( self, * l_name_adata ) :
+        ''' # 2022-06-09 12:58:45 
+        remove the adata from the memory, the current object, and from the disk
+        '''
+        for name_adata in l_name_adata :
+            if name_adata not in self : # skip the 'name_adata' that does not exist in the current container
+                continue
+            # remove file on disk if exists
+            path_file = self._dict_name_adata_to_namespace[ name_adata ][ 'path' ]
+            if os.path.exists( path_file ) :
+                os.remove( path_file )
+            del self[ name_adata ] # delete element from the current object
+    def update( self, * l_name_adata ) :
+        """ # 2022-06-09 18:13:21 
+        save the given AnnData objects to disk
+        """
+        for name_adata in l_name_adata :
+            if name_adata not in self : # skip the 'name_adata' that does not exist in the current container
+                continue
+            # if current AnnData is a valid AnnData object
+            args = self._dict_name_adata_to_namespace[ name_adata ]
+            if isinstance( args[ 'adata' ], scanpy.AnnData ) :
+                args[ 'adata' ].write( args[ 'path' ] ) # write AnnData object
+    def empty( self, * l_name_adata ) :
+        """ # 2022-06-09 18:23:44 
+        empty the count matrix of the given AnnData objects 
+        """
+        for name_adata in l_name_adata :
+            if name_adata not in self : # skip the 'name_adata' that does not exist in the current container
+                continue
+            # if current AnnData is a valid AnnData object
+            adata = self._dict_name_adata_to_namespace[ name_adata ][ 'adata' ]
+            if isinstance( adata, scanpy.AnnData ) :
+                adata.X = scipy.sparse.csr_matrix( scipy.sparse.coo_matrix( ( [], ( [], [] ) ), shape = ( len( adata.obs ), len( adata.var ) ) ) ) # empty the anndata object
+    def transfer_attributes( self, name_adata, adata, flag_ignore_var = True ) :
+        ''' # 2022-06-06 01:44:00 
+        transfer attributes of the given AnnDAta 'adata' to the current AnnData data containined in this object 'name_adata'  
+        'flag_ignore_var' : ignore attributes related to 'var' (var, varm, varp)
+        '''
+        adata_current = self[ name_adata ] # retrieve current AnnData
+        
+        # transfer uns and obs-related elements
+        for name_attr in [ 'obs', 'uns', 'obsm', 'obsp' ] :
+            if hasattr( adata, name_attr ) :
+                setattr( adata_current, name_attr, getattr( adata, name_attr ) )
+        
+        # transfer var-related elements if 'flag_ignore_var' is True
+        if not flag_ignore_var  :
+            for name_attr in [ 'var', 'varm', 'varp' ] :
+                if hasattr( adata, name_attr ) :
+                    setattr( adata_current, name_attr, getattr( adata, name_attr ) )
+            
 ''' methods for creating RAMtx objects '''
 def __Merge_Sort_MTX_10X_and_Write_and_Index_Zarr__( za_mtx, za_mtx_index, * l_path_file_input, flag_ramtx_sorted_by_id_feature = True, flag_delete_input_file_upon_completion = False, dtype = np.int64, int_size_buffer_for_mtx_index = 1000 ) :
-    """ # 2022-06-18 23:29:30 
+    """ # 2022-06-21 16:26:00 
     merge sort mtx files into a single mtx uncompressed file and index entries in the combined mtx file while writing the file
     
     
@@ -1952,51 +2132,57 @@ def __Merge_Sort_MTX_10X_and_Write_and_Index_Zarr__( za_mtx, za_mtx_index, * l_p
 
     # perform merge sorting
     int_entry_currently_being_written = None # place holder value
-    int_index_mtx_record = 0
+    int_num_mtx_records_written = 0
     l_mtx_record = [ ]
-    int_index_mtx_index = 0
+    int_num_mtx_index_records_written = 0
     l_mtx_index = [ ]
-    def flush_matrix_index( ) :
-        ''' flush matrix index data '''
-        if len( l_mtx_index ) > 0 :
-            za_mtx_index[ int_index_mtx_index - len( l_mtx_index ) : int_index_mtx_index ] = np.array( l_mtx_index, dtype = dtype ) # add data to the zarr data sink
-    def flush_matrix( int_index_mtx_index ) : 
-        ''' flush a block of matrix data of a single entry (of the axis used for sorting) to Zarr and index the block '''
-        int_num_records_for_int_entry_currently_being_written = len( l_mtx_record )
-        if int_num_records_for_int_entry_currently_being_written > 0 : # if there is valid record to be flushed
-            l_mtx_index.append( [ int_entry_currently_being_written, int_index_mtx_record - int_num_records_for_int_entry_currently_being_written, int_index_mtx_record ] ) # collect information required for indexing
-            int_index_mtx_index += 1
-            za_mtx[ int_index_mtx_record - int_num_records_for_int_entry_currently_being_written : int_index_mtx_record ] = np.array( l_mtx_record, dtype = dtype ) # add data to the zarr data sink
-        return int_index_mtx_index
-        
-    for r in heapq.merge( * list( __decorate_mtx_file__( file ) for file in l_file_input ) ) :
+    def flush_matrix_index( int_num_mtx_index_records_written ) :
+        ''' # 2022-06-21 16:26:09 
+        flush matrix index data and update 'int_num_mtx_index_records_written' '''
+        int_num_newly_added_mtx_index_records = len( l_mtx_index )
+        if int_num_newly_added_mtx_index_records > 0 :
+            za_mtx_index[ int_num_mtx_index_records_written : int_num_mtx_index_records_written + int_num_newly_added_mtx_index_records ] = np.array( l_mtx_index, dtype = dtype ) # add data to the zarr data sink
+            int_num_mtx_index_records_written += int_num_newly_added_mtx_index_records # update 'int_num_mtx_index_records_written'
+        return int_num_mtx_index_records_written
+    def flush_matrix( int_num_mtx_records_written ) : 
+        ''' # 2022-06-21 16:26:09 
+        flush a block of matrix data of a single entry (of the axis used for sorting) to Zarr and index the block, and update 'int_num_mtx_records_written' '''
+        int_num_newly_added_mtx_records = len( l_mtx_record )
+        if int_num_newly_added_mtx_records > 0 : # if there is valid record to be flushed
+            # add records to mtx_index
+            l_mtx_index.append( [ int_entry_currently_being_written, int_num_mtx_records_written, int_num_mtx_records_written + int_num_newly_added_mtx_records ] ) # collect information required for indexing
+            for int_entry in range( int_entry_currently_being_written + 1, int_entry_of_the_current_record ) : # for the int_entry that lack count data and does not have indexing data, put place holder values
+                l_mtx_index.append( [ int_entry, -1, -1 ] ) # put place holder values for int_entry lacking count data.
+            
+            za_mtx[ int_num_mtx_records_written : int_num_mtx_records_written + int_num_newly_added_mtx_records ] = np.array( l_mtx_record, dtype = dtype ) # add data to the zarr data sink
+            int_num_mtx_records_written += int_num_newly_added_mtx_records
+        return int_num_mtx_records_written
+    
+    for int_entry_of_the_current_record, mtx_record in heapq.merge( * list( __decorate_mtx_file__( file ) for file in l_file_input ) ) : # retrieve int_entry and mtx_record of the current mtx_record
         if int_entry_currently_being_written is None :
-            int_entry_currently_being_written = r[ 0 ] # update current int_entry
-        elif int_entry_currently_being_written != r[ 0 ] : # if current int_entry is different from the previous one, which mark the change of sorted blocks (a block has the same id_entry), save the data for the previous block to the output zarr and initialze data for the next block 
-            int_index_mtx_index = flush_matrix( int_index_mtx_index ) # flush data
+            int_entry_currently_being_written = int_entry_of_the_current_record # update current int_entry
+        elif int_entry_currently_being_written != int_entry_of_the_current_record : # if current int_entry is different from the previous one, which mark the change of sorted blocks (a block has the same id_entry), save the data for the previous block to the output zarr and initialze data for the next block 
+            int_num_mtx_records_written = flush_matrix( int_num_mtx_records_written ) # flush data
             l_mtx_record = [ ] # reset buffer
-            int_entry_currently_being_written = r[ 0 ] # update current int_entry
+            int_entry_currently_being_written = int_entry_of_the_current_record # update current int_entry
             # flush matrix index once the buffer is full
             if len( l_mtx_index ) >= int_size_buffer_for_mtx_index :
-                flush_matrix_index( )
+                int_num_mtx_index_records_written = flush_matrix_index( int_num_mtx_index_records_written )
                 l_mtx_index = [ ] # reset buffer
         # append the record to the data
-        l_mtx_record.append( r[ 1 ] )
-        int_index_mtx_record += 1
+        l_mtx_record.append( mtx_record )
         
     # write the record for the last block
-    int_index_mtx_index = flush_matrix( int_index_mtx_index ) # flush the last block
-    flush_matrix_index( ) # flush matrix index data
-    
-    # resize the input matrix index zarr with the actual number of matrix index entries written
-    za_mtx_index.resize( int_index_mtx_index, 3 ) 
+    int_entry_of_the_current_record = za_mtx_index.shape[ 0 ] # set 'next' int_entry to the end of the int_entry values so that place holder values can be set to the missing int_entry 
+    int_num_mtx_records_written = flush_matrix( int_num_mtx_records_written ) # flush the last block
+    int_num_mtx_index_records_written = flush_matrix_index( int_num_mtx_index_records_written ) # flush matrix index data
     
     ''' delete input files once merge sort is completed if 'flag_delete_input_file_upon_completion' is True '''
     if flag_delete_input_file_upon_completion and isinstance( l_path_file_input[ 0 ], str ) : # if paths are given as input files
         for path_file in l_path_file_input :
             os.remove( path_file )
 def Convert_MTX_10X_to_RAMtx( path_folder_mtx_10x_input, path_folder_ramtx_output, flag_ramtx_sorted_by_id_feature = True, int_num_threads = 15, int_max_num_entries_for_chunk = 10000000, int_max_num_files_for_each_merge_sort = 5, dtype = np.float64, int_num_of_records_in_a_chunk_zarr_matrix = 10000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, verbose = False, flag_debugging = False ) :
-    ''' # 2022-06-19 15:16:57 
+    ''' # 2022-06-21 12:44:42 
     sort and index a given 'path_folder_mtx_10x_input' containing a 10X matrix file, constructing a random read access matrix (RAMtx).
     'path_folder_mtx_10x_input' folder will be used as temporary folder
     During the operation, the input matrix will be unzipped in two different formats before indexing, which might require extradisk space (expected peak disk usage: 4~8 times of the gzipped mtx file size).
@@ -2204,28 +2390,33 @@ def Convert_MTX_10X_to_RAMtx( path_folder_mtx_10x_input, path_folder_ramtx_outpu
 
         # open a persistent zarray to store matrix and matrix index
         za_mtx = zarr.open( f'{path_folder_ramtx_output}matrix.zarr', mode = 'w', shape = ( int_num_records, 3 ), chunks = ( int_num_of_records_in_a_chunk_zarr_matrix, 3 ), dtype = dtype )
-        za_mtx_index = zarr.open( f'{path_folder_ramtx_output}matrix.index.zarr', mode = 'w', shape = ( int_num_records, 3 ), chunks = ( int_num_of_entries_in_a_chunk_zarr_matrix_index, 3 ), dtype = np.float64 ) # max number of matrix index entries is 'int_num_records' of the input matrix. this will be resized # dtype of index will be np.float64, since javascript number primitives are actually float64
+        za_mtx_index = zarr.open( f'{path_folder_ramtx_output}matrix.index.zarr', mode = 'w', shape = ( int_num_features if flag_ramtx_sorted_by_id_feature else int_num_barcodes, 3 ), chunks = ( int_num_of_entries_in_a_chunk_zarr_matrix_index, 3 ), dtype = np.float64 ) # max number of matrix index entries is 'int_num_records' of the input matrix. this will be resized # dtype of index will be np.float64, since javascript number primitives are actually float64
 
         # merge-sort the remaining files into the output zarr data sink and index the zarr
         __Merge_Sort_MTX_10X_and_Write_and_Index_Zarr__( za_mtx, za_mtx_index, * glob.glob( f"{path_temp}{int_number_of_recursive_merge_sort}.*.mtx.gz" ), flag_ramtx_sorted_by_id_feature = flag_ramtx_sorted_by_id_feature, flag_delete_input_file_upon_completion = False if flag_debugging else True, int_size_buffer_for_mtx_index = int_num_of_entries_in_a_chunk_zarr_matrix_index ) # matrix index buffer size is 'int_num_of_entries_in_a_chunk_zarr_matrix_index'
-
-        ''' write sorted barcodes and features files to zarr objects'''
-        for name_axis in [ 'barcodes', 'features' ] :
-            df = pd.read_csv( f"{path_folder_mtx_10x_input}{name_axis}.tsv.gz", sep = '\t', header = None )
-            df.sort_values( 0, inplace = True ) # sort by id_barcode or id_feature
-            za = zarr.open( f'{path_folder_ramtx_output}{name_axis}.zarr', mode = 'w', shape = df.shape, chunks = ( int_num_of_entries_in_a_chunk_zarr_matrix_index, 1 ), dtype = str, synchronizer = zarr.ThreadSynchronizer( ) ) # multithreading? # string object # individual columns will be chucked, so that each column can be retrieved separately.
-            za[ : ] = df.values
             
         ''' write sorted barcodes and features files to zarr objects'''
         for name_axis, flag_used_for_sorting in zip( [ 'barcodes', 'features' ], [ not flag_ramtx_sorted_by_id_feature, flag_ramtx_sorted_by_id_feature ] ) : # retrieve a flag whether the entry was used for sorting.
             df = pd.read_csv( f"{path_folder_mtx_10x_input}{name_axis}.tsv.gz", sep = '\t', header = None )
             df.sort_values( 0, inplace = True ) # sort by id_barcode or id_feature
-            # write zarr object for random access
-            za = zarr.open( f'{path_folder_ramtx_output}{name_axis}.zarr', mode = 'w', shape = df.shape, chunks = ( int_num_of_entries_in_a_chunk_zarr_matrix_index, 1 ), dtype = str, synchronizer = zarr.ThreadSynchronizer( ) ) # multithreading? # string object # individual columns will be chucked, so that each column can be retrieved separately.
-            za[ : ] = df.values
+            
+            # annotate and split the dataframe into a dataframe containing string representations and another dataframe containing numbers and categorical data, and save to Zarr objects separately
+            df.columns = list( f"{name_axis}_{i}" for i in range( len( df.columns ) ) ) # name the columns using 0-based indices
+            df_str = df.iloc[ :, : 2 ]
+            df_num_and_cat = df.iloc[ :, 2 : ]
+            del df 
+            
+            # write zarr object for random access of string representation of features/barcodes
+            za = zarr.open( f'{path_folder_ramtx_output}{name_axis}.str.zarr', mode = 'w', shape = df_str.shape, chunks = ( int_num_of_entries_in_a_chunk_zarr_matrix_index, 1 ), dtype = str, synchronizer = zarr.ThreadSynchronizer( ) ) # multithreading? # string object # individual columns will be chucked, so that each column can be retrieved separately.
+            za[ : ] = df_str.values
             # write random-access compatible format for web applications (#2022-06-20 10:57:51 currently there is no javascript packages supporting string zarr objects)
             if flag_used_for_sorting :
-                WEB.Index_Chunks_and_Base64_Encode( df_to_be_chunked_and_indexed = df, int_num_rows_for_each_chunk = int_num_of_entries_in_a_chunk_zarr_matrix_index, path_prefix_output = f"{path_folder_ramtx_output}{name_axis}", path_folder_temp = path_temp, flag_delete_temp_folder = True, flag_include_header = False )
+                WEB.Index_Chunks_and_Base64_Encode( df_to_be_chunked_and_indexed = df_str, int_num_rows_for_each_chunk = int_num_of_entries_in_a_chunk_zarr_matrix_index, path_prefix_output = f"{path_folder_ramtx_output}{name_axis}.str", path_folder_temp = path_temp, flag_delete_temp_folder = True, flag_include_header = False )
+            del df_str
+            
+            # build a ZarrDataFrame object for random access of number and categorical data of features/barcodes
+            zdf = ZarrDataFrame( f'{path_folder_ramtx_output}{name_axis}.num_and_cat.zdf', df = df_num_and_cat, int_num_rows = len( df_num_and_cat ), int_num_rows_in_a_chunk = int_num_of_entries_in_a_chunk_zarr_matrix_index, flag_store_string_as_categorical = True, flag_retrieve_categorical_data_as_integers = True, flag_enforce_name_col_with_only_valid_characters = False, flag_load_data_after_adding_new_column = False ) # use the same chunk size for all feature/barcode objects
+            del df_num_and_cat
 
         ''' write metadata '''
         root = zarr.group( f'{path_folder_ramtx_output}' )
@@ -2248,7 +2439,50 @@ def Convert_MTX_10X_to_RAMtx( path_folder_mtx_10x_input, path_folder_ramtx_outpu
         ''' write a flag indicating the export has been completed '''
         with open( path_file_flag, 'w' ) as file :
             file.write( TIME_GET_timestamp( True ) )
+def Convert_MTX_10X_to_RamData( path_folder_mtx_10x_input, path_folder_ramdata_output, name_layer = 'raw', int_num_threads = 15, int_max_num_entries_for_chunk = 10000000, int_max_num_files_for_each_merge_sort = 5, dtype = np.float64, int_num_of_records_in_a_chunk_zarr_matrix = 10000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, flag_simultaneous_indexing_of_cell_and_barcode = True, verbose = False, flag_debugging = False ) :
+    """ # 2022-06-22 00:11:46 
+    convert 10X count matrix data to the two RAMtx object, one sorted by features and the other sorted by barcodes, and construct a RamData data object on disk, backed by Zarr persistant arrays
 
+    inputs:
+    ========
+    'path_folder_mtx_10x_input' : an input directory of 10X matrix data
+    'path_folder_ramdata_output' an output directory of RamData
+    'name_layer' : a name of the given data layer
+    'int_num_threads' : the number of threads for multiprocessing
+    'dtype' (default: np.uint32), 'dtype_of_value' (default: None (auto-detect)) : numpy dtypes for pickle and feather outputs. choosing smaller format will decrease the size of the object on disk
+    'flag_simultaneous_indexing_of_cell_and_barcode' : if True, create cell-sorted RAMtx and feature-sorted RAMtx simultaneously using two worker processes with the half of given 'int_num_threads'. it is generally recommended to turn this feature on, since the last step of the merge-sort is always single-threaded.
+    """
+    # build barcode- and feature-sorted RAMtx objects
+    path_folder_data = f"{path_folder_ramdata_output}{name_layer}/" # define directory of the output data
+    if flag_simultaneous_indexing_of_cell_and_barcode :
+        l_process = list( mp.Process( target = Convert_MTX_10X_to_RAMtx, args = ( path_folder_mtx_10x_input, path_folder_ramtx_output, flag_ramtx_sorted_by_id_feature, int_num_threads_for_the_current_process, int_max_num_entries_for_chunk, int_max_num_files_for_each_merge_sort, dtype, int_num_of_records_in_a_chunk_zarr_matrix, int_num_of_entries_in_a_chunk_zarr_matrix_index, verbose, flag_debugging ) ) for path_folder_ramtx_output, flag_ramtx_sorted_by_id_feature, int_num_threads_for_the_current_process in zip( [ f"{path_folder_data}sorted_by_barcode/", f"{path_folder_data}sorted_by_feature/" ], [ False, True ], [ int( np.floor( int_num_threads / 2 ) ), int( np.ceil( int_num_threads / 2 ) ) ] ) )
+        for p in l_process : p.start( )
+        for p in l_process : p.join( )
+    else :
+        Convert_MTX_10X_to_RAMtx( path_folder_mtx_10x_input, path_folder_ramtx_output = f"{path_folder_data}sorted_by_barcode/", flag_ramtx_sorted_by_id_feature = False, int_num_threads = int_num_threads, int_max_num_entries_for_chunk = int_max_num_entries_for_chunk, int_max_num_files_for_each_merge_sort = int_max_num_files_for_each_merge_sort, dtype = dtype, int_num_of_records_in_a_chunk_zarr_matrix = int_num_of_records_in_a_chunk_zarr_matrix, int_num_of_entries_in_a_chunk_zarr_matrix_index = int_num_of_entries_in_a_chunk_zarr_matrix_index, verbose = verbose, flag_debugging = flag_debugging )
+        Convert_MTX_10X_to_RAMtx( path_folder_mtx_10x_input, path_folder_ramtx_output = f"{path_folder_data}sorted_by_feature/", flag_ramtx_sorted_by_id_feature = True, int_num_threads = int_num_threads, int_max_num_entries_for_chunk = int_max_num_entries_for_chunk, int_max_num_files_for_each_merge_sort = int_max_num_files_for_each_merge_sort, dtype = dtype, int_num_of_records_in_a_chunk_zarr_matrix = int_num_of_records_in_a_chunk_zarr_matrix, int_num_of_entries_in_a_chunk_zarr_matrix_index = int_num_of_entries_in_a_chunk_zarr_matrix_index, verbose = verbose, flag_debugging = flag_debugging )
+
+    # copy features/barcode.tsv.gz random access files for the web (stacked base64 encoded tsv.gz files)
+    # copy features/barcode string representation zarr objects
+    # copy features/barcode ZarrDataFrame containing number/categorical data
+    for name_axis_singular in [ 'feature', 'barcode' ] :
+        for str_suffix in [ 's.tsv.gz.base64.concatanated.txt', 's.index.tsv.gz.base64.txt', 's.str.zarr', 's.num_and_cat.zdf' ] :
+            OS_Run( [ 'cp', '-r', f"{path_folder_data}sorted_by_{name_axis_singular}/{name_axis_singular}{str_suffix}", f"{path_folder_ramdata_output}{name_axis_singular}{str_suffix}" ] )
+            
+    # write metadata 
+    int_num_features, int_num_barcodes, int_num_records = MTX_10X_Retrieve_number_of_rows_columns_and_records( path_folder_mtx_10x_input ) # retrieve metadata of the input 10X mtx
+    root = zarr.group( path_folder_ramdata_output )
+    root.attrs[ 'dict_ramdata_metadata' ] = { 
+        'path_folder_mtx_10x_input' : path_folder_mtx_10x_input,
+        'str_completed_time' : TIME_GET_timestamp( True ),
+        'int_num_features' : int_num_features,
+        'int_num_barcodes' : int_num_barcodes,
+        'int_num_records' : int_num_records,
+        'int_num_of_records_in_a_chunk_zarr_matrix' : int_num_of_records_in_a_chunk_zarr_matrix,
+        'int_num_of_entries_in_a_chunk_zarr_matrix_index' : int_num_of_entries_in_a_chunk_zarr_matrix_index,
+        'l_name_layer' : [ name_layer ],
+        'version' : _version_,
+    }
             
 ''' # not implemented in zarr '''
 def Convert_Scanpy_AnnData_to_RAMtx( adata, path_folder_ramtx_output, flag_ramtx_sorted_by_id_feature = True, file_format = 'mtx_gzipped', int_num_threads = 15, verbose = False, flag_overwrite_existing_files = False, flag_sort_and_index_again = False, flag_debugging = False, flag_covert_dense_matrix = False, int_num_digits_after_floating_point_for_export = 5, flag_output_value_is_float = True, dtype_of_row_and_col_indices = np.uint32, dtype_of_value = None ) :
@@ -3077,155 +3311,6 @@ class RAMtx( ) :
         self._dict_metadata[ 'file_format' ].append( file_format )
         with open( f"{path_folder_ramtx_output}ramtx.metadata.json", 'w' ) as file :
             json.dump( self._dict_metadata, file )
-class AnnDataContainer( ) :
-    """ # 2022-06-09 18:35:04 
-    AnnDataContainer
-    Also contains utility functions for handling multiple AnnData objects on the disk sharing the same list of cells
-    
-    this object will contain AnnData objects and their file paths on the disk, and provide a convenient interface of accessing the items.
-    
-    'flag_enforce_name_adata_with_only_valid_characters' : (Default : True). does not allow the use of 'name_adata' containing the following characters { ' ', '/', '-', '"', "'" ";", and other special characters... }
-    'path_prefix_default' : a default path of AnnData on disk. f'{path_prefix_default}{name_adata}.h5ad' will be used.
-    '** args' : a keyworded argument containing name of the AnnData and the path to h5ad file of an AnnData object and an AnnData object (optional) :
-            args = {
-                    name_adata_1 = { 'adata' : AnnDataObject }, # when AnnDataObject is given and file path is not given, the path composed from 'path_prefix_default' and 'name_adata' will be used.
-                    name_adata_2 = { 'path' : 'path/to/adata', 'adata' : AnnDataObject }, # when AnnDataObject is given, the validity of the path will not be checked.
-                    name_adata_3 = { 'path' : 'path/to/adata', 'adata' : None }, # when adata is not loaded in memory. in this case, the path should be valid (the path validility will be checked)
-                    name_adata_4 = { 'path' : 'path/to/adata' }, # same as the previous example. # when adata is not loaded in memory. in this case, the path should be valid (the path validility will be checked)
-                    name_adata_5 = 'path/to/adata', # same as the previous example. # when adata is not loaded in memory. in this case, the path should be valid (the path validility will be checked),
-                    name_adata_6 = AnnDataObject, # the default path will be used, but the validity will not be checkec
-                    name_adata_7 = None, # when None is given, the default path will be used, and the validity will be checked
-            }
-                in summary, (1) when AnnData is given, the validity of the path will not be checked, (2) when path is not given, the default path will be used.
-    """
-    def __init__( self, flag_enforce_name_adata_with_only_valid_characters = True, path_prefix_default = None, ** args ) :
-        self.__str_invalid_char = '! @#$%^&*()-=+`~:;[]{}\|,<.>/?' + '"' + "'" if flag_enforce_name_adata_with_only_valid_characters else ''
-        self.path_prefix_default = path_prefix_default
-        self._dict_name_adata_to_namespace = dict( )
-        # add items
-        for name_adata in args :
-            self.__setitem__( name_adata, args[ name_adata ] )
-    def __getitem__( self, name_adata ) :
-        return self._dict_name_adata_to_namespace[ name_adata ][ 'adata' ]
-    def __setitem__( self, name_adata, args ) :
-        # check whether the given name_adata contains invalid characters(s)
-        for char_invalid in self.__str_invalid_char :
-            if char_invalid in name_adata :
-                raise TypeError( f'the following characters cannot be used in "name_adata": {self.__str_invalid_char}' )
-        
-        # if the given argument is not a dictionary format, convert it to the dictionary format
-        if not isinstance( args, dict ) : 
-            # check the type of input value
-            if isinstance( args, scanpy.AnnData ) :
-                args = { 'adata' : args }
-            elif isinstance( args, str ) :
-                args = { 'path' : args }
-            else :
-                args = dict( )
-        
-        # set the default file path
-        if 'path' not in args :
-            args[ 'path' ] = f"{self.path_prefix_default}{name_adata}.h5ad"
-        # check validity of the path if AnnDataObject was not given
-        if 'adata' not in args :
-            if not os.path.exists( args[ 'path' ] ) :
-                raise FileNotFoundError( f"{args[ 'path' ]} does not exist, while AnnData object is not given" )
-            args[ 'adata' ] = None # put a placeholder value
-        
-        self._dict_name_adata_to_namespace[ name_adata ] = args
-        setattr( self, name_adata, args[ 'adata' ] )
-    def __delitem__( self, name_adata ) :
-        ''' # 2022-06-09 12:47:36 
-        remove the adata from the memory and the object
-        '''
-        # remove adata attribute from the dictionary
-        if name_adata in self._dict_name_adata_to_namespace :
-            del self._dict_name_adata_to_namespace[ name_adata ]
-        # remove adata attribute from the current object
-        if hasattr( self, name_adata ) :
-            delattr( self, name_adata )
-    def __contains__( self, name_adata ) :
-        return name_adata in self._dict_name_adata_to_namespace
-    def __iter__( self ) :
-        return iter( self._dict_name_adata_to_namespace )
-    def __repr__( self ) :
-        return f"<AnnDataContainer object with the following items: {list( self._dict_name_adata_to_namespace )}\n\t default prefix is {self.path_prefix_default}>"
-    def load( self, * l_name_adata ) :
-        ''' # 2022-05-24 02:33:36 
-        load given anndata object(s) of the given list of 'name_adata' 
-        '''
-        for name_adata in l_name_adata :
-            if name_adata not in self : # skip the 'name_adata' that does not exist in the current container
-                continue
-            args = self._dict_name_adata_to_namespace[ name_adata ]
-            # if current AnnData has not been loaded
-            if args[ 'adata' ] is None :
-                args[ 'adata' ] = scanpy.read_h5ad( args[ 'path' ] )
-                self[ name_adata ] = args # update the current name_adata
-    def unload( self, * l_name_adata ) :
-        """ # 2022-06-09 12:47:42 
-        remove the adata object from the memory
-        similar to __delitem__, but does not remove the attribute from the current 'AnnDataContainer' object
-        """
-        for name_adata in l_name_adata :
-            if name_adata not in self : # skip the 'name_adata' that does not exist in the current container
-                continue
-            args = self._dict_name_adata_to_namespace[ name_adata ]
-            # if current AnnData has been loaded
-            if args[ 'adata' ] is not None :
-                args[ 'adata' ] = None
-                self[ name_adata ] = args # update the current name_adata
-    def delete( self, * l_name_adata ) :
-        ''' # 2022-06-09 12:58:45 
-        remove the adata from the memory, the current object, and from the disk
-        '''
-        for name_adata in l_name_adata :
-            if name_adata not in self : # skip the 'name_adata' that does not exist in the current container
-                continue
-            # remove file on disk if exists
-            path_file = self._dict_name_adata_to_namespace[ name_adata ][ 'path' ]
-            if os.path.exists( path_file ) :
-                os.remove( path_file )
-            del self[ name_adata ] # delete element from the current object
-    def update( self, * l_name_adata ) :
-        """ # 2022-06-09 18:13:21 
-        save the given AnnData objects to disk
-        """
-        for name_adata in l_name_adata :
-            if name_adata not in self : # skip the 'name_adata' that does not exist in the current container
-                continue
-            # if current AnnData is a valid AnnData object
-            args = self._dict_name_adata_to_namespace[ name_adata ]
-            if isinstance( args[ 'adata' ], scanpy.AnnData ) :
-                args[ 'adata' ].write( args[ 'path' ] ) # write AnnData object
-    def empty( self, * l_name_adata ) :
-        """ # 2022-06-09 18:23:44 
-        empty the count matrix of the given AnnData objects 
-        """
-        for name_adata in l_name_adata :
-            if name_adata not in self : # skip the 'name_adata' that does not exist in the current container
-                continue
-            # if current AnnData is a valid AnnData object
-            adata = self._dict_name_adata_to_namespace[ name_adata ][ 'adata' ]
-            if isinstance( adata, scanpy.AnnData ) :
-                adata.X = scipy.sparse.csr_matrix( scipy.sparse.coo_matrix( ( [], ( [], [] ) ), shape = ( len( adata.obs ), len( adata.var ) ) ) ) # empty the anndata object
-    def transfer_attributes( self, name_adata, adata, flag_ignore_var = True ) :
-        ''' # 2022-06-06 01:44:00 
-        transfer attributes of the given AnnDAta 'adata' to the current AnnData data containined in this object 'name_adata'  
-        'flag_ignore_var' : ignore attributes related to 'var' (var, varm, varp)
-        '''
-        adata_current = self[ name_adata ] # retrieve current AnnData
-        
-        # transfer uns and obs-related elements
-        for name_attr in [ 'obs', 'uns', 'obsm', 'obsp' ] :
-            if hasattr( adata, name_attr ) :
-                setattr( adata_current, name_attr, getattr( adata, name_attr ) )
-        
-        # transfer var-related elements if 'flag_ignore_var' is True
-        if not flag_ignore_var  :
-            for name_attr in [ 'var', 'varm', 'varp' ] :
-                if hasattr( adata, name_attr ) :
-                    setattr( adata_current, name_attr, getattr( adata, name_attr ) )
 class RamData( ) :
     """ # 2022-05-31 23:17:38 
     This class contains single-cell transcriptomic/genomic data utilizing RAMtx data structures, allowing efficient parallelization of analysis of single cell data with minimal memory consumption. 
