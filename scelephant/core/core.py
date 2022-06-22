@@ -1,5 +1,6 @@
 from biobookshelf.main import *
 from biobookshelf import *
+import biobookshelf as bk
 pd.options.mode.chained_assignment = None  # default='warn' # to disable worining
 import zarr # SCElephant is currently implemented using Zarr
 import numcodecs
@@ -9,7 +10,7 @@ import scanpy
 # define version
 _version_ = '0.0.0'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-06-21 17:49:48' 
+_last_modified_time_ = '2022-06-23 00:01:26 ' 
 
 ''' previosuly written for biobookshelf '''
 def CB_Parse_list_of_id_cell( l_id_cell, dropna = True ) :
@@ -1688,10 +1689,11 @@ def _get_func_processed_bytes_to_arrays_mtx_and_other_settings_based_on_file_for
 
 ''' a class for Zarr-based DataFrame object '''
 class ZarrDataFrame( ) :
-    """ # 2022-06-21 16:05:00 
+    """ # 2022-06-22 23:56:01 
     on-demend persistant DataFrame backed by Zarr persistent arrays.
     each column can be separately loaded, updated, and unloaded.
-    the primary aim of this class is to provide a Zarr-based dataframe object that is compatible with Zarr.js (javascript implementation of Zarr), with a categorical data type (the format used in zarr is currently not supported in zarr.js) compatible with zarr.js.
+    a filter can be set, which allows updating and reading ZarrDataFrame as if it only contains the rows indicated by the given filter.
+    the one of the functionality of this class is to provide a Zarr-based dataframe object that is compatible with Zarr.js (javascript implementation of Zarr), with a categorical data type (the format used in zarr is currently not supported in zarr.js) compatible with zarr.js.
     
     'path_folder_zdf' : a folder to store persistant zarr dataframe.
     'df' : input dataframe.
@@ -1702,11 +1704,19 @@ class ZarrDataFrame( ) :
     'flag_store_string_as_categorical' : if True, for string datatypes, it will be converted to categorical data type.
     
     === settings that can be changed anytime after initialization ===
+    'ba_filter' : a bitarray object for applying filter for the ZarrDataFrame. 1 meaning the row is included, 0 meaning the row is excluded
+                  If None is given (which is default), the filter is not applied, and the returned data will have the same number of items as the number of rows of the ZarrDataFrame
+                  when a filter is active, setting new data and retrieving existing data will work as if the actual ZarrDataFrame is filtered and has the smaller number of rows. 
+                  A filter can be changed anytime after initialization of a ZarrDataFrame, but changing (including removing or newly applying filters) will remove all cached data, since the cache only contains data after apply filter to be memory-efficient.
+                  A filter can be removed by setting 'filter' attribute to None
+                  
+                  current implementation has following limits, which can be improved further:
+                      - when a filter is active, slicing will load an entire column (after applying filter) (when filter is inactive, slicing will only load the data corresponding to the sliced region)
     'flag_retrieve_categorical_data_as_integers' : if True, accessing categorical data will return integer representations of the categorical values. 
     'flag_load_data_after_adding_new_column' : if True, automatically load the newly added data to the object cache. if False, the newly added data will not be added to the object cache, and accessing the newly added column will cause reading the newly written data from the disk. It is recommended to set this to False if Zdf is used as a data sink
     """
-    def __init__( self, path_folder_zdf, df = None, int_num_rows = None, int_num_rows_in_a_chunk = 10000, flag_enforce_name_col_with_only_valid_characters = False, flag_store_string_as_categorical = True, flag_retrieve_categorical_data_as_integers = False, flag_load_data_after_adding_new_column = True ) :
-        """ # 2022-06-21 01:20:06 
+    def __init__( self, path_folder_zdf, df = None, int_num_rows = None, int_num_rows_in_a_chunk = 10000, ba_filter = None, flag_enforce_name_col_with_only_valid_characters = False, flag_store_string_as_categorical = True, flag_retrieve_categorical_data_as_integers = False, flag_load_data_after_adding_new_column = True ) :
+        """ # 2022-06-22 16:31:07 
         """
         # handle path
         path_folder_zdf = os.path.abspath( path_folder_zdf ) # retrieve absolute path
@@ -1715,6 +1725,7 @@ class ZarrDataFrame( ) :
         self._path_folder_zdf = path_folder_zdf
         self._flag_retrieve_categorical_data_as_integers = flag_retrieve_categorical_data_as_integers
         self._flag_load_data_after_adding_new_column = flag_load_data_after_adding_new_column
+        self.filter = ba_filter
             
         # open or initialize zdf and retrieve associated metadata
         if not os.path.exists( path_folder_zdf ) : # if the object does not exist, initialize ZarrDataFrame
@@ -1743,13 +1754,82 @@ class ZarrDataFrame( ) :
         # initialize loaded data
         self._loaded_data = dict( )
         
+        # initialize temp folder
+        self._initialize_temp_folder_( )
+        
         if isinstance( df, pd.DataFrame ) : # if a valid pandas.dataframe has been given
             # update zdf with the given dataframe
             self.update( df )
+    def _initialize_temp_folder_( self ) :
+        """ # 2022-06-22 21:49:38
+        empty the temp folder
+        """
+        # initialize temporary data folder directory
+        self._path_folder_temp = f"{self._path_folder_zdf}.__temp__/" # set temporary folder
+        if os.path.exists( self._path_folder_temp ) : # if temporary folder already exists
+            OS_Run( [ 'rm', '-rf', self._path_folder_temp ] ) # delete temporary folder
+        os.makedirs( self._path_folder_temp, exist_ok = True ) # recreate temporary folder
+    @property
+    def _n_rows_unfiltered( self ) :
+        """ # 2022-06-22 23:12:09 
+        retrieve the number of rows in unfiltered ZarrDataFrame. return None if unavailable.
+        """
+        if 'int_num_rows' not in self._dict_zdf_metadata : # if 'int_num_rows' has not been set, return None
+            return None
+        else : # if 'int_num_rows' has been set
+            return self._dict_zdf_metadata[ 'int_num_rows' ]
+    @property
+    def n_rows( self ) :
+        """ # 2022-06-22 16:36:54 
+        retrieve the number of rows after applying filter. if the filter is not active, return the number of rows of the unfiltered ZarrDataFrame
+        """
+        if self.filter is None : # if the filter is not active, return the number of rows of the unfiltered ZarrDataFrame
+            return self._n_rows_unfiltered
+        else : # if a filter is active
+            return self._n_rows_after_applying_filter # return the number of active rows in the filter
+    @property
+    def filter( self ) :
+        ''' # 2022-06-22 16:36:22 
+        return filter bitarray  '''
+        return self._za_filter
+    @filter.setter
+    def filter( self, ba_filter ) :
+        """ # 2022-06-22 21:52:00 
+        change filter, and empty the cache
+        """
+        if ba_filter is None : # if filter is removed, 
+            self._za_filter = None
+            self._n_rows_after_applying_filter = None
+        else :
+            # check whether the given filter is bitarray
+            assert isinstance( ba_filter, bitarray )
+            
+            # check the length of filter bitarray
+            if 'int_num_rows' not in self._dict_zdf_metadata : # if 'int_num_rows' has not been set, set 'int_num_rows' using the length of the filter bitarray
+                self._dict_zdf_metadata[ 'int_num_rows' ] = len( ba_filter )
+                self._save_metadata_( ) # save metadata
+            else :
+                # check the length of filter bitarray
+                assert len( ba_filter ) == self._dict_zdf_metadata[ 'int_num_rows' ]
+
+            self._loaded_data = dict( ) # empty the cache
+            self._initialize_temp_folder_( ) # empty the temp folder
+            
+            # compose a list of integer indices of active rows after applying filter
+            l = [ ]
+            for st, en in bk.BA.Find_Segment( ba_filter, background = 0 ) : # retrieve active segments from bitarray filter 
+                l.extend( np.arange( st, en ) ) # retrieve integer indices of the active rows
+            self._n_rows_after_applying_filter = len( l ) # retrieve the number of rows after applying filter (which is equal to the number of integer indices representing the filter)
+
+            path_folder_filter = f"{self._path_folder_temp}filter.zarr/" # define a Zarr object for caching filter data
+            za = zarr.open( path_folder_filter, 'w', shape = ( self._n_rows_after_applying_filter, ), chunks = ( self._dict_zdf_metadata[ 'int_num_rows_in_a_chunk' ], ), dtype = np.int64, synchronizer = zarr.ThreadSynchronizer( ) ) # write 'integer filter' (list of integer indices of active rows) as a Zarr object
+            za[ : ] = np.array( l, dtype = np.int64 ) # write the integer filter array to the output Zarr object
+            self._za_filter = zarr.open( path_folder_filter, mode = 'r' ) # open in read-only mode, and set '_za_filter' attribute
     def __getitem__( self, args ) :
-        ''' # 2022-06-21 01:53:41 
+        ''' # 2022-06-22 22:41:25 
         retrieve data of a column.
         partial read is allowed through indexing
+        when a filter is active, the filtered data will be cached in the temporary directory as a Zarr object and will be retrieved in subsequent accesses
         '''
         # parse arguments
         if isinstance( args, tuple ) :
@@ -1761,7 +1841,17 @@ class ZarrDataFrame( ) :
             if name_col in self._loaded_data : # if a loaded data is available
                 return self._loaded_data[ name_col ][ coords ]
             else :
-                za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'r' ) # read data from the Zarr object
+                if self.filter is None : # if filter is not active
+                    za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'r' ) # read data from the Zarr object
+                else : # if filter is active
+                    path_folder_temp_zarr = f"{self._path_folder_temp}{name_col}/" # retrieve path of cached zarr object containing filtered data
+                    if os.path.exists( path_folder_temp_zarr ) : # if a cache is available
+                        za = zarr.open( path_folder_temp_zarr, mode = 'r' ) # open the cached Zarr object containing
+                    else : # if a cache is not available, retrieve filtered data and write a cache
+                        za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'r' ) # read data from the Zarr object
+                        za_cached = zarr.open( path_folder_temp_zarr, 'w', shape = ( self._n_rows_after_applying_filter, ), chunks = ( self._dict_zdf_metadata[ 'int_num_rows_in_a_chunk' ], ), dtype = za.dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # open a new Zarr object for caching
+                        za = za[ self.filter[ : ] ] # retrieve filtered data 
+                        za_cached[ : ] = za # save the filtered data for caching
                 values = za[ coords ] # retrieve data
                 
                 # check whether the current column contains categorical data
@@ -1774,8 +1864,9 @@ class ZarrDataFrame( ) :
                         values_decoded[ i ] = l_value_unique[ values[ i ] ] if values[ i ] >= 0 else np.nan # convert integer representations to its original string values # -1 (negative integers) encodes np.nan
                     return values_decoded
     def __setitem__( self, name_col, values ) :
-        ''' # 2022-06-21 01:54:11 
+        ''' # 2022-06-22 23:55:53 
         save a column. partial update is not allowed, meaning that an entire column should be updated.
+        when a filter is active, write filtered data
         '''
         # check whether the given name_col contains invalid characters(s)
         for char_invalid in self._str_invalid_char :
@@ -1806,15 +1897,16 @@ class ZarrDataFrame( ) :
         
         # check whether the number of values is valid
         int_num_values = len( values )
-        if 'int_num_rows' in self._dict_zdf_metadata :
-            # check the number of rows are identical
-            assert int_num_values == self._dict_zdf_metadata[ 'int_num_rows' ] 
+        if self.n_rows is not None : # if a valid information about the number of rows is available
+            # check the number of rows of the current Zdf (after applying filter, if a filter is available)
+            assert int_num_values == self.n_rows
         else :
             self._dict_zdf_metadata[ 'int_num_rows' ] = int_num_values # record the number of rows of the dataframe
             self._save_metadata_( ) # save metadata
         
         # compose metadata of the column
-        dict_col_metadata = { 'flag_categorical' : False } # a default value
+        dict_col_metadata = { 'flag_categorical' : False } # set a default value for 'flag_categorical' metadata attribute
+        dict_col_metadata[ 'flag_filtered' ] = self.filter is not None # mark the column containing filtered data
         
         # write data
         if dtype is str and self._dict_zdf_metadata[ 'flag_store_string_as_categorical' ] : # storing categorical data            
@@ -1838,17 +1930,29 @@ class ZarrDataFrame( ) :
             else :
                 dtype = np.int32
             
+            # open Zarr object representing the current column
+            za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'w', shape = ( self._n_rows_unfiltered, ), chunks = ( self._dict_zdf_metadata[ 'int_num_rows_in_a_chunk' ], ), dtype = dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # overwrite mode (purge previously written data) # saved data will have 'self._n_rows_unfiltered' number of items 
+            
+            # encode data
             dict_encode_category = dict( ( e, i ) for i, e in enumerate( l_value_unique ) ) # retrieve a dictionary encoding value to integer representation of the value
-            
-            za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'w', shape = ( int_num_values, ), chunks = ( self._dict_zdf_metadata[ 'int_num_rows_in_a_chunk' ], ), dtype = dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # overwrite mode
-            
             values_encoded = np.array( list( dict_encode_category[ value ] if value in dict_encode_category else -1 for value in values ), dtype = dtype ) # retrieve encoded values # np.nan will be encoded as -1 values
-            if self._flag_retrieve_categorical_data_as_integers : # if 'self._flag_retrieve_categorical_data_as_integers' is True, use integer representation of values
+            if self._flag_retrieve_categorical_data_as_integers : # if 'self._flag_retrieve_categorical_data_as_integers' is True, use integer representation of values for caching
                 values = values_encoded
-            za[ : ] = values_encoded # write encoded data
+            
+            # write data 
+            if self.filter is None : # when filter is not set
+                za[ : ] = values_encoded # write encoded data
+            else : # when filter is present
+                za[ self.filter[ : ] ] = values_encoded # save filtered data 
+                
         else : # storing non-categorical data
-            za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'w', shape = ( int_num_values, ), chunks = ( self._dict_zdf_metadata[ 'int_num_rows_in_a_chunk' ], ), dtype = dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # overwrite mode
-            za[ : ] = values # write data
+            za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'w', shape = ( self._n_rows_unfiltered, ), chunks = ( self._dict_zdf_metadata[ 'int_num_rows_in_a_chunk' ], ), dtype = dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # overwrite mode (purge previously written data) # saved data will have 'self._n_rows_unfiltered' number of items 
+            
+            # write data
+            if self.filter is None : # when filter is not set
+                za[ : ] = values # write data
+            else : # when filter is present
+                za[ self.filter[ : ] ] = values # save filtered data 
             
         # save column metadata
         za.attrs[ 'dict_col_metadata' ] = dict_col_metadata
@@ -2480,7 +2584,7 @@ def Convert_MTX_10X_to_RamData( path_folder_mtx_10x_input, path_folder_ramdata_o
         'int_num_records' : int_num_records,
         'int_num_of_records_in_a_chunk_zarr_matrix' : int_num_of_records_in_a_chunk_zarr_matrix,
         'int_num_of_entries_in_a_chunk_zarr_matrix_index' : int_num_of_entries_in_a_chunk_zarr_matrix_index,
-        'l_name_layer' : [ name_layer ],
+        'layers' : [ name_layer ],
         'version' : _version_,
     }
             
