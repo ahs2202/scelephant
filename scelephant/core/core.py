@@ -1687,368 +1687,6 @@ def _get_func_processed_bytes_to_arrays_mtx_and_other_settings_based_on_file_for
             return _pickle_bytes_to_obj( _gunzip_bytes( bytes_content ) )
     return str_ext, str_ext_index, func_processed_bytes_to_arrays_mtx
 
-''' a class for Zarr-based DataFrame object '''
-class ZarrDataFrame( ) :
-    """ # 2022-06-22 23:56:01 
-    on-demend persistant DataFrame backed by Zarr persistent arrays.
-    each column can be separately loaded, updated, and unloaded.
-    a filter can be set, which allows updating and reading ZarrDataFrame as if it only contains the rows indicated by the given filter.
-    the one of the functionality of this class is to provide a Zarr-based dataframe object that is compatible with Zarr.js (javascript implementation of Zarr), with a categorical data type (the format used in zarr is currently not supported in zarr.js) compatible with zarr.js.
-    
-    'path_folder_zdf' : a folder to store persistant zarr dataframe.
-    'df' : input dataframe.
-    
-    === settings that cannot be changed after initialization ===
-    'int_num_rows_in_a_chunk' : chunk size.
-    'flag_enforce_name_col_with_only_valid_characters' : if True, every column name should not contain any of the following invalid characters, incompatible with attribute names: '! @#$%^&*()-=+`~:;[]{}\|,<.>/?' + '"' + "'", if False, the only invalid character will be '/', which is incompatible with linux file system as file/folder name.
-    'flag_store_string_as_categorical' : if True, for string datatypes, it will be converted to categorical data type.
-    
-    === settings that can be changed anytime after initialization ===
-    'ba_filter' : a bitarray object for applying filter for the ZarrDataFrame. 1 meaning the row is included, 0 meaning the row is excluded
-                  If None is given (which is default), the filter is not applied, and the returned data will have the same number of items as the number of rows of the ZarrDataFrame
-                  when a filter is active, setting new data and retrieving existing data will work as if the actual ZarrDataFrame is filtered and has the smaller number of rows. 
-                  A filter can be changed anytime after initialization of a ZarrDataFrame, but changing (including removing or newly applying filters) will remove all cached data, since the cache only contains data after apply filter to be memory-efficient.
-                  A filter can be removed by setting 'filter' attribute to None
-                  
-                  current implementation has following limits, which can be improved further:
-                      - when a filter is active, slicing will load an entire column (after applying filter) (when filter is inactive, slicing will only load the data corresponding to the sliced region)
-    'flag_retrieve_categorical_data_as_integers' : if True, accessing categorical data will return integer representations of the categorical values. 
-    'flag_load_data_after_adding_new_column' : if True, automatically load the newly added data to the object cache. if False, the newly added data will not be added to the object cache, and accessing the newly added column will cause reading the newly written data from the disk. It is recommended to set this to False if Zdf is used as a data sink
-    """
-    def __init__( self, path_folder_zdf, df = None, int_num_rows = None, int_num_rows_in_a_chunk = 10000, ba_filter = None, flag_enforce_name_col_with_only_valid_characters = False, flag_store_string_as_categorical = True, flag_retrieve_categorical_data_as_integers = False, flag_load_data_after_adding_new_column = True ) :
-        """ # 2022-06-22 16:31:07 
-        """
-        # handle path
-        path_folder_zdf = os.path.abspath( path_folder_zdf ) # retrieve absolute path
-        if path_folder_zdf[ -1 ] != '/' : # add '/' to the end of path to mark that this is a folder directory
-            path_folder_zdf += '/'
-        self._path_folder_zdf = path_folder_zdf
-        self._flag_retrieve_categorical_data_as_integers = flag_retrieve_categorical_data_as_integers
-        self._flag_load_data_after_adding_new_column = flag_load_data_after_adding_new_column
-        self.filter = ba_filter
-            
-        # open or initialize zdf and retrieve associated metadata
-        if not os.path.exists( path_folder_zdf ) : # if the object does not exist, initialize ZarrDataFrame
-            # create the output folder
-            os.makedirs( path_folder_zdf, exist_ok = True )
-            
-            self._root = zarr.open( path_folder_zdf, mode = 'a' )
-            self._dict_zdf_metadata = { 'version' : _version_, 'columns' : set( ), 'int_num_rows_in_a_chunk' : int_num_rows_in_a_chunk, 'flag_enforce_name_col_with_only_valid_characters' : flag_enforce_name_col_with_only_valid_characters, 'flag_store_string_as_categorical' : flag_store_string_as_categorical  } # to reduce the number of I/O operations from lookup, a metadata dictionary will be used to retrieve/update all the metadata
-            # if 'int_num_rows' has been given, add it to the metadata
-            if int_num_rows is not None :
-                self._dict_zdf_metadata[ 'int_num_rows' ] = int_num_rows
-            self._save_metadata_( ) # save metadata
-        else :
-            # read existing zdf object
-            self._root = zarr.open( path_folder_zdf, mode = 'a' )
-                
-            # retrieve metadata
-            self._dict_zdf_metadata = self._root.attrs[ 'dict_zdf_metadata' ] 
-            # convert 'columns' list to set
-            if 'columns' in self._dict_zdf_metadata :
-                self._dict_zdf_metadata[ 'columns' ] = set( self._dict_zdf_metadata[ 'columns' ] )
-           
-        # handle input arguments
-        self._str_invalid_char = '! @#$%^&*()-=+`~:;[]{}\|,<.>/?' + '"' + "'" if self._dict_zdf_metadata[ 'flag_enforce_name_col_with_only_valid_characters' ] else '/' # linux file system does not allow the use of linux'/' character in the folder/file name
-        
-        # initialize loaded data
-        self._loaded_data = dict( )
-        
-        # initialize temp folder
-        self._initialize_temp_folder_( )
-        
-        if isinstance( df, pd.DataFrame ) : # if a valid pandas.dataframe has been given
-            # update zdf with the given dataframe
-            self.update( df )
-    def _initialize_temp_folder_( self ) :
-        """ # 2022-06-22 21:49:38
-        empty the temp folder
-        """
-        # initialize temporary data folder directory
-        self._path_folder_temp = f"{self._path_folder_zdf}.__temp__/" # set temporary folder
-        if os.path.exists( self._path_folder_temp ) : # if temporary folder already exists
-            OS_Run( [ 'rm', '-rf', self._path_folder_temp ] ) # delete temporary folder
-        os.makedirs( self._path_folder_temp, exist_ok = True ) # recreate temporary folder
-    @property
-    def _n_rows_unfiltered( self ) :
-        """ # 2022-06-22 23:12:09 
-        retrieve the number of rows in unfiltered ZarrDataFrame. return None if unavailable.
-        """
-        if 'int_num_rows' not in self._dict_zdf_metadata : # if 'int_num_rows' has not been set, return None
-            return None
-        else : # if 'int_num_rows' has been set
-            return self._dict_zdf_metadata[ 'int_num_rows' ]
-    @property
-    def n_rows( self ) :
-        """ # 2022-06-22 16:36:54 
-        retrieve the number of rows after applying filter. if the filter is not active, return the number of rows of the unfiltered ZarrDataFrame
-        """
-        if self.filter is None : # if the filter is not active, return the number of rows of the unfiltered ZarrDataFrame
-            return self._n_rows_unfiltered
-        else : # if a filter is active
-            return self._n_rows_after_applying_filter # return the number of active rows in the filter
-    @property
-    def filter( self ) :
-        ''' # 2022-06-22 16:36:22 
-        return filter bitarray  '''
-        return self._za_filter
-    @filter.setter
-    def filter( self, ba_filter ) :
-        """ # 2022-06-22 21:52:00 
-        change filter, and empty the cache
-        """
-        if ba_filter is None : # if filter is removed, 
-            self._za_filter = None
-            self._n_rows_after_applying_filter = None
-        else :
-            # check whether the given filter is bitarray
-            assert isinstance( ba_filter, bitarray )
-            
-            # check the length of filter bitarray
-            if 'int_num_rows' not in self._dict_zdf_metadata : # if 'int_num_rows' has not been set, set 'int_num_rows' using the length of the filter bitarray
-                self._dict_zdf_metadata[ 'int_num_rows' ] = len( ba_filter )
-                self._save_metadata_( ) # save metadata
-            else :
-                # check the length of filter bitarray
-                assert len( ba_filter ) == self._dict_zdf_metadata[ 'int_num_rows' ]
-
-            self._loaded_data = dict( ) # empty the cache
-            self._initialize_temp_folder_( ) # empty the temp folder
-            
-            # compose a list of integer indices of active rows after applying filter
-            l = [ ]
-            for st, en in bk.BA.Find_Segment( ba_filter, background = 0 ) : # retrieve active segments from bitarray filter 
-                l.extend( np.arange( st, en ) ) # retrieve integer indices of the active rows
-            self._n_rows_after_applying_filter = len( l ) # retrieve the number of rows after applying filter (which is equal to the number of integer indices representing the filter)
-
-            path_folder_filter = f"{self._path_folder_temp}filter.zarr/" # define a Zarr object for caching filter data
-            za = zarr.open( path_folder_filter, 'w', shape = ( self._n_rows_after_applying_filter, ), chunks = ( self._dict_zdf_metadata[ 'int_num_rows_in_a_chunk' ], ), dtype = np.int64, synchronizer = zarr.ThreadSynchronizer( ) ) # write 'integer filter' (list of integer indices of active rows) as a Zarr object
-            za[ : ] = np.array( l, dtype = np.int64 ) # write the integer filter array to the output Zarr object
-            self._za_filter = zarr.open( path_folder_filter, mode = 'r' ) # open in read-only mode, and set '_za_filter' attribute
-    def __getitem__( self, args ) :
-        ''' # 2022-06-22 22:41:25 
-        retrieve data of a column.
-        partial read is allowed through indexing
-        when a filter is active, the filtered data will be cached in the temporary directory as a Zarr object and will be retrieved in subsequent accesses
-        '''
-        # parse arguments
-        if isinstance( args, tuple ) :
-            name_col, coords = args
-        else :
-            name_col, coords = args, slice( None, None, None ) # retrieve all data if only 'name_col' is given
-            
-        if name_col in self : # if name_col is valid
-            if name_col in self._loaded_data : # if a loaded data is available
-                return self._loaded_data[ name_col ][ coords ]
-            else :
-                if self.filter is None : # if filter is not active
-                    za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'r' ) # read data from the Zarr object
-                else : # if filter is active
-                    path_folder_temp_zarr = f"{self._path_folder_temp}{name_col}/" # retrieve path of cached zarr object containing filtered data
-                    if os.path.exists( path_folder_temp_zarr ) : # if a cache is available
-                        za = zarr.open( path_folder_temp_zarr, mode = 'r' ) # open the cached Zarr object containing
-                    else : # if a cache is not available, retrieve filtered data and write a cache
-                        za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'r' ) # read data from the Zarr object
-                        za_cached = zarr.open( path_folder_temp_zarr, 'w', shape = ( self._n_rows_after_applying_filter, ), chunks = ( self._dict_zdf_metadata[ 'int_num_rows_in_a_chunk' ], ), dtype = za.dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # open a new Zarr object for caching
-                        za = za[ self.filter[ : ] ] # retrieve filtered data 
-                        za_cached[ : ] = za # save the filtered data for caching
-                values = za[ coords ] # retrieve data
-                
-                # check whether the current column contains categorical data
-                l_value_unique = self.get_categories( name_col )
-                if len( l_value_unique ) == 0 or self._flag_retrieve_categorical_data_as_integers : # handle non-categorical data
-                    return values
-                else : # handle categorical data
-                    values_decoded = np.zeros( len( values ), dtype = object ) # initialize decoded values
-                    for i in range( len( values ) ) :
-                        values_decoded[ i ] = l_value_unique[ values[ i ] ] if values[ i ] >= 0 else np.nan # convert integer representations to its original string values # -1 (negative integers) encodes np.nan
-                    return values_decoded
-    def __setitem__( self, name_col, values ) :
-        ''' # 2022-06-22 23:55:53 
-        save a column. partial update is not allowed, meaning that an entire column should be updated.
-        when a filter is active, write filtered data
-        '''
-        # check whether the given name_col contains invalid characters(s)
-        for char_invalid in self._str_invalid_char :
-            if char_invalid in name_col :
-                raise TypeError( f"the character '{char_invalid}' cannot be used in 'name_col'. Also, the 'name_col' cannot contains the following characters: {self._str_invalid_char}" )
-        
-        # retrieve data values from the 'values' 
-        if isinstance( values, pd.Series ) :
-            values = values.values
-        
-        # retrieve data type of values
-        # if values is numpy.ndarray, use the dtype of the array
-        if isinstance( values, np.ndarray ) :
-            dtype = values.dtype
-        # if values is not numpy.ndarray or the dtype is object datatype, use the type of the data returned by the type( ) python function.
-        if not isinstance( values, np.ndarray ) or dtype is np.dtype( 'O' ) : 
-            dtype = type( values[ 0 ] )
-            # handle the case when the first element is np.nan
-            if dtype is float and values[ 0 ] is np.nan :
-                # examine the values and set the dtype to string if at least one value is string
-                for e in values : 
-                    if type( e ) is str :
-                        dtype = str
-                        break
-        # convert values that is not numpy.ndarray to numpy.ndarray object (for the consistency of the loaded_data)
-        if not isinstance( values, np.ndarray ) :
-            values = np.array( values, dtype = object if dtype is str else dtype ) # use 'object' dtype when converting values to a numpy.ndarray object if dtype is 'str'
-        
-        # check whether the number of values is valid
-        int_num_values = len( values )
-        if self.n_rows is not None : # if a valid information about the number of rows is available
-            # check the number of rows of the current Zdf (after applying filter, if a filter is available)
-            assert int_num_values == self.n_rows
-        else :
-            self._dict_zdf_metadata[ 'int_num_rows' ] = int_num_values # record the number of rows of the dataframe
-            self._save_metadata_( ) # save metadata
-        
-        # compose metadata of the column
-        dict_col_metadata = { 'flag_categorical' : False } # set a default value for 'flag_categorical' metadata attribute
-        dict_col_metadata[ 'flag_filtered' ] = self.filter is not None # mark the column containing filtered data
-        
-        # write data
-        if dtype is str and self._dict_zdf_metadata[ 'flag_store_string_as_categorical' ] : # storing categorical data            
-            dict_col_metadata[ 'flag_categorical' ] = True # update metadata for categorical datatype
-            
-            set_value_unique = set( values ) # retrieve a set of unique values
-            # handle when np.nan value exist 
-            if np.nan in set_value_unique : 
-                dict_col_metadata[ 'flag_contains_nan' ] = True # mark that the column contains np.nan values
-                set_value_unique.remove( np.nan ) # removes np.nan from the category
-            
-            l_value_unique = list( set_value_unique ) # retrieve a list of unique values # can contain mixed types (int, float, str)
-            dict_col_metadata[ 'l_value_unique' ] = list( str( e ) for e in set_value_unique ) # update metadata # convert entries to string (so that all values with mixed types can be interpreted as strings)
-            
-            # retrieve appropriate datatype for encoding unique categorical values
-            int_min_number_of_bits = int( np.ceil( math.log2( len( l_value_unique ) ) ) ) + 1 # since signed int will be used, an additional bit is required to encode the data
-            if int_min_number_of_bits <= 8 :
-                dtype = np.int8
-            elif int_min_number_of_bits <= 16 :
-                dtype = np.int16
-            else :
-                dtype = np.int32
-            
-            # open Zarr object representing the current column
-            za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'w', shape = ( self._n_rows_unfiltered, ), chunks = ( self._dict_zdf_metadata[ 'int_num_rows_in_a_chunk' ], ), dtype = dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # overwrite mode (purge previously written data) # saved data will have 'self._n_rows_unfiltered' number of items 
-            
-            # encode data
-            dict_encode_category = dict( ( e, i ) for i, e in enumerate( l_value_unique ) ) # retrieve a dictionary encoding value to integer representation of the value
-            values_encoded = np.array( list( dict_encode_category[ value ] if value in dict_encode_category else -1 for value in values ), dtype = dtype ) # retrieve encoded values # np.nan will be encoded as -1 values
-            if self._flag_retrieve_categorical_data_as_integers : # if 'self._flag_retrieve_categorical_data_as_integers' is True, use integer representation of values for caching
-                values = values_encoded
-            
-            # write data 
-            if self.filter is None : # when filter is not set
-                za[ : ] = values_encoded # write encoded data
-            else : # when filter is present
-                za[ self.filter[ : ] ] = values_encoded # save filtered data 
-                
-        else : # storing non-categorical data
-            za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'w', shape = ( self._n_rows_unfiltered, ), chunks = ( self._dict_zdf_metadata[ 'int_num_rows_in_a_chunk' ], ), dtype = dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # overwrite mode (purge previously written data) # saved data will have 'self._n_rows_unfiltered' number of items 
-            
-            # write data
-            if self.filter is None : # when filter is not set
-                za[ : ] = values # write data
-            else : # when filter is present
-                za[ self.filter[ : ] ] = values # save filtered data 
-            
-        # save column metadata
-        za.attrs[ 'dict_col_metadata' ] = dict_col_metadata
-        
-        # update zdf metadata
-        if name_col not in self._dict_zdf_metadata[ 'columns' ] :
-            self._dict_zdf_metadata[ 'columns' ].add( name_col )
-            self._save_metadata_( )
-        
-        # add data to the loaded data dictionary (object cache) if 'self._flag_load_data_after_adding_new_column' is True
-        if self._flag_load_data_after_adding_new_column :
-            self._loaded_data[ name_col ] = values
-    def __delitem__( self, name_col ) :
-        ''' # 2022-06-20 21:57:38 
-        remove the column from the memory and the object on disk
-        '''
-        if name_col in self : # if the given name_col is valid
-            # remove column from the memory
-            self.unload( name_col ) 
-            # remove the column from metadata
-            self._dict_zdf_metadata[ 'columns' ].remove( name_col )
-            self._save_metadata_( ) # update metadata
-            # delete the column from the disk ZarrDataFrame object
-            OS_Run( [ 'rm', '-rf', f"{self._path_folder_zdf}{name_col}/" ] )
-    def __contains__( self, name_col ) :
-        return name_col in self._dict_zdf_metadata[ 'columns' ]
-    def __iter__( self ) :
-        return iter( self._dict_zdf_metadata[ 'columns' ] )
-    def __repr__( self ) :
-        return f"<ZarrDataFrame object stored at {self._path_folder_zdf}\n\twith the following metadata: {self._dict_zdf_metadata}>"
-    @property
-    def columns( self ) :
-        ''' # 2022-06-21 15:58:41 
-        return available column names
-        '''
-        return self._dict_zdf_metadata[ 'columns' ]
-    @property
-    def df( self ) :
-        ''' # 2022-06-21 16:00:11 
-        return loaded data as a dataframe
-        '''
-        return pd.DataFrame( self._loaded_data )
-    def _save_metadata_( self ) :
-        ''' # 2022-06-20 21:44:42 
-        save metadata of the current ZarrDataFrame
-        '''
-        # convert 'columns' to list before saving attributes
-        temp = self._dict_zdf_metadata[ 'columns' ]
-        self._dict_zdf_metadata[ 'columns' ] = list( temp )
-        self._root.attrs[ 'dict_zdf_metadata' ] = self._dict_zdf_metadata # update metadata
-        self._dict_zdf_metadata[ 'columns' ] = temp # revert 'columns' to set
-    def get_categories( self, name_col ) :
-        """ # 2022-06-21 00:57:37 
-        for columns with categorical data, return categories. if the column contains non-categorical data, return an empty list
-        """
-        if name_col in self : # if the current column is valid
-            za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'r' ) # read data from the Zarr object
-            dict_col_metadata = za.attrs[ 'dict_col_metadata' ] # retrieve metadata of the current column
-            if dict_col_metadata[ 'flag_categorical' ] : # if the current column contains categorical data
-                return dict_col_metadata[ 'l_value_unique' ]
-            else :
-                return [ ]
-    def update( self, df ) :
-        """ # 2022-06-20 21:36:55 
-        update ZarrDataFrame with the given 'df'
-        """
-        # update each column
-        for name_col in df.columns.values :
-            self[ name_col ] = df[ name_col ]
-    def load( self, * l_name_col ) :
-        ''' # 2022-06-20 22:09:42 
-        load given column(s) into the memory
-        '''
-        for name_col in l_name_col :
-            if name_col not in self : # skip invalid column
-                continue
-            if name_col not in self._loaded_data : # if the data has not been loaded
-                self._loaded_data[ name_col ] = self[ name_col ]
-    def unload( self, * l_name_col ) :
-        """ # 2022-06-20 22:09:37 
-        remove the column from the memory
-        """
-        for name_col in l_name_col :
-            if name_col not in self : # skip invalid column
-                continue
-            if name_col in self._loaded_data :
-                del self._loaded_data[ name_col ]
-    def delete( self, * l_name_col ) :
-        ''' # 2022-06-20 22:09:31 
-        remove the column from the memory and from the disk
-        '''
-        for name_col in l_name_col :
-            if name_col not in self : # skip invalid column
-                continue
-            del self[ name_col ] # delete element from the current object
-
 ''' a class for containing disk-backed AnnData objects '''
 class AnnDataContainer( ) :
     """ # 2022-06-09 18:35:04 
@@ -2199,9 +1837,369 @@ class AnnDataContainer( ) :
             for name_attr in [ 'var', 'varm', 'varp' ] :
                 if hasattr( adata, name_attr ) :
                     setattr( adata_current, name_attr, getattr( adata, name_attr ) )
+
+''' a class for Zarr-based DataFrame object '''
+class ZarrDataFrame( ) :
+    """ # 2022-06-22 23:56:01 
+    on-demend persistant DataFrame backed by Zarr persistent arrays.
+    each column can be separately loaded, updated, and unloaded.
+    a filter can be set, which allows updating and reading ZarrDataFrame as if it only contains the rows indicated by the given filter.
+    the one of the functionality of this class is to provide a Zarr-based dataframe object that is compatible with Zarr.js (javascript implementation of Zarr), with a categorical data type (the format used in zarr is currently not supported in zarr.js) compatible with zarr.js.
+    
+    'path_folder_zdf' : a folder to store persistant zarr dataframe.
+    'df' : input dataframe.
+    
+    === settings that cannot be changed after initialization ===
+    'int_num_rows_in_a_chunk' : chunk size.
+    'flag_enforce_name_col_with_only_valid_characters' : if True, every column name should not contain any of the following invalid characters, incompatible with attribute names: '! @#$%^&*()-=+`~:;[]{}\|,<.>/?' + '"' + "'", if False, the only invalid character will be '/', which is incompatible with linux file system as file/folder name.
+    'flag_store_string_as_categorical' : if True, for string datatypes, it will be converted to categorical data type.
+    
+    === settings that can be changed anytime after initialization ===
+    'ba_filter' : a bitarray object for applying filter for the ZarrDataFrame. 1 meaning the row is included, 0 meaning the row is excluded
+                  If None is given (which is default), the filter is not applied, and the returned data will have the same number of items as the number of rows of the ZarrDataFrame
+                  when a filter is active, setting new data and retrieving existing data will work as if the actual ZarrDataFrame is filtered and has the smaller number of rows. 
+                  A filter can be changed anytime after initialization of a ZarrDataFrame, but changing (including removing or newly applying filters) will remove all cached data, since the cache only contains data after apply filter to be memory-efficient.
+                  A filter can be removed by setting 'filter' attribute to None
+                  
+                  current implementation has following limits, which can be improved further:
+                      - when a filter is active, slicing will load an entire column (after applying filter) (when filter is inactive, slicing will only load the data corresponding to the sliced region)
+    'flag_retrieve_categorical_data_as_integers' : if True, accessing categorical data will return integer representations of the categorical values. 
+    'flag_load_data_after_adding_new_column' : if True, automatically load the newly added data to the object cache. if False, the newly added data will not be added to the object cache, and accessing the newly added column will cause reading the newly written data from the disk. It is recommended to set this to False if Zdf is used as a data sink
+    """
+    def __init__( self, path_folder_zdf, df = None, int_num_rows = None, int_num_rows_in_a_chunk = 10000, ba_filter = None, flag_enforce_name_col_with_only_valid_characters = False, flag_store_string_as_categorical = True, flag_retrieve_categorical_data_as_integers = False, flag_load_data_after_adding_new_column = True ) :
+        """ # 2022-06-22 16:31:07 
+        """
+        # handle path
+        path_folder_zdf = os.path.abspath( path_folder_zdf ) # retrieve absolute path
+        if path_folder_zdf[ -1 ] != '/' : # add '/' to the end of path to mark that this is a folder directory
+            path_folder_zdf += '/'
+        self._path_folder_zdf = path_folder_zdf
+        self._flag_retrieve_categorical_data_as_integers = flag_retrieve_categorical_data_as_integers
+        self._flag_load_data_after_adding_new_column = flag_load_data_after_adding_new_column
+        self.filter = ba_filter
+            
+        # open or initialize zdf and retrieve associated metadata
+        if not os.path.exists( path_folder_zdf ) : # if the object does not exist, initialize ZarrDataFrame
+            # create the output folder
+            os.makedirs( path_folder_zdf, exist_ok = True )
+            
+            self._root = zarr.open( path_folder_zdf, mode = 'a' )
+            self._dict_zdf_metadata = { 'version' : _version_, 'columns' : set( ), 'int_num_rows_in_a_chunk' : int_num_rows_in_a_chunk, 'flag_enforce_name_col_with_only_valid_characters' : flag_enforce_name_col_with_only_valid_characters, 'flag_store_string_as_categorical' : flag_store_string_as_categorical  } # to reduce the number of I/O operations from lookup, a metadata dictionary will be used to retrieve/update all the metadata
+            # if 'int_num_rows' has been given, add it to the metadata
+            if int_num_rows is not None :
+                self._dict_zdf_metadata[ 'int_num_rows' ] = int_num_rows
+            self._save_metadata_( ) # save metadata
+        else :
+            # read existing zdf object
+            self._root = zarr.open( path_folder_zdf, mode = 'a' )
+                
+            # retrieve metadata
+            self._dict_zdf_metadata = self._root.attrs[ 'dict_zdf_metadata' ] 
+            # convert 'columns' list to set
+            if 'columns' in self._dict_zdf_metadata :
+                self._dict_zdf_metadata[ 'columns' ] = set( self._dict_zdf_metadata[ 'columns' ] )
+           
+        # handle input arguments
+        self._str_invalid_char = '! @#$%^&*()-=+`~:;[]{}\|,<.>/?' + '"' + "'" if self._dict_zdf_metadata[ 'flag_enforce_name_col_with_only_valid_characters' ] else '/' # linux file system does not allow the use of linux'/' character in the folder/file name
+        
+        # initialize loaded data
+        self._loaded_data = dict( )
+        
+        # initialize temp folder
+        self._initialize_temp_folder_( )
+        
+        if isinstance( df, pd.DataFrame ) : # if a valid pandas.dataframe has been given
+            # update zdf with the given dataframe
+            self.update( df )
+    def _initialize_temp_folder_( self ) :
+        """ # 2022-06-22 21:49:38
+        empty the temp folder
+        """
+        # initialize temporary data folder directory
+        self._path_folder_temp = f"{self._path_folder_zdf}.__temp__/" # set temporary folder
+        if os.path.exists( self._path_folder_temp ) : # if temporary folder already exists
+            OS_Run( [ 'rm', '-rf', self._path_folder_temp ] ) # delete temporary folder
+        os.makedirs( self._path_folder_temp, exist_ok = True ) # recreate temporary folder
+    @property
+    def _n_rows_unfiltered( self ) :
+        """ # 2022-06-22 23:12:09 
+        retrieve the number of rows in unfiltered ZarrDataFrame. return None if unavailable.
+        """
+        if 'int_num_rows' not in self._dict_zdf_metadata : # if 'int_num_rows' has not been set, return None
+            return None
+        else : # if 'int_num_rows' has been set
+            return self._dict_zdf_metadata[ 'int_num_rows' ]
+    @property
+    def n_rows( self ) :
+        """ # 2022-06-22 16:36:54 
+        retrieve the number of rows after applying filter. if the filter is not active, return the number of rows of the unfiltered ZarrDataFrame
+        """
+        if self.filter is None : # if the filter is not active, return the number of rows of the unfiltered ZarrDataFrame
+            return self._n_rows_unfiltered
+        else : # if a filter is active
+            return self._n_rows_after_applying_filter # return the number of active rows in the filter
+    @property
+    def filter( self ) :
+        ''' # 2022-06-22 16:36:22 
+        return filter bitarray  '''
+        return self._za_filter
+    @filter.setter
+    def filter( self, ba_filter ) :
+        """ # 2022-06-23 08:54:30 
+        change filter, and empty the cache
+        """
+        if ba_filter is None : # if filter is removed, 
+            self._za_filter = None
+            self._n_rows_after_applying_filter = None
+        else :
+            # check whether the given filter is bitarray
+            assert isinstance( ba_filter, bitarray )
+            
+            # check the length of filter bitarray
+            if 'int_num_rows' not in self._dict_zdf_metadata : # if 'int_num_rows' has not been set, set 'int_num_rows' using the length of the filter bitarray
+                self._dict_zdf_metadata[ 'int_num_rows' ] = len( ba_filter )
+                self._save_metadata_( ) # save metadata
+            else :
+                # check the length of filter bitarray
+                assert len( ba_filter ) == self._dict_zdf_metadata[ 'int_num_rows' ]
+
+            self._loaded_data = dict( ) # empty the cache
+            self._initialize_temp_folder_( ) # empty the temp folder
+            
+            # compose a list of integer indices of active rows after applying filter
+            l = bk.BA.Retrieve_Integer_Indices( ba_filter, background = 0 )
+            self._n_rows_after_applying_filter = len( l ) # retrieve the number of rows after applying filter (which is equal to the number of integer indices representing the filter)
+
+            path_folder_filter = f"{self._path_folder_temp}filter.zarr/" # define a Zarr object for caching filter data
+            za = zarr.open( path_folder_filter, 'w', shape = ( self._n_rows_after_applying_filter, ), chunks = ( self._dict_zdf_metadata[ 'int_num_rows_in_a_chunk' ], ), dtype = np.int64, synchronizer = zarr.ThreadSynchronizer( ) ) # write 'integer filter' (list of integer indices of active rows) as a Zarr object
+            za[ : ] = np.array( l, dtype = np.int64 ) # write the integer filter array to the output Zarr object
+            self._za_filter = zarr.open( path_folder_filter, mode = 'r' ) # open in read-only mode, and set '_za_filter' attribute
+    def __getitem__( self, args ) :
+        ''' # 2022-06-22 22:41:25 
+        retrieve data of a column.
+        partial read is allowed through indexing
+        when a filter is active, the filtered data will be cached in the temporary directory as a Zarr object and will be retrieved in subsequent accesses
+        '''
+        # parse arguments
+        if isinstance( args, tuple ) :
+            name_col, coords = args
+        else :
+            name_col, coords = args, slice( None, None, None ) # retrieve all data if only 'name_col' is given
+            
+        if name_col in self : # if name_col is valid
+            if name_col in self._loaded_data : # if a loaded data is available
+                return self._loaded_data[ name_col ][ coords ]
+            else :
+                if self.filter is None : # if filter is not active
+                    za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'r' ) # read data from the Zarr object
+                else : # if filter is active
+                    path_folder_temp_zarr = f"{self._path_folder_temp}{name_col}/" # retrieve path of cached zarr object containing filtered data
+                    if os.path.exists( path_folder_temp_zarr ) : # if a cache is available
+                        za = zarr.open( path_folder_temp_zarr, mode = 'r' ) # open the cached Zarr object containing
+                    else : # if a cache is not available, retrieve filtered data and write a cache
+                        za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'r' ) # read data from the Zarr object
+                        za_cached = zarr.open( path_folder_temp_zarr, 'w', shape = ( self._n_rows_after_applying_filter, ), chunks = ( self._dict_zdf_metadata[ 'int_num_rows_in_a_chunk' ], ), dtype = za.dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # open a new Zarr object for caching # overwriting existing data
+                        za = za[ self.filter[ : ] ] # retrieve filtered data 
+                        za_cached[ : ] = za # save the filtered data for caching
+                values = za[ coords ] # retrieve data
+                
+                # check whether the current column contains categorical data
+                l_value_unique = self.get_categories( name_col )
+                if len( l_value_unique ) == 0 or self._flag_retrieve_categorical_data_as_integers : # handle non-categorical data
+                    return values
+                else : # handle categorical data
+                    values_decoded = np.zeros( len( values ), dtype = object ) # initialize decoded values
+                    for i in range( len( values ) ) :
+                        values_decoded[ i ] = l_value_unique[ values[ i ] ] if values[ i ] >= 0 else np.nan # convert integer representations to its original string values # -1 (negative integers) encodes np.nan
+                    return values_decoded
+    def __setitem__( self, name_col, values ) :
+        ''' # 2022-06-23 13:58:56 
+        save a column. partial update is currently not supported.
+        when a filter is active, write filtered data
+        '''
+        # check whether the given name_col contains invalid characters(s)
+        for char_invalid in self._str_invalid_char :
+            if char_invalid in name_col :
+                raise TypeError( f"the character '{char_invalid}' cannot be used in 'name_col'. Also, the 'name_col' cannot contains the following characters: {self._str_invalid_char}" )
+        
+        # retrieve data values from the 'values' 
+        if isinstance( values, pd.Series ) :
+            values = values.values
+        
+        # retrieve data type of values
+        # if values is numpy.ndarray, use the dtype of the array
+        if isinstance( values, np.ndarray ) :
+            dtype = values.dtype
+        # if values is not numpy.ndarray or the dtype is object datatype, use the type of the data returned by the type( ) python function.
+        if not isinstance( values, np.ndarray ) or dtype is np.dtype( 'O' ) : 
+            dtype = type( values[ 0 ] )
+            # handle the case when the first element is np.nan
+            if dtype is float and values[ 0 ] is np.nan :
+                # examine the values and set the dtype to string if at least one value is string
+                for e in values : 
+                    if type( e ) is str :
+                        dtype = str
+                        break
+        # convert values that is not numpy.ndarray to numpy.ndarray object (for the consistency of the loaded_data)
+        if not isinstance( values, np.ndarray ) :
+            values = np.array( values, dtype = object if dtype is str else dtype ) # use 'object' dtype when converting values to a numpy.ndarray object if dtype is 'str'
+        
+        # check whether the number of values is valid
+        int_num_values = len( values )
+        if self.n_rows is not None : # if a valid information about the number of rows is available
+            # check the number of rows of the current Zdf (after applying filter, if a filter is available)
+            assert int_num_values == self.n_rows
+        else :
+            self._dict_zdf_metadata[ 'int_num_rows' ] = int_num_values # record the number of rows of the dataframe
+            self._save_metadata_( ) # save metadata
+        
+        # compose metadata of the column
+        dict_col_metadata = { 'flag_categorical' : False } # set a default value for 'flag_categorical' metadata attribute
+        dict_col_metadata[ 'flag_filtered' ] = self.filter is not None # mark the column containing filtered data
+        
+        # write data
+        if dtype is str and self._dict_zdf_metadata[ 'flag_store_string_as_categorical' ] : # storing categorical data            
+            dict_col_metadata[ 'flag_categorical' ] = True # update metadata for categorical datatype
+            
+            set_value_unique = set( values ) # retrieve a set of unique values
+            # handle when np.nan value exist 
+            if np.nan in set_value_unique : 
+                dict_col_metadata[ 'flag_contains_nan' ] = True # mark that the column contains np.nan values
+                set_value_unique.remove( np.nan ) # removes np.nan from the category
+            
+            l_value_unique = list( set_value_unique ) # retrieve a list of unique values # can contain mixed types (int, float, str)
+            dict_col_metadata[ 'l_value_unique' ] = list( str( e ) for e in set_value_unique ) # update metadata # convert entries to string (so that all values with mixed types can be interpreted as strings)
+            
+            # retrieve appropriate datatype for encoding unique categorical values
+            int_min_number_of_bits = int( np.ceil( math.log2( len( l_value_unique ) ) ) ) + 1 # since signed int will be used, an additional bit is required to encode the data
+            if int_min_number_of_bits <= 8 :
+                dtype = np.int8
+            elif int_min_number_of_bits <= 16 :
+                dtype = np.int16
+            else :
+                dtype = np.int32
+            
+            # open Zarr object representing the current column
+            za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'a', shape = ( self._n_rows_unfiltered, ), chunks = ( self._dict_zdf_metadata[ 'int_num_rows_in_a_chunk' ], ), dtype = dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # (data will be not overwritten) # saved data will have 'self._n_rows_unfiltered' number of items 
+            
+            # encode data
+            dict_encode_category = dict( ( e, i ) for i, e in enumerate( l_value_unique ) ) # retrieve a dictionary encoding value to integer representation of the value
+            values_encoded = np.array( list( dict_encode_category[ value ] if value in dict_encode_category else -1 for value in values ), dtype = dtype ) # retrieve encoded values # np.nan will be encoded as -1 values
+            if self._flag_retrieve_categorical_data_as_integers : # if 'self._flag_retrieve_categorical_data_as_integers' is True, use integer representation of values for caching
+                values = values_encoded
+            
+            # write data 
+            if self.filter is None : # when filter is not set
+                za[ : ] = values_encoded # write encoded data
+            else : # when filter is present
+                za[ self.filter[ : ] ] = values_encoded # save filtered data 
+                
+        else : # storing non-categorical data
+            za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'a', shape = ( self._n_rows_unfiltered, ), chunks = ( self._dict_zdf_metadata[ 'int_num_rows_in_a_chunk' ], ), dtype = dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # (data will be not overwritten) # saved data will have 'self._n_rows_unfiltered' number of items 
+            
+            # write data
+            if self.filter is None : # when filter is not set
+                za[ : ] = values # write data
+            else : # when filter is present
+                za[ self.filter[ : ] ] = values # save filtered data 
+            
+        # save column metadata
+        za.attrs[ 'dict_col_metadata' ] = dict_col_metadata
+        
+        # update zdf metadata
+        if name_col not in self._dict_zdf_metadata[ 'columns' ] :
+            self._dict_zdf_metadata[ 'columns' ].add( name_col )
+            self._save_metadata_( )
+        
+        # add data to the loaded data dictionary (object cache) if 'self._flag_load_data_after_adding_new_column' is True
+        if self._flag_load_data_after_adding_new_column :
+            self._loaded_data[ name_col ] = values
+    def __delitem__( self, name_col ) :
+        ''' # 2022-06-20 21:57:38 
+        remove the column from the memory and the object on disk
+        '''
+        if name_col in self : # if the given name_col is valid
+            # remove column from the memory
+            self.unload( name_col ) 
+            # remove the column from metadata
+            self._dict_zdf_metadata[ 'columns' ].remove( name_col )
+            self._save_metadata_( ) # update metadata
+            # delete the column from the disk ZarrDataFrame object
+            OS_Run( [ 'rm', '-rf', f"{self._path_folder_zdf}{name_col}/" ] )
+    def __contains__( self, name_col ) :
+        return name_col in self._dict_zdf_metadata[ 'columns' ]
+    def __iter__( self ) :
+        return iter( self._dict_zdf_metadata[ 'columns' ] )
+    def __repr__( self ) :
+        return f"<ZarrDataFrame object stored at {self._path_folder_zdf}\n\twith the following metadata: {self._dict_zdf_metadata}>"
+    @property
+    def columns( self ) :
+        ''' # 2022-06-21 15:58:41 
+        return available column names
+        '''
+        return self._dict_zdf_metadata[ 'columns' ]
+    @property
+    def df( self ) :
+        ''' # 2022-06-21 16:00:11 
+        return loaded data as a dataframe
+        '''
+        return pd.DataFrame( self._loaded_data )
+    def _save_metadata_( self ) :
+        ''' # 2022-06-20 21:44:42 
+        save metadata of the current ZarrDataFrame
+        '''
+        # convert 'columns' to list before saving attributes
+        temp = self._dict_zdf_metadata[ 'columns' ]
+        self._dict_zdf_metadata[ 'columns' ] = list( temp )
+        self._root.attrs[ 'dict_zdf_metadata' ] = self._dict_zdf_metadata # update metadata
+        self._dict_zdf_metadata[ 'columns' ] = temp # revert 'columns' to set
+    def get_categories( self, name_col ) :
+        """ # 2022-06-21 00:57:37 
+        for columns with categorical data, return categories. if the column contains non-categorical data, return an empty list
+        """
+        if name_col in self : # if the current column is valid
+            za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'r' ) # read data from the Zarr object
+            dict_col_metadata = za.attrs[ 'dict_col_metadata' ] # retrieve metadata of the current column
+            if dict_col_metadata[ 'flag_categorical' ] : # if the current column contains categorical data
+                return dict_col_metadata[ 'l_value_unique' ]
+            else :
+                return [ ]
+    def update( self, df ) :
+        """ # 2022-06-20 21:36:55 
+        update ZarrDataFrame with the given 'df'
+        """
+        # update each column
+        for name_col in df.columns.values :
+            self[ name_col ] = df[ name_col ]
+    def load( self, * l_name_col ) :
+        ''' # 2022-06-20 22:09:42 
+        load given column(s) into the memory
+        '''
+        for name_col in l_name_col :
+            if name_col not in self : # skip invalid column
+                continue
+            if name_col not in self._loaded_data : # if the data has not been loaded
+                self._loaded_data[ name_col ] = self[ name_col ]
+    def unload( self, * l_name_col ) :
+        """ # 2022-06-20 22:09:37 
+        remove the column from the memory
+        """
+        for name_col in l_name_col :
+            if name_col not in self : # skip invalid column
+                continue
+            if name_col in self._loaded_data :
+                del self._loaded_data[ name_col ]
+    def delete( self, * l_name_col ) :
+        ''' # 2022-06-20 22:09:31 
+        remove the column from the memory and from the disk
+        '''
+        for name_col in l_name_col :
+            if name_col not in self : # skip invalid column
+                continue
+            del self[ name_col ] # delete element from the current object
             
 ''' methods for creating RAMtx objects '''
-def __Merge_Sort_MTX_10X_and_Write_and_Index_Zarr__( za_mtx, za_mtx_index, * l_path_file_input, flag_ramtx_sorted_by_id_feature = True, flag_delete_input_file_upon_completion = False, dtype = np.int64, int_size_buffer_for_mtx_index = 1000 ) :
+def __Merge_Sort_MTX_10X_and_Write_and_Index_Zarr__( za_mtx, za_mtx_index, * l_path_file_input, flag_ramtx_sorted_by_id_feature = True, flag_delete_input_file_upon_completion = False, dtype_mtx = np.float64, dtype_mtx_index = np.float64, int_size_buffer_for_mtx_index = 1000 ) :
     """ # 2022-06-21 16:26:00 
     merge sort mtx files into a single mtx uncompressed file and index entries in the combined mtx file while writing the file
     
@@ -2245,7 +2243,7 @@ def __Merge_Sort_MTX_10X_and_Write_and_Index_Zarr__( za_mtx, za_mtx_index, * l_p
         flush matrix index data and update 'int_num_mtx_index_records_written' '''
         int_num_newly_added_mtx_index_records = len( l_mtx_index )
         if int_num_newly_added_mtx_index_records > 0 :
-            za_mtx_index[ int_num_mtx_index_records_written : int_num_mtx_index_records_written + int_num_newly_added_mtx_index_records ] = np.array( l_mtx_index, dtype = dtype ) # add data to the zarr data sink
+            za_mtx_index[ int_num_mtx_index_records_written : int_num_mtx_index_records_written + int_num_newly_added_mtx_index_records ] = np.array( l_mtx_index, dtype = dtype_mtx_index ) # add data to the zarr data sink
             int_num_mtx_index_records_written += int_num_newly_added_mtx_index_records # update 'int_num_mtx_index_records_written'
         return int_num_mtx_index_records_written
     def flush_matrix( int_num_mtx_records_written ) : 
@@ -2254,11 +2252,11 @@ def __Merge_Sort_MTX_10X_and_Write_and_Index_Zarr__( za_mtx, za_mtx_index, * l_p
         int_num_newly_added_mtx_records = len( l_mtx_record )
         if int_num_newly_added_mtx_records > 0 : # if there is valid record to be flushed
             # add records to mtx_index
-            l_mtx_index.append( [ int_entry_currently_being_written, int_num_mtx_records_written, int_num_mtx_records_written + int_num_newly_added_mtx_records ] ) # collect information required for indexing
+            l_mtx_index.append( [ int_num_mtx_records_written, int_num_mtx_records_written + int_num_newly_added_mtx_records ] ) # collect information required for indexing
             for int_entry in range( int_entry_currently_being_written + 1, int_entry_of_the_current_record ) : # for the int_entry that lack count data and does not have indexing data, put place holder values
-                l_mtx_index.append( [ int_entry, -1, -1 ] ) # put place holder values for int_entry lacking count data.
+                l_mtx_index.append( [ -1, -1 ] ) # put place holder values for int_entry lacking count data.
             
-            za_mtx[ int_num_mtx_records_written : int_num_mtx_records_written + int_num_newly_added_mtx_records ] = np.array( l_mtx_record, dtype = dtype ) # add data to the zarr data sink
+            za_mtx[ int_num_mtx_records_written : int_num_mtx_records_written + int_num_newly_added_mtx_records ] = np.array( l_mtx_record, dtype = dtype_mtx ) # add data to the zarr data sink
             int_num_mtx_records_written += int_num_newly_added_mtx_records
         return int_num_mtx_records_written
     
@@ -2285,7 +2283,7 @@ def __Merge_Sort_MTX_10X_and_Write_and_Index_Zarr__( za_mtx, za_mtx_index, * l_p
     if flag_delete_input_file_upon_completion and isinstance( l_path_file_input[ 0 ], str ) : # if paths are given as input files
         for path_file in l_path_file_input :
             os.remove( path_file )
-def Convert_MTX_10X_to_RAMtx( path_folder_mtx_10x_input, path_folder_ramtx_output, flag_ramtx_sorted_by_id_feature = True, int_num_threads = 15, int_max_num_entries_for_chunk = 10000000, int_max_num_files_for_each_merge_sort = 5, dtype = np.float64, int_num_of_records_in_a_chunk_zarr_matrix = 10000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, verbose = False, flag_debugging = False ) :
+def Convert_MTX_10X_to_RAMtx( path_folder_mtx_10x_input, path_folder_ramtx_output, flag_ramtx_sorted_by_id_feature = True, int_num_threads = 15, int_max_num_entries_for_chunk = 10000000, int_max_num_files_for_each_merge_sort = 5, dtype_mtx = np.float64, dtype_mtx_index = np.float64, int_num_of_records_in_a_chunk_zarr_matrix = 10000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, verbose = False, flag_debugging = False ) :
     ''' # 2022-06-21 12:44:42 
     sort and index a given 'path_folder_mtx_10x_input' containing a 10X matrix file, constructing a random read access matrix (RAMtx).
     'path_folder_mtx_10x_input' folder will be used as temporary folder
@@ -2306,10 +2304,12 @@ def Convert_MTX_10X_to_RAMtx( path_folder_mtx_10x_input, path_folder_ramtx_outpu
     'path_folder_ramtx_output' : an empty folder should be given.
     'flag_ramtx_sorted_by_id_feature' : if True, sort by 'id_feature'. if False, sort by 'id_cell'
     'int_max_num_files_for_each_merge_sort' : (default: 5) the maximun number of files that can be merged in a merge sort run. reducing this number will increase the number of threads that can be used for sorting but increase the number of iteration for iterative merge sorting. (3~10 will produce an ideal performance.)
-    'dtype' (default: np.float64), dtype of the output zarr array
+    'dtype_mtx' (default: np.float64), dtype of the output zarr array for storing matrix
+    'dtype_mtx_index' (default: np.float64) : dtype of the output zarr array for storing matrix indices
     'flag_debugging' : if True, does not delete temporary files
     'int_num_of_records_in_a_chunk_zarr_matrix' : chunk size for output zarr objects
     'int_num_of_entries_in_a_chunk_zarr_matrix_index' : chunk size for output zarr objects
+    
     '''
 
     path_file_flag = f"{path_folder_ramtx_output}ramtx.completed.flag"
@@ -2493,8 +2493,8 @@ def Convert_MTX_10X_to_RAMtx( path_folder_mtx_10x_input, path_folder_ramtx_outpu
         os.makedirs( path_folder_ramtx_output, exist_ok = True )
 
         # open a persistent zarray to store matrix and matrix index
-        za_mtx = zarr.open( f'{path_folder_ramtx_output}matrix.zarr', mode = 'w', shape = ( int_num_records, 3 ), chunks = ( int_num_of_records_in_a_chunk_zarr_matrix, 3 ), dtype = dtype )
-        za_mtx_index = zarr.open( f'{path_folder_ramtx_output}matrix.index.zarr', mode = 'w', shape = ( int_num_features if flag_ramtx_sorted_by_id_feature else int_num_barcodes, 3 ), chunks = ( int_num_of_entries_in_a_chunk_zarr_matrix_index, 3 ), dtype = np.float64 ) # max number of matrix index entries is 'int_num_records' of the input matrix. this will be resized # dtype of index will be np.float64, since javascript number primitives are actually float64
+        za_mtx = zarr.open( f'{path_folder_ramtx_output}matrix.zarr', mode = 'w', shape = ( int_num_records, 3 ), chunks = ( int_num_of_records_in_a_chunk_zarr_matrix, 3 ), dtype = dtype_mtx )
+        za_mtx_index = zarr.open( f'{path_folder_ramtx_output}matrix.index.zarr', mode = 'w', shape = ( int_num_features if flag_ramtx_sorted_by_id_feature else int_num_barcodes, 2 ), chunks = ( int_num_of_entries_in_a_chunk_zarr_matrix_index, 2 ), dtype = dtype_mtx_index ) # max number of matrix index entries is 'int_num_records' of the input matrix. this will be resized # dtype of index should be np.float64 to be compatible with Zarr.js, since Zarr.js currently does not support np.int64...
 
         # merge-sort the remaining files into the output zarr data sink and index the zarr
         __Merge_Sort_MTX_10X_and_Write_and_Index_Zarr__( za_mtx, za_mtx_index, * glob.glob( f"{path_temp}{int_number_of_recursive_merge_sort}.*.mtx.gz" ), flag_ramtx_sorted_by_id_feature = flag_ramtx_sorted_by_id_feature, flag_delete_input_file_upon_completion = False if flag_debugging else True, int_size_buffer_for_mtx_index = int_num_of_entries_in_a_chunk_zarr_matrix_index ) # matrix index buffer size is 'int_num_of_entries_in_a_chunk_zarr_matrix_index'
@@ -2543,7 +2543,7 @@ def Convert_MTX_10X_to_RAMtx( path_folder_mtx_10x_input, path_folder_ramtx_outpu
         ''' write a flag indicating the export has been completed '''
         with open( path_file_flag, 'w' ) as file :
             file.write( TIME_GET_timestamp( True ) )
-def Convert_MTX_10X_to_RamData( path_folder_mtx_10x_input, path_folder_ramdata_output, name_layer = 'raw', int_num_threads = 15, int_max_num_entries_for_chunk = 10000000, int_max_num_files_for_each_merge_sort = 5, dtype = np.float64, int_num_of_records_in_a_chunk_zarr_matrix = 10000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, flag_simultaneous_indexing_of_cell_and_barcode = True, verbose = False, flag_debugging = False ) :
+def Convert_MTX_10X_to_RamData( path_folder_mtx_10x_input, path_folder_ramdata_output, name_layer = 'raw', int_num_threads = 15, int_max_num_entries_for_chunk = 10000000, int_max_num_files_for_each_merge_sort = 5, dtype_mtx = np.float64, dtype_mtx_index = np.float64, int_num_of_records_in_a_chunk_zarr_matrix = 10000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, flag_simultaneous_indexing_of_cell_and_barcode = True, verbose = False, flag_debugging = False ) :
     """ # 2022-06-22 00:11:46 
     convert 10X count matrix data to the two RAMtx object, one sorted by features and the other sorted by barcodes, and construct a RamData data object on disk, backed by Zarr persistant arrays
 
@@ -2553,18 +2553,19 @@ def Convert_MTX_10X_to_RamData( path_folder_mtx_10x_input, path_folder_ramdata_o
     'path_folder_ramdata_output' an output directory of RamData
     'name_layer' : a name of the given data layer
     'int_num_threads' : the number of threads for multiprocessing
-    'dtype' (default: np.uint32), 'dtype_of_value' (default: None (auto-detect)) : numpy dtypes for pickle and feather outputs. choosing smaller format will decrease the size of the object on disk
+    'dtype_mtx' (default: np.float64), dtype of the output zarr array for storing matrix
+    'dtype_mtx_index' (default: np.float64) : dtype of the output zarr array for storing matrix indices
     'flag_simultaneous_indexing_of_cell_and_barcode' : if True, create cell-sorted RAMtx and feature-sorted RAMtx simultaneously using two worker processes with the half of given 'int_num_threads'. it is generally recommended to turn this feature on, since the last step of the merge-sort is always single-threaded.
     """
     # build barcode- and feature-sorted RAMtx objects
     path_folder_data = f"{path_folder_ramdata_output}{name_layer}/" # define directory of the output data
     if flag_simultaneous_indexing_of_cell_and_barcode :
-        l_process = list( mp.Process( target = Convert_MTX_10X_to_RAMtx, args = ( path_folder_mtx_10x_input, path_folder_ramtx_output, flag_ramtx_sorted_by_id_feature, int_num_threads_for_the_current_process, int_max_num_entries_for_chunk, int_max_num_files_for_each_merge_sort, dtype, int_num_of_records_in_a_chunk_zarr_matrix, int_num_of_entries_in_a_chunk_zarr_matrix_index, verbose, flag_debugging ) ) for path_folder_ramtx_output, flag_ramtx_sorted_by_id_feature, int_num_threads_for_the_current_process in zip( [ f"{path_folder_data}sorted_by_barcode/", f"{path_folder_data}sorted_by_feature/" ], [ False, True ], [ int( np.floor( int_num_threads / 2 ) ), int( np.ceil( int_num_threads / 2 ) ) ] ) )
+        l_process = list( mp.Process( target = Convert_MTX_10X_to_RAMtx, args = ( path_folder_mtx_10x_input, path_folder_ramtx_output, flag_ramtx_sorted_by_id_feature, int_num_threads_for_the_current_process, int_max_num_entries_for_chunk, int_max_num_files_for_each_merge_sort, dtype_mtx, dtype_mtx_index, int_num_of_records_in_a_chunk_zarr_matrix, int_num_of_entries_in_a_chunk_zarr_matrix_index, verbose, flag_debugging ) ) for path_folder_ramtx_output, flag_ramtx_sorted_by_id_feature, int_num_threads_for_the_current_process in zip( [ f"{path_folder_data}sorted_by_barcode/", f"{path_folder_data}sorted_by_feature/" ], [ False, True ], [ int( np.floor( int_num_threads / 2 ) ), int( np.ceil( int_num_threads / 2 ) ) ] ) )
         for p in l_process : p.start( )
         for p in l_process : p.join( )
     else :
-        Convert_MTX_10X_to_RAMtx( path_folder_mtx_10x_input, path_folder_ramtx_output = f"{path_folder_data}sorted_by_barcode/", flag_ramtx_sorted_by_id_feature = False, int_num_threads = int_num_threads, int_max_num_entries_for_chunk = int_max_num_entries_for_chunk, int_max_num_files_for_each_merge_sort = int_max_num_files_for_each_merge_sort, dtype = dtype, int_num_of_records_in_a_chunk_zarr_matrix = int_num_of_records_in_a_chunk_zarr_matrix, int_num_of_entries_in_a_chunk_zarr_matrix_index = int_num_of_entries_in_a_chunk_zarr_matrix_index, verbose = verbose, flag_debugging = flag_debugging )
-        Convert_MTX_10X_to_RAMtx( path_folder_mtx_10x_input, path_folder_ramtx_output = f"{path_folder_data}sorted_by_feature/", flag_ramtx_sorted_by_id_feature = True, int_num_threads = int_num_threads, int_max_num_entries_for_chunk = int_max_num_entries_for_chunk, int_max_num_files_for_each_merge_sort = int_max_num_files_for_each_merge_sort, dtype = dtype, int_num_of_records_in_a_chunk_zarr_matrix = int_num_of_records_in_a_chunk_zarr_matrix, int_num_of_entries_in_a_chunk_zarr_matrix_index = int_num_of_entries_in_a_chunk_zarr_matrix_index, verbose = verbose, flag_debugging = flag_debugging )
+        Convert_MTX_10X_to_RAMtx( path_folder_mtx_10x_input, path_folder_ramtx_output = f"{path_folder_data}sorted_by_barcode/", flag_ramtx_sorted_by_id_feature = False, int_num_threads = int_num_threads, int_max_num_entries_for_chunk = int_max_num_entries_for_chunk, int_max_num_files_for_each_merge_sort = int_max_num_files_for_each_merge_sort, dtype_mtx = dtype_mtx, dtype_mtx_index = dtype_mtx_index, int_num_of_records_in_a_chunk_zarr_matrix = int_num_of_records_in_a_chunk_zarr_matrix, int_num_of_entries_in_a_chunk_zarr_matrix_index = int_num_of_entries_in_a_chunk_zarr_matrix_index, verbose = verbose, flag_debugging = flag_debugging )
+        Convert_MTX_10X_to_RAMtx( path_folder_mtx_10x_input, path_folder_ramtx_output = f"{path_folder_data}sorted_by_feature/", flag_ramtx_sorted_by_id_feature = True, int_num_threads = int_num_threads, int_max_num_entries_for_chunk = int_max_num_entries_for_chunk, int_max_num_files_for_each_merge_sort = int_max_num_files_for_each_merge_sort, dtype_mtx = dtype_mtx, dtype_mtx_index = dtype_mtx_index, int_num_of_records_in_a_chunk_zarr_matrix = int_num_of_records_in_a_chunk_zarr_matrix, int_num_of_entries_in_a_chunk_zarr_matrix_index = int_num_of_entries_in_a_chunk_zarr_matrix_index, verbose = verbose, flag_debugging = flag_debugging )
 
     # copy features/barcode.tsv.gz random access files for the web (stacked base64 encoded tsv.gz files)
     # copy features/barcode string representation zarr objects
@@ -2587,7 +2588,234 @@ def Convert_MTX_10X_to_RamData( path_folder_mtx_10x_input, path_folder_ramdata_o
         'layers' : [ name_layer ],
         'version' : _version_,
     }
+
+''' a class for accessing Zarr-backed count matrix data (RAMtx, Random-access matrix) '''
+class RAMtx( ) :
+    """ # 2022-06-23 23:49:05 
+    This class represent a random-access mtx format for memory-efficient exploration of extremely large single-cell transcriptomics/genomics data.
+    This class use a count matrix data stored in a random read-access compatible format, called RAMtx, enabling exploration of a count matrix with hundreds of millions cells with hundreds of millions of features.
+    Also, the RAMtx format is supports multi-processing, and provide convenient interface for parallel processing of single-cell data
+    Therefore, for exploration of count matrix produced from 'scarab count', which produces dozens of millions of features extracted from both coding and non coding regions, this class provides fast front-end application for exploration of exhaustive data generated from 'scarab count'
+    
+    arguments:
+    'path_folder_ramtx' : a folder containing RAMtx object
+    'ba_filter_features' : a bitarray filter object for features. active element is marked by 1 and inactive element is marked by 0
+    'ba_filter_barcodes' : a bitarray filter object for barcodes. active element is marked by 1 and inactive element is marked by 0
+    'dtype_of_feature_and_barcode_indices' : dtype of feature/barcode indices 
+    'dtype_of_values' : dtype of values. 
+    'int_num_cpus' : the number of processes that will be used for random accessing of the data
+    
+    """
+    def __init__( self, path_folder_ramtx, flag_ramtx_sorted_by_id_feature = True, ba_filter_features = None, ba_filter_barcodes = None, dtype_of_feature_and_barcode_indices = np.int32, dtype_of_values = np.float64, int_num_cpus = 1, verbose = False, flag_debugging = False ) :
+        # read metadata
+        self._root = zarr.open( path_folder_ramtx, 'a' )
+        dict_ramtx_metadata = self._root.attrs[ 'dict_ramtx_metadata' ]
+        self._dict_ramtx_metadata = dict_ramtx_metadata # set the metadata of the sort, index and export settings
+        
+        # parse the metadata of the RAMtx object
+        self._int_num_features, self._int_num_barcodes, self._int_num_records = self._dict_ramtx_metadata[ 'int_num_features' ], self._dict_ramtx_metadata[ 'int_num_barcodes' ], self._dict_ramtx_metadata[ 'int_num_records' ]
+        
+        # set attributes 
+        self._dtype_of_feature_and_barcode_indices = dtype_of_feature_and_barcode_indices
+        self._dtype_of_values = dtype_of_values
+        self._path_folder_ramtx = path_folder_ramtx
+        self.verbose = verbose 
+        self.flag_debugging = flag_debugging
+        self.int_num_cpus = int_num_cpus
+        # set filters
+        self.ba_filter_features = ba_filter_features
+        self.ba_filter_barcodes = ba_filter_barcodes
+        
+        # open Zarr object containing matrix and matrix indices
+        self._za_mtx_index = zarr.open( f'{self._path_folder_ramtx}matrix.index.zarr', 'r' )
+        self._za_mtx = zarr.open( f'{self._path_folder_ramtx}matrix.zarr', 'r' )
+    def __repr__( self ) :
+        return f"<RAMtx object containing {self._int_num_records} records of {self._int_num_features} features X {self._int_num_barcodes} barcodes\n\tRAMtx path: {self._path_folder_ramtx}>"
+    @property
+    def ba_filter_features( self ) :
+        ''' # 2022-06-23 17:05:55 
+        returns 'ba_filter'
+        '''
+        return self._ba_filter_features
+    @ba_filter_features.setter
+    def ba_filter_features( self, ba_filter ) :
+        """ # 2022-06-23 17:06:36 
+        check whether the filter is valid
+        """
+        if ba_filter is not None :
+            assert len( ba_filter ) == self._int_num_features
+        self._ba_filter_features = ba_filter
+    @property
+    def ba_filter_barcodes( self ) :
+        ''' # 2022-06-23 17:18:56 
+        returns 'ba_filter'
+        '''
+        return self._ba_filter_barcodes
+    @ba_filter_barcodes.setter
+    def ba_filter_barcodes( self, ba_filter ) :
+        """ # 2022-06-23 17:19:00 
+        check whether the filter is valid
+        """
+        if ba_filter is not None :
+            assert len( ba_filter ) == self._int_num_barcodes
+        self._ba_filter_barcodes = ba_filter
+    @property
+    def flag_ramtx_sorted_by_id_feature( self ) :
+        ''' # 2022-06-23 09:06:51 
+        retrieve 'flag_ramtx_sorted_by_id_feature' setting from the RAMtx metadata
+        '''
+        return self._dict_ramtx_metadata[ 'flag_ramtx_sorted_by_id_feature' ]
+    @property
+    def len_indexed_axis( self ) :
+        ''' # 2022-06-23 09:08:44 
+        retrieve number of elements of the indexed axis
+        '''
+        return self._int_num_features if self.flag_ramtx_sorted_by_id_feature else self._int_num_barcodes
+    @property
+    def ba_filter_indexed_axis( self ) :
+        ''' # 2022-06-23 09:08:44 
+        retrieve filter of the indexed axis
+        '''
+        return self.ba_filter_features if self.flag_ramtx_sorted_by_id_feature else self.ba_filter_barcodes
+    def __contains__( self, x ) -> bool :
+        ''' # 2022-06-23 09:13:31 
+        check whether an integer representation of indexed entry is available in the index. if filter is active, also check whether the entry is active '''
+        return ( 0 <= x < self.len_indexed_axis ) and ( self.ba_filter_indexed_axis is None or self.ba_filter_indexed_axis[ x ] ) # x should be in valid range, and if it is, check whether x is an active element in the filter (if filter has been set)
+    def __iter__( self ) :
+        ''' # 2022-06-23 09:13:46 
+        yield each entry in the index upon iteration. if filter is active, ignore inactive elements '''
+        if self.ba_filter_indexed_axis is None : # if filter is not set, iterate over all elements
+            return iter( range( self.len_indexed_axis ) )
+        else : # if filter is active, yield indices of active elements only
+            return iter( bk.BA.Retrieve_Integer_Indices( self.ba_filter_indexed_axis ) )
+    def __getitem__( self, l_int_entry ) : 
+        """ # 2022-06-23 11:47:38 
+        Retrieve data from RAMtx as lists of arrays, each array contains data of a single 'int_entry'
+        
+        Returns:
+        l_arr_int_feature, l_arr_int_barcode, l_arr_value
+        """
+        # initialize the output data structures
+        l_arr_int_feature, l_arr_int_barcode, l_arr_value = [ ], [ ], [ ]
+        
+        # wrap in a list if a single entry was queried
+        if isinstance( l_int_entry, ( int, np.int64, np.int32, np.int16, np.int8 ) ) : # check whether the given entry is an integer
+            l_int_entry = [ l_int_entry ]
+        ''' retrieve filters '''
+        flag_ramtx_sorted_by_id_feature = self.flag_ramtx_sorted_by_id_feature
+        ba_filter_indexed_axis, ba_filter_not_indexed_axis = ( self.ba_filter_features, self.ba_filter_barcodes ) if flag_ramtx_sorted_by_id_feature else ( self.ba_filter_barcodes, self.ba_filter_features )
             
+        ''' filter 'int_entry', if a filter has been set '''
+        if ba_filter_indexed_axis is not None :
+            l_int_entry = list( int_entry for int_entry in l_int_entry if ba_filter_indexed_axis[ int_entry ] )
+        # if no valid entries are available, return an empty result
+        if len( l_int_entry ) == 0 :
+            return l_arr_int_feature, l_arr_int_barcode, l_arr_value 
+            
+        ''' sort 'int_entry' so that closely located entries can be retrieved together '''
+        # sort indices of entries so that the data access can occur in the same direction across threads
+        int_num_entries = len( l_int_entry )
+        if int_num_entries > 30 : # use numpy sort function only when there are sufficiently large number of indices of entries to be sorted
+            l_int_entry = np.sort( l_int_entry )
+        else :
+            l_int_entry = sorted( l_int_entry )
+        
+        """
+        retrieve data from RAMtx data structure
+        """
+        # retrieve flags for dtype conversions
+        flag_change_dtype_mtx_index = self._za_mtx_index.dtype != np.int64
+        flag_change_dtype_of_feature_and_barcode_indices = self._za_mtx.dtype != self._dtype_of_feature_and_barcode_indices
+        flag_change_dtype_of_values = self._za_mtx.dtype != self._dtype_of_values
+        
+        def __retrieve_data_from_ramtx_as_a_worker__( pipe_from_main_thread = None, pipe_to_main_thread = None, flag_as_a_worker = True ) :
+            """ # 2022-06-23 14:12:12 
+            retrieve data as a worker in a worker process or in the main processs (in single-process mode)
+            """
+            # handle inputs
+            l_int_entry = pipe_from_main_thread.recv( ) if flag_as_a_worker else pipe_from_main_thread  # receive work if 'flag_as_a_worker' is True or use 'pipe_from_main_thread' as a list of works
+            # for each int_entry, retrieve data and collect records
+            l_arr_int_feature, l_arr_int_barcode, l_arr_value = [ ], [ ], [ ]
+            
+            # retrieve mtx_index data and remove invalid entries
+            arr_index = self._za_mtx_index.get_orthogonal_selection( l_int_entry ) # retrieve mtx_index data 
+            if flag_change_dtype_mtx_index : # convert dtype of retrieved mtx_index data
+                arr_index = arr_index.astype( np.int64 )
+            arr_index = arr_index[ arr_index[ :, 0 ] < arr_index[ :, 1 ] ] # drop 'int_entry' lacking count data (when start and end index is the same, the 'int_entry' does not contain any data)
+            for st, en in arr_index : # iterate through each entry
+                arr_int_feature, arr_int_barcode, arr_value = self._za_mtx[ st : en ].T # retrieve data
+                
+                ''' if a filter for not-indexed axis has been set, apply the filter to the retrieved records '''
+                if ba_filter_not_indexed_axis is not None :
+                    arr_int_entry_not_indexed = arr_int_barcode if flag_ramtx_sorted_by_id_feature else arr_int_feature # retrieve entries of the axis that were not indexed
+                    arr_mask = np.zeros( len( arr_int_entry_not_indexed ), dtype = bool ) # initialize the mask for filtering records
+                    flag_valid_data = False # initialize the flag for checking at least one record is available after filtering
+                    for i, int_entry_not_indexed in enumerate( arr_int_entry_not_indexed ) : # iterate through each record
+                        if ba_filter_not_indexed_axis[ int_entry_not_indexed ] : # check whether the current int_entry is included in the filter
+                            arr_mask[ i ] = True # include the record
+                            flag_valid_data = True # set a flag indicating the current int_entry contains a valid data
+                    # if no valid data exists (all data were filtered out), continue to the next 'int_entry'
+                    if not flag_valid_data :
+                        continue
+                        
+                    # filter records using the mask
+                    arr_int_feature = arr_int_feature[ arr_mask ]
+                    arr_int_barcode = arr_int_barcode[ arr_mask ]
+                    arr_value = arr_value[ arr_mask ]
+                
+                ''' convert dtypes of retrieved data '''
+                if flag_change_dtype_of_feature_and_barcode_indices :
+                    arr_int_feature = arr_int_feature.astype( self._dtype_of_feature_and_barcode_indices )
+                    arr_int_barcode = arr_int_barcode.astype( self._dtype_of_feature_and_barcode_indices )
+                if flag_change_dtype_of_values :
+                    arr_value = arr_value.astype( self._dtype_of_values )
+                
+                ''' append the retrieved data to the output results '''
+                l_arr_int_feature.append( arr_int_feature )
+                l_arr_int_barcode.append( arr_int_barcode )
+                l_arr_value.append( arr_value )
+            
+            ''' return the retrieved data '''
+            # compose a output value
+            l_arrays_mtx = ( l_arr_int_feature, l_arr_int_barcode, l_arr_value )
+            # if 'flag_as_a_worker' is True, send the result or return the result
+            if flag_as_a_worker :
+                pipe_to_main_thread.send( l_arrays_mtx ) # send unzipped result back
+            else :
+                return l_arrays_mtx
+        
+        # load data using multiprocessing
+        if self.int_num_cpus > 1 and int_num_entries > 1 : # enter multi-processing mode only more than one entry should be retrieved
+            # initialize workers
+            int_n_workers = min( self.int_num_cpus, int_num_entries ) # one thread for distributing records. Minimum numbers of workers for sorting is 1 # the number of workers should not be larger than the number of entries to retrieve.
+            l_pipes_from_main_process_to_worker = list( mp.Pipe( ) for _ in range( self.int_num_cpus ) ) # create pipes for sending records to workers # add process for receivers
+            l_pipes_from_worker_to_main_process = list( mp.Pipe( ) for _ in range( self.int_num_cpus ) ) # create pipes for collecting results from workers
+            l_processes = list( mp.Process( target = __retrieve_data_from_ramtx_as_a_worker__, args = ( l_pipes_from_main_process_to_worker[ index_worker ][ 1 ], l_pipes_from_worker_to_main_process[ index_worker ][ 0 ] ) ) for index_worker in range( int_n_workers ) ) # add a process for distributing fastq records
+            for p in l_processes :
+                p.start( )
+            # distribute works
+            for index_worker, l_int_entry_for_each_worker in enumerate( LIST_Split( l_int_entry, int_n_workers ) ) : # continuous or distributed ? what would be more efficient?
+                l_pipes_from_main_process_to_worker[ index_worker ][ 0 ].send( l_int_entry_for_each_worker )
+            # wait until all works are completed
+            int_num_workers_completed = 0
+            while int_num_workers_completed < int_n_workers : # until all works are completed
+                for _, pipe in l_pipes_from_worker_to_main_process :
+                    if pipe.poll( ) :
+                        l_arrays_mtx = pipe.recv( )
+                        l_arr_int_feature.extend( l_arrays_mtx[ 0 ] )
+                        l_arr_int_barcode.extend( l_arrays_mtx[ 1 ] )
+                        l_arr_value.extend( l_arrays_mtx[ 2 ] )
+                        del l_arrays_mtx
+                        int_num_workers_completed += 1
+                time.sleep( 0.1 )
+            # dismiss workers once all works are completed
+            for p in l_processes :
+                p.join( )
+        else : # single thread mode
+            l_arr_int_feature, l_arr_int_barcode, l_arr_value = __retrieve_data_from_ramtx_as_a_worker__( l_int_entry, flag_as_a_worker = False )
+        
+        return l_arr_int_feature, l_arr_int_barcode, l_arr_value # returns lists of arrays, each array contains data of a single 'int_entry'
+
 ''' # not implemented in zarr '''
 def Convert_Scanpy_AnnData_to_RAMtx( adata, path_folder_ramtx_output, flag_ramtx_sorted_by_id_feature = True, file_format = 'mtx_gzipped', int_num_threads = 15, verbose = False, flag_overwrite_existing_files = False, flag_sort_and_index_again = False, flag_debugging = False, flag_covert_dense_matrix = False, int_num_digits_after_floating_point_for_export = 5, flag_output_value_is_float = True, dtype_of_row_and_col_indices = np.uint32, dtype_of_value = None ) :
     ''' # 2022-05-25 22:50:27 
@@ -3044,377 +3272,7 @@ def Convert_df_count_to_RAMtx( path_file_df_count, path_folder_ramtx_output, fla
     with open( f"{path_folder_ramtx_output}ramtx.metadata.json", 'w' ) as file :
         json.dump( dict_metadata, file )
 
-''' define classes and associated methods of RamData '''
-class RAMtx( ) :
-    """ # 2022-06-01 15:35:20 
-    This class represent a random read-access mtx format for memory-efficient exploration single-cell transcriptomics/genomics data.
-    This class use a count matrix data stored in a random read-access compatible format, called RAMtx, enabling exploration of a count matrix with tens of million cells with tens of millions of features.
-    Also, the RAMtx format is optimized for multi-processing, and can be read by multiple processes simultaneously.
-    Therefore, for exploration of count matrix produced from scarab short_read analyzer, which produces several millions of features extracted from both coding and non coding regions, this class provides fast front-end application for exploration of exhaustive data generated from scarab 'short_read'
-    
-    arguments:
-    'int_num_threads_for_ramdom_accessing' : the number of threads that can be used for random access of the data
-    'int_num_entries_to_randomly_access_during_warm_up_upon_initializing' : default: 1000 entries. randomly access certain number of entries using multiple threads upon initializing. if 0 or negative integer is given, skip the warm-up step.
-    'file_format' : one of [ 
-                                'mtx_gzipped' : 10X matrix format. (pros) the RAMtx can be read by other program that can read 10X matrix file, small disk size (cons) very slow write speed, slow read speed
-                 (Default)  --> 'pickle' : uncompressed python pickle format. (pros) very fast write speed, very fast read speed. (cons) 5~10 times larger disk usage, python-specific data format
-                                'pickle_gzipped' : gzipped python pickle format. (pros) fast read speed. disk usage is 20~50% smaller than 10X matrix file. the most efficient storage format. (cons) very slow write speed, python-specific data format
-                                'feather' : uncompressed Apache Arrow feather storage format for DataFrames. (pros) very fast write speed, fast read speed, language-agnostic (R, Python, Julia, JS, etc.). (cons) ~2 times larger disk usage
-                                'feather_lz4' : LZ4 compressed (a default compression of 'feather') Apache Arrow feather storage format for DataFrames. (pros) very fast write speed, fast read speed, language-agnostic (R, Python, Julia, JS, etc.). (cons) ~2 times larger disk usage.
-                            ]
-    'flag_return_arrays_of_int_feature_int_barcode_value_from_getitem_calls_and_access_items_using_integer_indices_only' : (Default: False) if True, __getitem__ call will return three arrays containing int_barcode, int_feature, and data values, respectively. if False, an RAMtx object will return an AnnData object with features and barcodes information. This will require a RAMtx dataset to load both lists of features and barcode informations on memory, which will use an additional space of memory. If the lists of features and barcodes are already loaded, setting this flag to 'True' will further reduce the memory footprint of the RAMtx object. Also, if 'False' a string representing entries (either barcodes or features, depending on which entry is used to index the RAMtx object) can be used to access items in the RAMtx object though the __getitem__ function or using a large bracket [ ]. However, this will require loading an entire list of the string representations of the indexed entries, which takes several GB of memorys for very large datasets with dozens of million features/barcodes. Therefore, if the list of string representations of the indexed entries are already loaded or not required to utilize the item returned by a RAMtx object, setting this flag to 'True' allows each item can be access using an integer index of the indexed entry, and further reduce the memory footprint of the RAMtx object.
-    'dtype_of_row_and_col_indices' (default: np.uint32), 'dtype_of_value' (default: None (auto-detect)) : numpy dtypes for pickle and feather outputs. choosing smaller format will decrease the size of the object on disk.
-    """
-    def __init__( self, path_folder_mtx, path_folder_mtx_new = None, flag_ramtx_sorted_by_id_feature = True, file_format = 'feather_lz4', flag_return_arrays_of_int_feature_int_barcode_value_from_getitem_calls_and_access_items_using_integer_indices_only = False, int_num_threads_for_ramdom_accessing = 1, int_num_entries_to_randomly_access_during_warm_up_upon_initializing = 1000, int_num_cpus = 15, int_max_num_entries_for_chunk = 10000000, verbose = False, flag_debugging = False, int_max_num_files_for_each_merge_sort = 5, dtype_of_row_and_col_indices = None, dtype_of_value = None, flag_overwrite_existing_files = False, flag_sort_and_index_again = False ) :
-        # handle input
-        if path_folder_mtx_new is None :
-            path_folder_mtx_new = path_folder_mtx
-        # convert the input matrix into RAMtx if it is not the RAMtx object
-        dict_metadata = Convert_MTX_10X_to_RAMtx( path_folder_mtx, path_folder_mtx_new, flag_ramtx_sorted_by_id_feature = flag_ramtx_sorted_by_id_feature, int_num_threads = int_num_cpus, int_max_num_entries_for_chunk = int_max_num_entries_for_chunk, verbose = verbose, int_max_num_files_for_each_merge_sort = int_max_num_files_for_each_merge_sort, flag_overwrite_existing_files = flag_overwrite_existing_files, flag_sort_and_index_again = flag_sort_and_index_again ) # sort the input matrix file
-        self._dict_metadata = dict_metadata # set the metadata of the sort, index and export settings
-        # parse the metadata of the RAMtx object
-        self.flag_ramtx_sorted_by_id_feature = self._dict_metadata[ 'flag_ramtx_sorted_by_id_feature' ]
-        self._int_num_features, self._int_num_barcodes, self._int_num_records = self._dict_metadata[ 'int_num_features' ], self._dict_metadata[ 'int_num_barcodes' ], self._dict_metadata[ 'int_num_records' ]
-        self.file_format_current = file_format
-        self._l_file_format = self._dict_metadata[ 'file_format' ] # retrieve the list of available file_format of the current RAMtx object
-        if self.file_format_current not in self._l_file_format : # if the given file_format is invalid, raise an error
-            if len( self._l_file_format ) > 0 :
-                self.file_format_current = self._l_file_format[ 0 ] # use the first file_format 
-            else :
-                raise FileNotFoundError( f"the given RAMtx format {self.file_format_current} is unavailable in the current RAMtx object" )
-        
-        ''' set the datatype of stored values based on RAMtx setting for 'mtx_gzipped' format '''
-        if self.file_format_current == 'mtx_gzipped' :
-            dtype_of_value = np.float64 if 'flag_output_value_is_float' in self._dict_metadata else np.int64
-        
-        ''' retrieve RAMtx format-specific import settings '''
-        self._str_ext, self._str_ext_index, self._func_processed_bytes_to_arrays_mtx = _get_func_processed_bytes_to_arrays_mtx_and_other_settings_based_on_file_format( self.file_format_current, dtype_of_row_and_col_indices, dtype_of_value )
 
-        # set attributes and settings
-        self._dtype_of_row_and_col_indices = dtype_of_row_and_col_indices
-        self.path_folder_mtx = path_folder_mtx_new
-        self.verbose = verbose 
-        self.flag_debugging = flag_debugging
-        self.int_num_cpus = int_num_cpus
-        self.int_num_threads_for_ramdom_accessing = int_num_threads_for_ramdom_accessing
-        self.__flag_return_arrays_of_int_feature_int_barcode_value_from_getitem_calls_and_access_items_using_integer_indices_only = flag_return_arrays_of_int_feature_int_barcode_value_from_getitem_calls_and_access_items_using_integer_indices_only # this setting cannot be changed once RAMtx data object has been initialized
-        # read index
-        self._df_index = pd.read_csv( f'{self.path_folder_mtx}matrix.{self._str_ext}.{self._str_ext_index}', sep = '\t' )
-        self._df_index[ 'int_num_bytes' ] = self._df_index.int_pos_end - self._df_index.int_pos_start # calculate the number of bytes of each chunk
-        self._arr_data_df_index = self._df_index[ [ 'int_pos_start', 'int_pos_end' ] ].values # retrieve the index data as an array
-        self._int_num_entry_indexed = len( self._df_index ) # retrieve the number of indexed entries
-        # if 'flag_return_arrays_of_int_feature_int_barcode_value_from_getitem_calls_and_access_items_using_integer_indices_only' is False, read barcodes and features, and construct an AnnData object with an empty count data
-        if not flag_return_arrays_of_int_feature_int_barcode_value_from_getitem_calls_and_access_items_using_integer_indices_only :
-            # read feature
-            df_feature = pd.read_csv( f'{self.path_folder_mtx}features.tsv.gz', sep = '\t', header = None )
-            df_feature.columns = [ 'id_feature', 'feature', 'feature_type' ] + list( df_feature.columns.values[ 3 : ] )
-            df_feature.set_index( 'feature', inplace = True ) # assumes 'feature' is unique
-            # read barcode
-            df_barcode = pd.read_csv( f'{self.path_folder_mtx}barcodes.tsv.gz', sep = '\t', header = None )
-            df_barcode.columns = [ 'barcode' ] + list( df_barcode.columns.values[ 1 : ] )
-            df_barcode.set_index( 'barcode', inplace = True )
-            # initialize the anndata that will contain fetched data from RAMtx data structure
-            self.adata = anndata.AnnData( obs = df_barcode, var = df_feature )
-            
-            # set the index of the df_index using the string representation of the indexed entries
-            arr_entry = ( df_feature if self.flag_ramtx_sorted_by_id_feature else df_barcode ).index.values
-            self._df_index.index = list( arr_entry[ i ] for i in ( self._df_index.index_entry.values - 1 ) ) # map string representation of indexed entries to the integer index of the entry in the list of entries(barcodes/features) # 'index_entry' 1>0 coordinate # handle the case where some entries are missing in the index (the data of the entries does not exist in the matrix)
-            
-            del df_feature, df_barcode, arr_entry # remove temporary objects
-        else :
-            self._df_index.index = list( i for i in ( self._df_index.index_entry.values - 1 ) ) # use the integer representation of the indexed entries # 'index_entry' 1>0 coordinate # handle the case where some entries are missing in the index (the data of the entries does not exist in the matrix)
-            self.adata = None
-        # build mapping between entry and index_entry
-        self._dict_entry_to_index_entry = dict( ( e, i ) for i, e in enumerate( self._df_index.index.values ) )
-
-        # if 'flag_warm_up_upon_initializing' is True, warm up upon initialization
-        if int_num_entries_to_randomly_access_during_warm_up_upon_initializing > 0 :
-            self._warm_up_( int_num_entries_to_randomly_access = int( int_num_entries_to_randomly_access_during_warm_up_upon_initializing ) )
-    def _Retrieve_data_from_ramtx_( self, l_entry ) :
-        """ # 2022-05-22 10:57:57 
-        Retrieve data from RAMtx as bytes
-        index should be an a string or an iterable
-        
-        Returns:
-        bytes of the data belongining to 'l_entry'
-        """
-        # handle the case when only a single entry was submitted
-        if isinstance( l_entry, ( str, int, np.int64 ) ) :
-            l_entry = [ l_entry ]
-        # retrieve index of the given entries (ignore entries that are note present in the mapping)
-        l_index_entry = list( self._dict_entry_to_index_entry[ entry ] for entry in l_entry if entry in self._dict_entry_to_index_entry ) # map a string representation/integer index of indexed entries to the integer index of the entry in the array
-        # sort indices of entries so that the data access can occur in the same direction across threads
-        int_num_entries = len( l_index_entry )
-        if int_num_entries > 30 : # use numpy sort function only when there are sufficiently large number of indices of entries to be sorted
-            l_index_entry = np.sort( l_index_entry )
-        else :
-            l_index_entry = sorted( l_index_entry )
-        
-        """
-        retrieve byte content from RAMtx data structure
-        """
-        def __retrieve_data_from_ramtx_as_a_worker__( pipe_from_main_thread = None, pipe_to_main_thread = None, flag_as_a_worker = True ) :
-            with open( f'{self.path_folder_mtx}matrix.{self._str_ext}', 'rb+' ) as file : # open indexed matrix file
-                l_index_entry = pipe_from_main_thread.recv( ) if flag_as_a_worker else pipe_from_main_thread  # receive work if 'flag_as_a_worker' is True or use 'pipe_from_main_thread' as a list of works
-                # for each index_entry, retrieve data and collect records
-                l_arr_int_feature, l_arr_int_barcode, l_arr_value = [ ], [ ], [ ]
-                for index_entry in l_index_entry :
-                    pos_start_block, pos_end_block = self._arr_data_df_index[ index_entry ]
-                    file.seek( pos_start_block )
-                    arr_int_feature, arr_int_barcode, arr_value = self._func_processed_bytes_to_arrays_mtx( file.read( pos_end_block - pos_start_block ) )
-                    l_arr_int_feature.append( arr_int_feature )
-                    l_arr_int_barcode.append( arr_int_barcode )
-                    l_arr_value.append( arr_value )
-                l_arrays_mtx = ( l_arr_int_feature, l_arr_int_barcode, l_arr_value )
-                # if 'flag_as_a_worker' is True, send the result or return the result
-                if flag_as_a_worker :
-                    pipe_to_main_thread.send( l_arrays_mtx ) # send unzipped result back
-                else :
-                    return l_arrays_mtx
-        
-        if self.int_num_threads_for_ramdom_accessing > 1 and int_num_entries > 1 : # enter multithreading mode only more than one entry should be retrieved
-            # initialize workers
-            int_n_workers = min( self.int_num_threads_for_ramdom_accessing, int_num_entries ) # one thread for distributing records. Minimum numbers of workers for sorting is 1 # the number of workers should not be larger than the number of entries to retrieve.
-            l_pipes_from_main_process_to_worker = list( mp.Pipe( ) for _ in range( self.int_num_threads_for_ramdom_accessing ) ) # create pipes for sending records to workers # add process for receivers
-            l_pipes_from_worker_to_main_process = list( mp.Pipe( ) for _ in range( self.int_num_threads_for_ramdom_accessing ) ) # create pipes for collecting results from workers
-            l_processes = list( mp.Process( target = __retrieve_data_from_ramtx_as_a_worker__, args = ( l_pipes_from_main_process_to_worker[ index_worker ][ 1 ], l_pipes_from_worker_to_main_process[ index_worker ][ 0 ] ) ) for index_worker in range( int_n_workers ) ) # add a process for distributing fastq records
-            for p in l_processes :
-                p.start( )
-            # distribute works
-            for index_worker, l_index_entry_for_each_worker in enumerate( LIST_Split( l_index_entry, int_n_workers ) ) : # continuous or distributed ? what would be more efficient?
-                l_pipes_from_main_process_to_worker[ index_worker ][ 0 ].send( l_index_entry_for_each_worker )
-            # wait until all works are completed
-            int_num_workers_completed = 0
-            l_arr_int_feature, l_arr_int_barcode, l_arr_value = [ ], [ ], [ ]
-            while int_num_workers_completed < int_n_workers : # until all works are completed
-                for _, pipe in l_pipes_from_worker_to_main_process :
-                    if pipe.poll( ) :
-                        l_arrays_mtx = pipe.recv( )
-                        l_arr_int_feature.extend( l_arrays_mtx[ 0 ] )
-                        l_arr_int_barcode.extend( l_arrays_mtx[ 1 ] )
-                        l_arr_value.extend( l_arrays_mtx[ 2 ] )
-                        del l_arrays_mtx
-                        int_num_workers_completed += 1
-                time.sleep( 0.1 )
-            # dismiss workers once all works are completed
-            for p in l_processes :
-                p.join( )
-        else : # single thread mode
-            l_arr_int_feature, l_arr_int_barcode, l_arr_value = __retrieve_data_from_ramtx_as_a_worker__( l_index_entry, flag_as_a_worker = False )
-        
-        # parse the retrieved results, and combine the results
-        arr_int_feature = np.concatenate( l_arr_int_feature )
-        arr_int_barcode = np.concatenate( l_arr_int_barcode )
-        arr_value = np.concatenate( l_arr_value )
-        return arr_int_feature, arr_int_barcode, arr_value
-    def __getitem__( self, l_entry ) : 
-        # retrieve data from RAMtx as a dataframe, and parse them as arrays, and convert 1-based indices to 0-based indices
-        arr_int_feature, arr_int_barcode, arr_value = self._Retrieve_data_from_ramtx_( l_entry )
-        if self.__flag_return_arrays_of_int_feature_int_barcode_value_from_getitem_calls_and_access_items_using_integer_indices_only : # return the sparse matrix directly to increase the efficiency and reduce the memory footprint of the RAMtx object.
-            return arr_int_feature, arr_int_barcode, arr_value
-        else : 
-            # compose a sparse matrix using the arrays
-            sp_csr_data = scipy.sparse.csr_matrix( scipy.sparse.coo_matrix( ( arr_value, ( arr_int_barcode, arr_int_feature ) ), shape = ( self._int_num_barcodes, self._int_num_features ) ) ) # in anndata.X, row = barcode, column = feature
-            self.adata.X = sp_csr_data # update 'adata' with the fetched data
-            return self.adata # return the anndata containing fetched data
-    def __repr__( self ) :
-        return f"RAMtx object containing {self._int_num_records} records of {self._int_num_features} features X {self._int_num_barcodes} barcodes\n\tRAMtx path: {self.path_folder_mtx}\n\tcurrent settings: int_num_threads_for_ramdom_accessing = {self.int_num_threads_for_ramdom_accessing}, flag_return_arrays_of_int_feature_int_barcode_value_from_getitem_calls_and_access_items_using_integer_indices_only = {self.__flag_return_arrays_of_int_feature_int_barcode_value_from_getitem_calls_and_access_items_using_integer_indices_only}"
-    def __contains__( self, x ) -> bool :
-        ''' check whether an entry is available in the index '''
-        return x in self._dict_entry_to_index_entry
-    def __iter__( self ) :
-        ''' yield each entry in the index upon iteration '''
-        return iter( self._dict_entry_to_index_entry )
-    def _warm_up_( self, int_num_threads = 10, int_num_entries_to_randomly_access = 1000 ) :
-        ''' # 2022-05-12 21:57:07 
-        Rapidly warm up and precondition the disk (disk caching) for accessing RAMtx data by randomly accessing 'int_num_entries' number of entries using 'int_num_threads' threads simultaneously.
-        '''
-        arr_entry = self._df_index.index.values
-        int_num_threads_prev = self.int_num_threads_for_ramdom_accessing # retrieve the previous setting
-        self.int_num_threads_for_ramdom_accessing = int_num_threads # use 'int_num_threads' for warm-up
-        self[ list( arr_entry[ int( np.random.random( ) * self._int_num_entry_indexed ) ] for i in range( int_num_entries_to_randomly_access ) ) ] # warm-up!
-        self.int_num_threads_for_ramdom_accessing = int_num_threads_prev # restore the previous setting
-    def convert( self, file_format = 'pickle', int_num_digits_after_floating_point_for_export = 5, flag_output_value_is_float = True, dtype_of_row_and_col_indices = np.uint32, dtype_of_value = None, int_num_threads = None, flag_debugging = False ) :
-        """ # 2022-05-25 21:43:59 
-        convert the file_format of the current RAMtx to that of 'file_format'
-        
-        'flag_output_value_is_float' : (Default: True) a flag indicating whether the output value is a floating point number. If True, 'int_num_digits_after_floating_point_for_export' argument will be active.
-        'file_format' : for more detail, see docstring of the RAMtx class
-        'int_num_digits_after_floating_point_for_export' : (Default: 5) the number of digitst after the floating point when exporting the resulting values to the disk.
-        """
-        # handle input
-        if int_num_threads is None :
-            int_num_threads = self.int_num_cpus
-        # check whether the given file_format already exists
-        if file_format in self._l_file_format :
-            if self.verbose :
-                print( f"the current RAMtx object is already available in the given file_format '{file_format}', exiting" )
-                return -1
-        
-        """ retrieve RAMtx_file_format specific export settings """
-        str_format_value = "{:." + str( int_num_digits_after_floating_point_for_export ) + "f}" if flag_output_value_is_float else "{}" # a string for formating value # format for a float or an integer 
-        str_etx, str_ext_index, func_arrays_mtx_to_processed_bytes = _get_func_arrays_mtx_to_processed_bytes_and_other_settings_based_on_file_format( file_format, str_format_value, dtype_of_row_and_col_indices, dtype_of_value )
-
-        """ convert matrix values and save it to the output RAMtx object """
-        # use multiple processes
-        # create a temporary folder
-        path_folder_ramtx_output = self.path_folder_mtx # export to the current RAMtx object
-        path_folder_temp = f'{path_folder_ramtx_output}temp_{UUID( )}/'
-        os.makedirs( path_folder_temp, exist_ok = True )
-
-        # prepare multiprocessing
-        arr_entry = self._df_index.index.values # retrieve list of entries from _df_index
-        l_arr_entry_for_each_chunk, l_arr_weight_for_each_chunk = LIST_Split( arr_entry, int_num_threads, flag_contiguous_chunk = True, arr_weight_for_load_balancing = self._df_index.loc[ arr_entry ].int_num_bytes.values, return_split_arr_weight = True ) # perform load balancing using the total count for each entry as a weight
-        
-        # setting for the pipeline
-        int_total_weight_for_each_batch = 2500000
-        def __compress_and_index_a_portion_of_ramtx_as_a_worker__( index_chunk, q ) :
-            ''' # 2022-05-08 13:19:13 
-            save a portion of a sparse matrix referenced by 'index_chunk'
-            'q' : multiprocessing.Queue object for collecting results
-            '''
-            # open output files
-            file_output = open( f'{path_folder_temp}indexed.{index_chunk}.{str_etx}', 'wb' )
-            file_index_output = gzip.open( f'{path_folder_temp}indexed.{index_chunk}.{str_etx}.{str_ext_index}', 'wb' )
-
-            int_num_bytes_written = 0 # track the number of written bytes
-            int_num_records_written = 0 # track the number of records written to the output file
-            # methods and variables for handling metadata
-            int_total_weight_current_batch = 0
-            l_entry_current_batch = [ ]
-            def __process_batch__( file_output, file_index_output, int_num_bytes_written, int_num_records_written, l_entry_current_batch ) :
-                ''' # 2022-05-08 13:19:07 
-                process the current batch and return updated 'int_num_bytes_written' and 'int_num_records_written'
-                '''
-                # retrieve the number of index_entries
-                int_num_entries = len( l_entry_current_batch )
-                # handle invalid inputs
-                if int_num_entries == 0 :
-                    return int_num_bytes_written, int_num_records_written
-
-                # retrieve data for the current batch 
-                arr_int_feature, arr_int_barcode, arr_value = self._Retrieve_data_from_ramtx_( l_entry_current_batch )
-                # renumber indices of sorted entries to match that in the sorted matrix
-
-                # retrieve the start of the block, marked by the change of int_entry 
-                l_pos_start_block = [ 0 ] + list( np.where( np.diff( arr_int_feature if self.flag_ramtx_sorted_by_id_feature else arr_int_barcode ) )[ 0 ] + 1 ) + [ len( arr_value ) ] # np.diff decrease the index of entries where change happens, and +1 should be done # 10X matrix data: row = feature, col = barcodes
-                # prepare
-
-                for index_block in range( len( l_pos_start_block ) - 1 ) : # for each block (each block contains records of a single entry)
-                    slice_for_the_current_block = slice( l_pos_start_block[ index_block ], l_pos_start_block[ index_block + 1 ] )
-                    arr_int_feature_of_the_current_block, arr_int_barcode_of_the_current_block, arr_value_of_the_current_block = arr_int_feature[ slice_for_the_current_block ], arr_int_barcode[ slice_for_the_current_block ], arr_value[ slice_for_the_current_block ]
-                    int_entry = ( arr_int_feature_of_the_current_block if self.flag_ramtx_sorted_by_id_feature else arr_int_barcode_of_the_current_block )[ 0 ] # retrieve the interger representation of the current entry
-                    int_num_records_written_for_the_current_entry = len( arr_value_of_the_current_block ) # retrieve the number of records
-                    bytes_processed = func_arrays_mtx_to_processed_bytes( ( arr_int_feature[ slice_for_the_current_block ], arr_int_barcode[ slice_for_the_current_block ], arr_value[ slice_for_the_current_block ] ) ) # retrieve data for the current block
-                    int_num_bytes_written_for_the_current_entry = len( bytes_processed ) # record the number of bytes of the written data
-                    # write the processed bytes to the output file
-                    file_output.write( bytes_processed )
-
-                    # write the index
-                    file_index_output.write( ( '\t'.join( map( str, [ int_entry + 1, int_num_bytes_written, int_num_bytes_written + int_num_bytes_written_for_the_current_entry, int_num_records_written_for_the_current_entry ] ) ) + '\n' ).encode( ) ) # write an index for the current entry # 0>1 coordinate conversion for 'int_entry'
-
-                    int_num_bytes_written += int_num_bytes_written_for_the_current_entry # update the number of bytes written
-                    int_num_records_written += int_num_records_written_for_the_current_entry # update the number of records written
-                return int_num_bytes_written, int_num_records_written
-
-            for entry, float_weight in zip( l_arr_entry_for_each_chunk[ index_chunk ], l_arr_weight_for_each_chunk[ index_chunk ] ) : # retrieve inputs for the current process
-                # add current index_sorting to the current batch
-                l_entry_current_batch.append( entry )
-                int_total_weight_current_batch += float_weight
-                # if the weight becomes larger than the threshold, process the batch and reset the batch
-                if int_total_weight_current_batch > int_total_weight_for_each_batch :
-                    # process the current batch
-                    int_num_bytes_written, int_num_records_written = __process_batch__( file_output, file_index_output, int_num_bytes_written, int_num_records_written, l_entry_current_batch )
-                    # initialize the next batch
-                    l_entry_current_batch = [ ]
-                    int_total_weight_current_batch = 0
-
-            # process the remaining entries
-            int_num_bytes_written, int_num_records_written = __process_batch__( file_output, file_index_output, int_num_bytes_written, int_num_records_written, l_entry_current_batch )
-
-            # close files
-            for file in [ file_output, file_index_output ] :
-                file.close( )
-
-            # record the number of records written for the current chunk
-            q.put( int_num_records_written ) 
-
-        q = mp.Queue( ) # multiprocessing queue is process-safe
-        l_worker = list( mp.Process( target = __compress_and_index_a_portion_of_ramtx_as_a_worker__, args = ( index_chunk, q ) ) for index_chunk in range( int_num_threads ) )
-
-        ''' start works and wait until all works are completed by workers '''
-        for p in l_worker :
-            p.start( ) # start workers
-        for p in l_worker :
-            p.join( )  
-
-        ''' summarize output values '''
-        # make sure the number of returned results match that of deployed workers
-        assert q.qsize( ) == len( l_worker ) 
-        int_num_records_written = np.sum( list( q.get( ) for i in range( q.qsize( ) ) ) ) # retrieve the total number of written records
-
-        ''' retrieve metadata '''
-        # 10X matrix: row  = barcode, col = feature
-        int_num_features = self._int_num_features
-        int_num_barcodes = self._int_num_barcodes
-        int_num_records = int_num_records_written # retrieve the number of entries
-
-        ''' write the metadata row of the matrix '''
-        with gzip.open( f'{path_folder_temp}indexed.-1.{str_etx}', 'wb' ) as file : # the metadata row should be located at the front of the output matrix file
-            file.write( f"""%%MatrixMarket matrix coordinate integer general\n%\n{int_num_features} {int_num_barcodes} {int_num_records}\n""".encode( ) ) # 10X matrix: row = feature, col = barcode
-        int_num_bytes_for_mtx_header = os.stat( f'{path_folder_temp}indexed.-1.{str_etx}' ).st_size # retrieve the file size of the matrix header
-
-        ''' combine outputs matrix '''
-        # combine output matrix files
-        for str_filename_glob in [ f'indexed.*.{str_etx}' ] :
-            # collect the list of input files in the order of 'index_chunk'
-            df = GLOB_Retrive_Strings_in_Wildcards( f'{path_folder_temp}{str_filename_glob}' )
-            df[ 'wildcard_0' ] = df.wildcard_0.astype( int )
-            df.sort_values( 'wildcard_0', inplace = True ) # sort the list of input files in the order of 'index_chunk'
-            # combine input files
-            OS_Run( [ 'cat' ] + list( df.path.values ), path_file_stdout = f"{path_folder_temp}{str_filename_glob.replace( '.*.', '.' )}", stdout_binary = True )
-            # delete input files
-            for path_file in df.path.values :
-                os.remove( path_file )
-        ''' combine output index '''
-        # collect the paths of the index files
-        df_file = GLOB_Retrive_Strings_in_Wildcards( f'{path_folder_temp}indexed.*.{str_etx}.{str_ext_index}' )
-        df_file[ 'wildcard_0' ] = df_file.wildcard_0.astype( int )
-        df_file.sort_values( 'wildcard_0', inplace = True ) # sort the list of input files in the order of 'index_chunk'
-        # update index information after concatenation of the chunks and combine index files
-        l = [ ]
-        int_num_bytes_written = int_num_bytes_for_mtx_header # consider the number of bytes for the written header line
-        for path_file in df_file.path.values :
-            # read index of the current chunk
-            df_index = pd.read_csv( path_file, sep = '\t', header = None )
-            df_index.columns = [ 'index_entry', 'int_pos_start', 'int_pos_end', 'int_num_records' ]
-            # update index information after concatenation
-            int_num_bytes_written_for_the_current_chunk = df_index.int_pos_end.values[ -1 ]
-            df_index[ 'int_pos_start' ] = df_index.int_pos_start + int_num_bytes_written
-            df_index[ 'int_pos_end' ] = df_index.int_pos_end + int_num_bytes_written
-            int_num_bytes_written += int_num_bytes_written_for_the_current_chunk # update the number of bytes written after concatenation
-            l.append( df_index )
-        pd.concat( l ).to_csv( f'{path_folder_temp}indexed.{str_etx}.{str_ext_index}', sep = '\t', index = False )
-        ''' delete temporary files '''
-        if not flag_debugging :
-            # delete temporary files
-            for str_name_file_glob in [ 'indexed.*.mtx.idx.tsv.gz' ] :
-                for path_file in glob.glob( f'{path_folder_temp}{str_name_file_glob}' ) :
-                    os.remove( path_file )
-
-        ''' export features and barcodes '''
-        # rename output files
-        os.rename( f"{path_folder_temp}indexed.{str_etx}", f"{path_folder_ramtx_output}matrix.{str_etx}" )
-        os.rename( f"{path_folder_temp}indexed.{str_etx}.{str_ext_index}", f"{path_folder_ramtx_output}matrix.{str_etx}.{str_ext_index}" )
-
-        # delete temporary folder
-        if not flag_debugging :
-            shutil.rmtree( path_folder_temp ) 
-        
-        ''' update the RAMtx metadata once the export has been completed. '''
-        self._dict_metadata[ 'file_format' ].append( file_format )
-        with open( f"{path_folder_ramtx_output}ramtx.metadata.json", 'w' ) as file :
-            json.dump( self._dict_metadata, file )
 class RamData( ) :
     """ # 2022-05-31 23:17:38 
     This class contains single-cell transcriptomic/genomic data utilizing RAMtx data structures, allowing efficient parallelization of analysis of single cell data with minimal memory consumption. 
