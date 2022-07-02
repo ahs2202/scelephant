@@ -1840,7 +1840,7 @@ class AnnDataContainer( ) :
 
 ''' a class for Zarr-based DataFrame object '''
 class ZarrDataFrame( ) :
-    """ # 2022-06-22 23:56:01 
+    """ # 2022-07-01 08:44:22 
     on-demend persistant DataFrame backed by Zarr persistent arrays.
     each column can be separately loaded, updated, and unloaded.
     a filter can be set, which allows updating and reading ZarrDataFrame as if it only contains the rows indicated by the given filter.
@@ -1876,6 +1876,7 @@ class ZarrDataFrame( ) :
         self._path_folder_zdf = path_folder_zdf
         self._flag_retrieve_categorical_data_as_integers = flag_retrieve_categorical_data_as_integers
         self._flag_load_data_after_adding_new_column = flag_load_data_after_adding_new_column
+        self._ba_filter = None # initialize the '_ba_filter' attribute
         self.filter = ba_filter
             
         # open or initialize zdf and retrieve associated metadata
@@ -1942,18 +1943,24 @@ class ZarrDataFrame( ) :
     def filter( self ) :
         ''' # 2022-06-22 16:36:22 
         return filter bitarray  '''
-        return self._za_filter
+        return self._ba_filter
     @filter.setter
     def filter( self, ba_filter ) :
-        """ # 2022-06-23 08:54:30 
+        """ # 2022-07-01 08:43:08 
         change filter, and empty the cache
         """
         if ba_filter is None : # if filter is removed, 
-            self._za_filter = None
+            # if the filter was present before the filter was removed, empty the cache and the temp folder
+            if self.filter is not None :
+                self._loaded_data = dict( ) # empty the cache
+                self._initialize_temp_folder_( ) # empty the temp folder
+            self._ba_filter = None
             self._n_rows_after_applying_filter = None
         else :
             # check whether the given filter is bitarray
-            assert isinstance( ba_filter, bitarray )
+            if isinstance( ba_filter, np.ndarray ) : # convert numpy array to bitarray
+                ba_filter = bk.BA.to_bitarray( ba_filter )
+            assert isinstance( ba_filter, bitarray ) # make sure that the input value is a bitarray object
             
             # check the length of filter bitarray
             if 'int_num_rows' not in self._dict_zdf_metadata : # if 'int_num_rows' has not been set, set 'int_num_rows' using the length of the filter bitarray
@@ -1965,17 +1972,11 @@ class ZarrDataFrame( ) :
 
             self._loaded_data = dict( ) # empty the cache
             self._initialize_temp_folder_( ) # empty the temp folder
-            
-            # compose a list of integer indices of active rows after applying filter
-            l = bk.BA.Retrieve_Integer_Indices( ba_filter, background = 0 )
-            self._n_rows_after_applying_filter = len( l ) # retrieve the number of rows after applying filter (which is equal to the number of integer indices representing the filter)
+            self._n_rows_after_applying_filter = ba_filter.count( ) # retrieve the number of rows after applying the filter
 
-            path_folder_filter = f"{self._path_folder_temp}filter.zarr/" # define a Zarr object for caching filter data
-            za = zarr.open( path_folder_filter, 'w', shape = ( self._n_rows_after_applying_filter, ), chunks = ( self._dict_zdf_metadata[ 'int_num_rows_in_a_chunk' ], ), dtype = np.int64, synchronizer = zarr.ThreadSynchronizer( ) ) # write 'integer filter' (list of integer indices of active rows) as a Zarr object
-            za[ : ] = np.array( l, dtype = np.int64 ) # write the integer filter array to the output Zarr object
-            self._za_filter = zarr.open( path_folder_filter, mode = 'r' ) # open in read-only mode, and set '_za_filter' attribute
+            self._ba_filter = ba_filter # set bitarray filter
     def __getitem__( self, args ) :
-        ''' # 2022-06-22 22:41:25 
+        ''' # 2022-07-01 08:43:03 
         retrieve data of a column.
         partial read is allowed through indexing
         when a filter is active, the filtered data will be cached in the temporary directory as a Zarr object and will be retrieved in subsequent accesses
@@ -1999,7 +2000,7 @@ class ZarrDataFrame( ) :
                     else : # if a cache is not available, retrieve filtered data and write a cache
                         za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'r' ) # read data from the Zarr object
                         za_cached = zarr.open( path_folder_temp_zarr, 'w', shape = ( self._n_rows_after_applying_filter, ), chunks = ( self._dict_zdf_metadata[ 'int_num_rows_in_a_chunk' ], ), dtype = za.dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # open a new Zarr object for caching # overwriting existing data
-                        za = za[ self.filter[ : ] ] # retrieve filtered data 
+                        za = za.get_mask_selection( bk.BA.to_array( self.filter ) ) # retrieve filtered data 
                         za_cached[ : ] = za # save the filtered data for caching
                 values = za[ coords ] # retrieve data
                 
@@ -2021,11 +2022,11 @@ class ZarrDataFrame( ) :
         for char_invalid in self._str_invalid_char :
             if char_invalid in name_col :
                 raise TypeError( f"the character '{char_invalid}' cannot be used in 'name_col'. Also, the 'name_col' cannot contains the following characters: {self._str_invalid_char}" )
-        
+
+        # ❤️❤️❤️ implement 'broadcasting'; when a single value is given, the value will be copied to all rows.
         # retrieve data values from the 'values' 
         if isinstance( values, pd.Series ) :
             values = values.values
-        
         # retrieve data type of values
         # if values is numpy.ndarray, use the dtype of the array
         if isinstance( values, np.ndarray ) :
@@ -2080,6 +2081,7 @@ class ZarrDataFrame( ) :
                 dtype = np.int32
             
             # open Zarr object representing the current column
+            # ❤️❤️❤️ handles the different dtype in 'a' mode. if dtype is different -> overwrite?... of at least previous dtype is compatible with the current dtype, use the dtype or upgrade the dtype...
             za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'a', shape = ( self._n_rows_unfiltered, ), chunks = ( self._dict_zdf_metadata[ 'int_num_rows_in_a_chunk' ], ), dtype = dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # (data will be not overwritten) # saved data will have 'self._n_rows_unfiltered' number of items 
             
             # encode data
@@ -2092,7 +2094,7 @@ class ZarrDataFrame( ) :
             if self.filter is None : # when filter is not set
                 za[ : ] = values_encoded # write encoded data
             else : # when filter is present
-                za[ self.filter[ : ] ] = values_encoded # save filtered data 
+                za.set_mask_selection( bk.BA.to_array( bk.BA.to_array( self.filter ) ), values_encoded )  # save filtered data 
                 
         else : # storing non-categorical data
             za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'a', shape = ( self._n_rows_unfiltered, ), chunks = ( self._dict_zdf_metadata[ 'int_num_rows_in_a_chunk' ], ), dtype = dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # (data will be not overwritten) # saved data will have 'self._n_rows_unfiltered' number of items 
@@ -2101,7 +2103,7 @@ class ZarrDataFrame( ) :
             if self.filter is None : # when filter is not set
                 za[ : ] = values # write data
             else : # when filter is present
-                za[ self.filter[ : ] ] = values # save filtered data 
+                za.set_mask_selection( bk.BA.to_array( self.filter ), values ) # save filtered data 
             
         # save column metadata
         za.attrs[ 'dict_col_metadata' ] = dict_col_metadata
@@ -2140,10 +2142,13 @@ class ZarrDataFrame( ) :
         return self._dict_zdf_metadata[ 'columns' ]
     @property
     def df( self ) :
-        ''' # 2022-06-21 16:00:11 
-        return loaded data as a dataframe
+        ''' # 2022-07-01 22:32:00 
+        return loaded data as a dataframe, with properly indexed rows
         '''
-        return pd.DataFrame( self._loaded_data )
+        if len( self._loaded_data ) > 0 : # if a cache is not empty
+            df = pd.DataFrame( self._loaded_data )
+            df.index = np.arange( self._n_rows_unfiltered ) if self.filter is None else bk.BA.to_integer_indices( self.filter ) # add integer indices of the rows
+            return df
     def _save_metadata_( self ) :
         ''' # 2022-06-20 21:44:42 
         save metadata of the current ZarrDataFrame
@@ -2182,8 +2187,13 @@ class ZarrDataFrame( ) :
                 self._loaded_data[ name_col ] = self[ name_col ]
     def unload( self, * l_name_col ) :
         """ # 2022-06-20 22:09:37 
-        remove the column from the memory
+        remove the column from the memory.
+        if no column names were given, unload an entire cache
         """
+        # if no column names were given, unload an entire cache
+        if len( l_name_col ) == 0 :
+            self._loaded_data = dict( )
+        # if more than one column name was given, unload data of a subset of cache
         for name_col in l_name_col :
             if name_col not in self : # skip invalid column
                 continue
@@ -2197,7 +2207,6 @@ class ZarrDataFrame( ) :
             if name_col not in self : # skip invalid column
                 continue
             del self[ name_col ] # delete element from the current object
-            
 ''' methods for creating RAMtx objects '''
 def __Merge_Sort_MTX_10X_and_Write_and_Index_Zarr__( za_mtx, za_mtx_index, * l_path_file_input, flag_ramtx_sorted_by_id_feature = True, flag_delete_input_file_upon_completion = False, dtype_mtx = np.float64, dtype_mtx_index = np.float64, int_size_buffer_for_mtx_index = 1000 ) :
     """ # 2022-06-21 16:26:00 
@@ -2591,7 +2600,7 @@ def Convert_MTX_10X_to_RamData( path_folder_mtx_10x_input, path_folder_ramdata_o
 
 ''' a class for accessing Zarr-backed count matrix data (RAMtx, Random-access matrix) '''
 class RAMtx( ) :
-    """ # 2022-06-23 23:49:05 
+    """ # 2022-06-29 10:39:14 
     This class represent a random-access mtx format for memory-efficient exploration of extremely large single-cell transcriptomics/genomics data.
     This class use a count matrix data stored in a random read-access compatible format, called RAMtx, enabling exploration of a count matrix with hundreds of millions cells with hundreds of millions of features.
     Also, the RAMtx format is supports multi-processing, and provide convenient interface for parallel processing of single-cell data
@@ -2606,7 +2615,9 @@ class RAMtx( ) :
     'int_num_cpus' : the number of processes that will be used for random accessing of the data
     
     """
-    def __init__( self, path_folder_ramtx, ba_filter_features = None, ba_filter_barcodes = None, dtype_of_feature_and_barcode_indices = np.int32, dtype_of_values = np.float64, int_num_cpus = 1, verbose = False, flag_debugging = False ) :
+    def __init__( self, path_folder_ramtx, ramdata = None, dtype_of_feature_and_barcode_indices = np.int32, dtype_of_values = np.float64, int_num_cpus = 1, verbose = False, flag_debugging = False ) :
+        """ # 2022-06-29 10:39:05 
+        """
         # read metadata
         self._root = zarr.open( path_folder_ramtx, 'a' )
         dict_ramtx_metadata = self._root.attrs[ 'dict_ramtx_metadata' ]
@@ -2622,9 +2633,11 @@ class RAMtx( ) :
         self.verbose = verbose 
         self.flag_debugging = flag_debugging
         self.int_num_cpus = int_num_cpus
-        # set filters
-        self.ba_filter_features = ba_filter_features
-        self.ba_filter_barcodes = ba_filter_barcodes
+        self._ramdata = ramdata
+        
+        # set filters using RamData
+        self.ba_filter_features = ramdata.ft.filter if ramdata is not None else None
+        self.ba_filter_barcodes = ramdata.bc.filter if ramdata is not None else None
         
         # open Zarr object containing matrix and matrix indices
         self._za_mtx_index = zarr.open( f'{self._path_folder_ramtx}matrix.index.zarr', 'r' )
@@ -2694,6 +2707,13 @@ class RAMtx( ) :
         '''
         return self._int_num_features if self.flag_ramtx_sorted_by_id_feature else self._int_num_barcodes
     @property
+    def indexed_axis( self ) :
+        """
+        # 2022-06-30 21:45:48 
+        return 'Axis' object of the indexed axis
+        """
+        return None if self._ramdata is None else ( self._ramdata.ft if self.flag_ramtx_sorted_by_id_feature else self._ramdata.bc )
+    @property
     def ba_filter_indexed_axis( self ) :
         ''' # 2022-06-23 09:08:44 
         retrieve filter of the indexed axis
@@ -2718,7 +2738,7 @@ class RAMtx( ) :
         l_arr_int_feature, l_arr_int_barcode, l_arr_value
         """
         # initialize the output data structures
-        l_arr_int_feature, l_arr_int_barcode, l_arr_value = [ ], [ ], [ ]
+        l_int_entry_valid, l_arr_int_feature, l_arr_int_barcode, l_arr_value = [ ], [ ], [ ], [ ]
         
         # wrap in a list if a single entry was queried
         if isinstance( l_int_entry, ( int, np.int64, np.int32, np.int16, np.int8 ) ) : # check whether the given entry is an integer
@@ -2729,10 +2749,11 @@ class RAMtx( ) :
             
         ''' filter 'int_entry', if a filter has been set '''
         if ba_filter_indexed_axis is not None :
-            l_int_entry = list( int_entry for int_entry in l_int_entry if ba_filter_indexed_axis[ int_entry ] )
+            l_int_entry = bk.BA.to_integer_indices( ba_filter_indexed_axis ) if len( l_int_entry ) == 0 else list( int_entry for int_entry in l_int_entry if ba_filter_indexed_axis[ int_entry ] ) # filter 'l_int_entry' or use the entries in the given filter (if no int_entry was given, use all active entries)
+                
         # if no valid entries are available, return an empty result
         if len( l_int_entry ) == 0 :
-            return l_arr_int_feature, l_arr_int_barcode, l_arr_value 
+            return l_int_entry_valid, l_arr_int_feature, l_arr_int_barcode, l_arr_value 
             
         ''' sort 'int_entry' so that closely located entries can be retrieved together '''
         # sort indices of entries so that the data access can occur in the same direction across threads
@@ -2757,19 +2778,22 @@ class RAMtx( ) :
             # handle inputs
             l_int_entry = pipe_from_main_thread.recv( ) if flag_as_a_worker else pipe_from_main_thread  # receive work if 'flag_as_a_worker' is True or use 'pipe_from_main_thread' as a list of works
             # for each int_entry, retrieve data and collect records
-            l_arr_int_feature, l_arr_int_barcode, l_arr_value = [ ], [ ], [ ]
+            l_int_entry_valid, l_arr_int_feature, l_arr_int_barcode, l_arr_value = [ ], [ ], [ ], [ ]
             
             # retrieve mtx_index data and remove invalid entries
             arr_index = self._za_mtx_index.get_orthogonal_selection( l_int_entry ) # retrieve mtx_index data 
             if flag_change_dtype_mtx_index : # convert dtype of retrieved mtx_index data
                 arr_index = arr_index.astype( np.int64 )
-            arr_index = arr_index[ arr_index[ :, 0 ] < arr_index[ :, 1 ] ] # drop 'int_entry' lacking count data (when start and end index is the same, the 'int_entry' does not contain any data)
-            for st, en in arr_index : # iterate through each entry
-                arr_int_feature, arr_int_barcode, arr_value = self._za_mtx[ st : en ].T # retrieve data
+            # iterate through each 'int_entry'
+            for int_entry, index in zip( l_int_entry, arr_index ) : # iterate through each entry
+                st, en = index
+                if st == en : # if there is no count data for the 'int_entry', continue on to the next 'int_entry' # drop 'int_entry' lacking count data (when start and end index is the same, the 'int_entry' does not contain any data)
+                    continue
+                arr_int_feature, arr_int_barcode, arr_value = self._za_mtx[ st : en ].T # retrieve count data from the Zarr object
                 
                 ''' if a filter for not-indexed axis has been set, apply the filter to the retrieved records '''
                 if ba_filter_not_indexed_axis is not None :
-                    arr_int_entry_not_indexed = arr_int_barcode if flag_ramtx_sorted_by_id_feature else arr_int_feature # retrieve entries of the axis that were not indexed
+                    arr_int_entry_not_indexed = ( arr_int_barcode if flag_ramtx_sorted_by_id_feature else arr_int_feature ).astype( np.int64 ) # retrieve entries of the axis that were not indexed # convert to integer type
                     arr_mask = np.zeros( len( arr_int_entry_not_indexed ), dtype = bool ) # initialize the mask for filtering records
                     flag_valid_data = False # initialize the flag for checking at least one record is available after filtering
                     for i, int_entry_not_indexed in enumerate( arr_int_entry_not_indexed ) : # iterate through each record
@@ -2793,18 +2817,19 @@ class RAMtx( ) :
                     arr_value = arr_value.astype( self._dtype_of_values )
                 
                 ''' append the retrieved data to the output results '''
+                l_int_entry_valid.append( int_entry )
                 l_arr_int_feature.append( arr_int_feature )
                 l_arr_int_barcode.append( arr_int_barcode )
                 l_arr_value.append( arr_value )
             
             ''' return the retrieved data '''
             # compose a output value
-            l_arrays_mtx = ( l_arr_int_feature, l_arr_int_barcode, l_arr_value )
+            l_arrays = ( l_int_entry_valid, l_arr_int_feature, l_arr_int_barcode, l_arr_value )
             # if 'flag_as_a_worker' is True, send the result or return the result
             if flag_as_a_worker :
-                pipe_to_main_thread.send( l_arrays_mtx ) # send unzipped result back
+                pipe_to_main_thread.send( l_arrays ) # send unzipped result back
             else :
-                return l_arrays_mtx
+                return l_arrays
         
         # load data using multiprocessing
         if self.int_num_cpus > 1 and int_num_entries > 1 : # enter multi-processing mode only more than one entry should be retrieved
@@ -2823,20 +2848,21 @@ class RAMtx( ) :
             while int_num_workers_completed < int_n_workers : # until all works are completed
                 for _, pipe in l_pipes_from_worker_to_main_process :
                     if pipe.poll( ) :
-                        l_arrays_mtx = pipe.recv( )
-                        l_arr_int_feature.extend( l_arrays_mtx[ 0 ] )
-                        l_arr_int_barcode.extend( l_arrays_mtx[ 1 ] )
-                        l_arr_value.extend( l_arrays_mtx[ 2 ] )
-                        del l_arrays_mtx
+                        l_arrays = pipe.recv( )
+                        l_int_entry_valid.extend( l_arrays[ 0 ] )
+                        l_arr_int_feature.extend( l_arrays[ 1 ] )
+                        l_arr_int_barcode.extend( l_arrays[ 2 ] )
+                        l_arr_value.extend( l_arrays_mtx[ 3 ] )
+                        del l_arrays
                         int_num_workers_completed += 1
                 time.sleep( 0.1 )
             # dismiss workers once all works are completed
             for p in l_processes :
                 p.join( )
         else : # single thread mode
-            l_arr_int_feature, l_arr_int_barcode, l_arr_value = __retrieve_data_from_ramtx_as_a_worker__( l_int_entry, flag_as_a_worker = False )
+            l_int_entry_valid, l_arr_int_feature, l_arr_int_barcode, l_arr_value = __retrieve_data_from_ramtx_as_a_worker__( l_int_entry, flag_as_a_worker = False )
         
-        return l_arr_int_feature, l_arr_int_barcode, l_arr_value # returns lists of arrays, each array contains data of a single 'int_entry'
+        return l_int_entry_valid, l_arr_int_feature, l_arr_int_barcode, l_arr_value # returns lists of arrays, each array contains data of a single 'int_entry'
 ''' a class for representing axis of RamData (barcodes/features) '''
 class Axis( ) :
     """ # 2022-06-28 20:48:11 
@@ -2844,8 +2870,9 @@ class Axis( ) :
     
     'path_folder' : a folder containing the axis
     'name_axis' : ['barcodes', 'features'] 
+    'int_index_str_rep' : a integer index for the column for the string representation of the axis in the string Zarr object (the object storing strings) of the axis
     """
-    def __init__( self, path_folder, name_axis, ba_filter = None, ramdata = None, dict_kw_zdf = { 'flag_retrieve_categorical_data_as_integers' : False, 'flag_load_data_after_adding_new_column' : True, 'flag_enforce_name_col_with_only_valid_characters' : True }, verbose = True ) :
+    def __init__( self, path_folder, name_axis, ba_filter = None, ramdata = None, int_index_str_rep = 0, dict_kw_zdf = { 'flag_retrieve_categorical_data_as_integers' : False, 'flag_load_data_after_adding_new_column' : True, 'flag_enforce_name_col_with_only_valid_characters' : True }, verbose = True ) :
         """ # 2022-06-27 16:32:34 
         """
         self.verbose = verbose
@@ -2853,7 +2880,10 @@ class Axis( ) :
         self._path_folder = path_folder
         self.meta = ZarrDataFrame( f"{path_folder}{name_axis}.num_and_cat.zdf", ba_filter = ba_filter, ** dict_kw_zdf ) # open a ZarrDataFrame with a given filter
         self.int_num_entries = self.meta._n_rows_unfiltered # retrieve number of entries
-        self._dict_str_to_i = None # initialize the mapping dictionary
+        self.int_index_str_rep = int_index_str_rep # it can be changed later
+        # initialize the mapping dictionaries
+        self._dict_str_to_i = None 
+        self._dict_i_to_str = None 
         self._ramdata = ramdata # initialize RamData reference
         self.filter = ba_filter # set filter
     def _convert_to_bitarray( self, ba_filter ) :
@@ -2880,21 +2910,31 @@ class Axis( ) :
     @filter.setter
     def filter( self, ba_filter ) :
         """ # 2022-06-27 17:14:18 
-        set a new bitarray filter
+        set a new bitarray filter on the Axis and the RamData object to which the current axis belongs to.
+        
+        a given mask will be further masked so that only entries with a valid count data is included in the resulting filter
+        
         """
         ''' convert other formats to bitarray if a filter has been given '''
         if ba_filter is not None :
-            ba_filter = self._convert_to_bitarray( ba_filter )
+            ba_filter = self._convert_to_bitarray( ba_filter ) # convert mask to bitarray filter
+            ba_filter &= self.all( flag_return_valid_entries_in_the_currently_active_layer = True ) # only use the entries with a valid count data
         
+        # propagate the filter
         self.meta.filter = ba_filter # change filter of metadata zdf
         self._ba_filter = ba_filter # set the filter of current axis object
         # set the filter of layer object of the RamData to which the current axis object has been attached.
         if self._ramdata is not None and self._ramdata.layer is not None : # if a layor object has been loaded in the RamData to which the current Axis object belongs to.
             setattr( self._ramdata._layer, f'ba_filter_{self._name_axis}', ba_filter )
-    def load_str( self, int_index_col = 0 ) : 
+    def load_str( self, int_index_col = None ) : 
         ''' # 2022-06-24 22:38:18 
         load string representation of the entries of the current axis, and retrieve a mapping from string representation to integer representation
+        
+        'int_index_col' : default value is 'self.int_index_str_rep'
         '''
+        # set default value for 'int_index_col'
+        if int_index_col is None :
+            int_index_col = self.int_index_str_rep
         # check whether string representation of the entries of the given axis is available 
         path_folder_str_zarr = f"{self._path_folder}{self._name_axis}.str.zarr"
         if not os.path.exists( path_folder_str_zarr ) : 
@@ -2924,71 +2964,98 @@ class Axis( ) :
                 del arr_false
             arr_str = za.get_mask_selection( arr_mask )
             del arr_mask, arr_filter
-        # compose a dictionary for the conversion
+        # compose a pair of dictionaries for the conversion
         self._dict_str_to_i = dict( ( e, i ) for e, i in zip( arr_str, np.arange( len( arr_str ) ) if self.filter is None else bk.BA.Retrieve_Integer_Indices( self.filter ) ) )
+        self._dict_i_to_str = dict( ( self._dict_str_to_i[ e ], e ) for e in self._dict_str_to_i )
         if self.verbose :
             print( f'[Axis {self._name_axis}] completed loading of {len( arr_str )} number of strings' )
     def unload_str( self ) :
         """ # 2022-06-25 09:36:59 
-        unload a mapping from string representation to integer representation.
+        unload a mapping between string representations and integer representations.
         """
         self._dict_str_to_i = None
+        self._dict_i_to_str = None
     @property
-    def mapping( self ) :
+    def map_str( self ) :
         """ # 2022-06-25 09:31:32 
         return a dictionary for mapping string representation to integer representation
         """
         return self._dict_str_to_i
+    @property
+    def map_int( self ) :
+        """ # 2022-06-25 09:31:32 
+        return a dictionary for mapping integer representation to string representation
+        """
+        return self._dict_i_to_str
     def __getitem__( self, l ) :
-        """ # 2022-06-25 09:40:50 
+        """ # 2022-07-01 20:26:39 
         a main functionality of 'Axis' class
-        translate a given list of entries, and return a valid integer representation of the input entries.
+        translate a given list of entries / slice / mask (bitarray/boolean_array), and return a bitarray mask containing valid entries
+        
+        inputs:
+        [list of entries / slice / mask (bitarray/boolean_array)]
         
         returns:
-        [a list of valid entries], [a list of valid integer representation]
+        [a list of valid integer representation]
         """
-        # initialize
-        flag_str_was_given = False
-        l_valid_entries, l_valid_int_entries = [ ], [ ]
+        ''' initialize '''
+        n = self.int_num_entries # retrieve the number of entries
+        # initialize the output object
+        # initialize the bitarray for the valid entries
+        ba_filter_of_selected_entries = bitarray( n )
+        ba_filter_of_selected_entries.setall( 0 ) # an initialized output has no active entries
         
-        # check the input type 
+        # retrieve bitarray filter (or a filter of all active entries in the current layer)
+        ba_filter = self.filter if self.filter is not None else self.all( flag_return_valid_entries_in_the_currently_active_layer = True )
+        
+        ''' handle slices '''
+        if isinstance( l, slice ) :
+            for i in bk.Slice_to_Range( l, n ) :
+                if ba_filter[ i ] :
+                    ba_filter_of_selected_entries[ i ] = True
+            return ba_filter_of_selected_entries 
+        
+        
+        ''' handle a single value input '''
         if not hasattr( l, '__iter__' ) or isinstance( l, str ) : # if a given input is not iterable or a string, wrap the element in a list
             l = [ l ]
+            
+        ''' handle an empty list input '''
         # handle empty inputs
         if len( l ) == 0 :
-            return l_valid_entries, l_valid_int_entries
+            return ba_filter_of_selected_entries # return results
         
+        ''' handle string list input '''
         if isinstance( l[ 0 ], str ) : # when string representations were given
-            dict_mapping = self.mapping # retrieve a dictionary for mapping
-            assert dict_mapping is not None # check whether string representations are loaded in memory
+            flag_unload_str = False # a flag to unload string representations before exiting
+            # if str has not been loaded, load the data temporarily
+            if self.map_str is None :
+                flag_unload_str = True
+                self.load_str( )
             
-            if self.filter is None : # when a filter is not active
-                for e in l :
-                    if e in dict_mapping :
-                        # add every mapped entries
-                        l_valid_entries.append( e )
-                        l_valid_int_entries.append( dict_mapping[ e ] )
-            else : # when a filter is active
-                ba_filter = self.filter # retrieve a filter bitarray
-                for e in l :
-                    if e in dict_mapping :
-                        int_entry = dict_mapping[ e ] # retrieve integer representation of the entry
-                        if ba_filter[ int_entry ] : # if the entry is currently active (included in the given filter)
-                            # add mapped entries that are included in the filter
-                            l_valid_entries.append( e )
-                            l_valid_int_entries.append( int_entry )
-            return l_valid_entries, l_valid_int_entries # return mapped and filtered entries
-        else : # when integer representations were given
-            if self.filter is None : # when a filter is not active
-                for e in l :
-                    if 0 <= e < self.int_num_entries : # check validity by checking the boundary
-                        l_valid_int_entries.append( e )
-            else : # when a filter is active
-                ba_filter = self.filter # retrieve a filter bitarray
-                for e in l :
-                    if ( 0 <= e < self.int_num_entries ) and ba_filter[ e ] : # if the entry is currently active (included in the given filter)
-                        l_valid_int_entries.append( e ) # add entries that are included in the filter
-            return l_valid_int_entries, l_valid_int_entries # return filtered entries
+            dict_mapping = self.map_str # retrieve a dictionary for mapping str to int
+            for e in l :
+                if e in dict_mapping :
+                    i = dict_mapping[ e ]
+                    if ba_filter[ i ] : # if the entry is acitve in the filter (or filter objec containing all active entries)
+                        ba_filter_of_selected_entries[ i ] = True
+            
+            # unload str data
+            if flag_unload_str :
+                self.unload_str( )
+            return ba_filter_of_selected_entries 
+        
+        ''' handle mask (bitarray / boolean array) '''
+        if len( l ) == n and set( COUNTER( l[ : 10 ] ) ).issubset( { 0, 1, True, False } ) : # detect boolean array
+            ba = self._convert_to_bitarray( l ) # convert mask to bitarray
+            ba &= ba_filter # apply filter
+            return ba
+        
+        ''' handle integer index list input '''
+        for i in l :
+            if 0 <= i < n and ba_filter[ i ] :
+                ba_filter_of_selected_entries[ i ] = True
+        return ba_filter_of_selected_entries
     def __repr__( self ) :
         """ # 2022-06-24 22:41:12 
         """
@@ -3047,17 +3114,36 @@ class Layer( ) :
     """ # 2022-06-25 16:32:19 
     A class for interactions with a pair of RAMtx objects of a count matrix. 
     """
-    def __init__( self, path_folder_ramdata, name_layer, ba_filter_features = None, ba_filter_barcodes = None, dtype_of_feature_and_barcode_indices = np.int32, dtype_of_values = np.float64, int_num_cpus = 1, verbose = False ) :
+    def __init__( self, path_folder_ramdata, name_layer, ramdata = None, dtype_of_feature_and_barcode_indices = np.int32, dtype_of_values = np.float64, int_num_cpus = 1, verbose = False ) :
         """ # 2022-06-25 16:40:44 
         """
         # set attributes
         self._path_folder_ramdata = path_folder_ramdata
         self._name_layer = name_layer
+        self._ramdata = ramdata
+        # retrieve filters from the axes
+        ba_filter_features = ramdata.ft.filter if ramdata is not None else None
+        ba_filter_barcodes = ramdata.bc.filter if ramdata is not None else None
         
-        # open RAMtx objects 
-        self._ramtx_features = RAMtx( f'{self._path_folder_ramdata}{name_layer}/sorted_by_feature/', ba_filter_features = ba_filter_features, ba_filter_barcodes = ba_filter_barcodes, dtype_of_feature_and_barcode_indices = dtype_of_feature_and_barcode_indices, dtype_of_values = dtype_of_values, int_num_cpus = int_num_cpus, verbose = verbose, flag_debugging = False )
-        self._ramtx_barcodes = RAMtx( f'{self._path_folder_ramdata}{name_layer}/sorted_by_barcode/', ba_filter_features = ba_filter_features, ba_filter_barcodes = ba_filter_barcodes, dtype_of_feature_and_barcode_indices = dtype_of_feature_and_barcode_indices, dtype_of_values = dtype_of_values, int_num_cpus = int_num_cpus, verbose = verbose, flag_debugging = False )
-            
+        # open RAMtx objects without filters
+        self._ramtx_features = RAMtx( f'{self._path_folder_ramdata}{name_layer}/sorted_by_feature/', ramdata = ramdata, dtype_of_feature_and_barcode_indices = dtype_of_feature_and_barcode_indices, dtype_of_values = dtype_of_values, int_num_cpus = int_num_cpus, verbose = verbose, flag_debugging = False )
+        self._ramtx_barcodes = RAMtx( f'{self._path_folder_ramdata}{name_layer}/sorted_by_barcode/', ramdata = ramdata, dtype_of_feature_and_barcode_indices = dtype_of_feature_and_barcode_indices, dtype_of_values = dtype_of_values, int_num_cpus = int_num_cpus, verbose = verbose, flag_debugging = False )
+        
+        # set filters of the current layer
+        self.ba_filter_features = ba_filter_features
+        self.ba_filter_barcodes = ba_filter_barcodes
+    @property
+    def int_num_features( self ) :
+        """ # 2022-06-28 21:39:20 
+        return the number of features
+        """
+        return self._ramtx_features.len_indexed_axis
+    @property
+    def int_num_barcodes( self ) :
+        """ # 2022-06-28 21:39:20 
+        return the number of features
+        """
+        return self._ramtx_barcodes.len_indexed_axis
     @property
     def ba_filter_features( self ) :
         """ # 2022-06-26 01:31:24 
@@ -3084,7 +3170,36 @@ class Layer( ) :
         self._ba_filter_barcodes = ba_filter
         self._ramtx_features.ba_filter_barcodes = ba_filter
         self._ramtx_barcodes.ba_filter_barcodes = ba_filter
-        
+    def __getitem__( self, l_int_bc = slice( None, None, None ), l_int_ft = slice( None, None, None ) ) :
+        """ # 2022-06-28 21:22:38 
+        return a count data of a given list of integer representation of barcodes and features. slice can also be used.
+        """
+        sl_all = slice( None, None, None ) # slice selecting all entries
+        def get_l_int( l_int, length ) :
+            ''' # 2022-06-28 22:29:08 
+            get list of integer indices for the iterable with a given length ('length')
+            '''
+            # when a slice is given, convert slice to the list of integer indices
+            if isinstance( l_int, slice ) :
+                l_int = list( bk.Slice_to_Range( l_int, length ) )
+            return l_int # returns the list of integer indices
+        # 
+        if l_int_bc == sl_all and l_int_ft == sl_all : # if all barcodes and all features are selected
+            if self.int_num_features > self.int_num_barcodes : # if the number of features are greter than the number of barcodes, retrieve data for each barcode (less number of RAMtx accesses)
+                return self._ramtx_barcodes[ np.arange( self.int_num_barcodes ) ]
+            else :
+                return self._ramtx_features[ np.arange( self.int_num_features ) ]
+        elif l_int_bc == sl_all : # if all barcodes will be used, use ramtx_features to retrieve count data
+            return self._ramtx_features[ get_l_int( l_int_ft, self.int_num_features ) ]
+        elif l_int_ft == sl_all : # if all features will be used, use ramtx_barcodes to retrieve count data
+            return self._ramtx_barcodes[ get_l_int( l_int_bc, self.int_num_barcodes ) ]
+        else : # if count data of a subset of barcodes and a subset of features will be retrieved
+            l_int_ft = get_l_int( l_int_ft, self.int_num_features )
+            l_int_bc = get_l_int( l_int_bc, self.int_num_barcodes )
+            if len( l_int_ft ) > len( l_int_bc ) : # if the number of features are larger than the number of barcodes, use 'ramtx_barcodes'
+                return self._ramtx_barcodes[ l_int_bc ]
+            else :
+                return self._ramtx_features[ l_int_ft ]
 ''' # not implemented in zarr '''
 def Convert_Scanpy_AnnData_to_RAMtx( adata, path_folder_ramtx_output, flag_ramtx_sorted_by_id_feature = True, file_format = 'mtx_gzipped', int_num_threads = 15, verbose = False, flag_overwrite_existing_files = False, flag_sort_and_index_again = False, flag_debugging = False, flag_covert_dense_matrix = False, int_num_digits_after_floating_point_for_export = 5, flag_output_value_is_float = True, dtype_of_row_and_col_indices = np.uint32, dtype_of_value = None ) :
     ''' # 2022-05-25 22:50:27 
@@ -3548,11 +3663,12 @@ class RamData( ) :
     
     'path_folder_ramdata' : a folder containing RamData object
     'int_num_cpus' : number of CPUs (processes) to use to distribute works.
+    'int_index_str_rep_for_barcodes', 'int_index_str_rep_for_features' : a integer index for the column for the string representation of 'barcodes'/'features' in the string Zarr object (the object storing strings) of 'barcodes'/'features'
     
     ==== AnnDataContainer ====
     'flag_enforce_name_adata_with_only_valid_characters' : enforce
     """
-    def __init__( self, path_folder_ramdata, name_layer = 'raw', int_num_cpus = 64, dtype_of_feature_and_barcode_indices = np.int32, dtype_of_values = np.float64, dict_kw_zdf = { 'flag_retrieve_categorical_data_as_integers' : False, 'flag_load_data_after_adding_new_column' : True, 'flag_enforce_name_col_with_only_valid_characters' : True }, verbose = False, flag_debugging = False ) :
+    def __init__( self, path_folder_ramdata, name_layer = 'raw', int_num_cpus = 64, dtype_of_feature_and_barcode_indices = np.int32, dtype_of_values = np.float64, int_index_str_rep_for_barcodes = 0, int_index_str_rep_for_features = 1, dict_kw_zdf = { 'flag_retrieve_categorical_data_as_integers' : False, 'flag_load_data_after_adding_new_column' : True, 'flag_enforce_name_col_with_only_valid_characters' : True }, verbose = False, flag_debugging = False ) :
         """ # 2022-06-28 20:57:37 
         """
         # handle input arguments
@@ -3564,8 +3680,8 @@ class RamData( ) :
         self._dtype_of_values = dtype_of_values
         
         # initialize axis objects
-        self.bc = Axis( path_folder_ramdata, 'barcodes', ba_filter = None, ramdata = self, dict_kw_zdf = dict_kw_zdf, verbose = True  )
-        self.ft = Axis( path_folder_ramdata, 'features', ba_filter = None, ramdata = self, dict_kw_zdf = dict_kw_zdf, verbose = True  )
+        self.bc = Axis( path_folder_ramdata, 'barcodes', ba_filter = None, ramdata = self, dict_kw_zdf = dict_kw_zdf, int_index_str_rep = int_index_str_rep_for_barcodes, verbose = verbose )
+        self.ft = Axis( path_folder_ramdata, 'features', ba_filter = None, ramdata = self, dict_kw_zdf = dict_kw_zdf, int_index_str_rep = int_index_str_rep_for_features, verbose = verbose )
         
         # initialize layor object
         self.layer = name_layer
@@ -3630,48 +3746,113 @@ class RamData( ) :
         """ # 2022-05-22 22:27:55 
         change layer to the layer 'name_layer'
         """
-        # unload layer if None is given
+        # if None is given as name_layer, remove the current layer from the memory
         if name_layer is None :
-            delattr( self, '_layer' )
+            # unload layer if None is given
+            if hasattr( self, '_layer' ) :
+                delattr( self, '_layer' )
         else :
             # check 'name_layer' is valid
             if name_layer not in self.layers :
                 raise KeyError( f"'{name_layer}' data does not exists in the current RamData" )
 
             if name_layer != self.layer : # load new layer
-                self._layer = Layer( self._path_folder_ramdata, name_layer, ba_filter_features = self.ft.filter, ba_filter_barcodes = self.bc.filter, dtype_of_feature_and_barcode_indices = self._dtype_of_feature_and_barcode_indices, dtype_of_values = self._dtype_of_values, int_num_cpus = 1, verbose = self.verbose )
+                self._layer = Layer( self._path_folder_ramdata, name_layer, ramdata = self, dtype_of_feature_and_barcode_indices = self._dtype_of_feature_and_barcode_indices, dtype_of_values = self._dtype_of_values, int_num_cpus = 1, verbose = self.verbose )
 
                 if self.verbose :
                     print( f"'{name_layer}' layer has been loaded" )
+    def __repr__( self ) :
+        """ # 2022-06-27 17:25:44 
+        display RamData
+        """
+        return f"<RamData object ({self.metadata[ 'int_num_barcodes' ]} barcodes X {self.metadata[ 'int_num_features' ]} features, {self.metadata[ 'int_num_records' ]} records) stored at {self._path_folder_ramdata}\n\twith the following data : {self.layers}\n\tcurrent layer is '{self.layer}'>"
+    def __getitem__( self, args ) :
+        ''' # 2022-06-28 23:45:26 
+        possible usages
+        
+        [ name_layer, barcode_index, barcode_column, feature_index, feature_column ]
+        [ barcode_index, barcode_column, feature_index, feature_column ]
+        '''
+        assert isinstance( args, tuple ) # more than one arguments should be given
+        # if the first argument appears to be 'name_layer', load the layer and drop the argument
+        if isinstance( args[ 0 ], str ) and args[ 0 ] in self.layers :
+            self.layer = args[ 0 ]
+            args = args[ 1 : ] 
+        assert len( args ) <= 4 # assumes layer has been loaded, and only arguments are for barcode/feature indexing
+        
+        args = list( args ) + list( [ ] for i in range( 4 - len( args ) ) ) # make the number of arguments to 4
+        l_entry_bc, l_col_bc, l_entry_ft, l_col_ft = args # parse arguments
+        
+        # backup the filters
+        ba_filter_bc_backup = self.bc.filter
+        ba_filter_ft_backup = self.ft.filter
+        
+        # retrieve filters for the queried entries
+        ba_entry_bc = self.bc[ l_entry_bc ]
+        ba_entry_ft = self.ft[ l_entry_ft ]
+        
+        int_num_entries_queried_bc = ba_entry_bc.count( )
+        int_num_entries_queried_ft = ba_entry_ft.count( )
+        
+        # handle empty axis
+        if int_num_entries_queried_bc == 0 or int_num_entries_queried_ft == 0 :
+            if self.verbose :
+                print( f"Error: currently queried data is (barcode x features) {int_num_entries_queried_bc} x {int_num_entries_queried_ft}. please change the filter or queries in order to retrieve a valid count data." )
+            return None
+        
+        # set barcode/feature filters for the queried entries
+        self.bc.filter = ba_entry_bc
+        self.ft.filter = ba_entry_ft
+        
+        # retrieve count data
+        if int_num_entries_queried_bc >= int_num_entries_queried_ft :
+            res = self._layer._ramtx_features[ [ ] ]
+        else :
+            res = self._layer._ramtx_barcodes[ [ ] ]
+            
+            
+        # retrieve meta data
+        l_col_bc
+        l_col_ft
+        
+        # restore the filters once the data retrieval has been completed
+        self.bc.filter = ba_filter_bc_backup
+        self.ft.filter = ba_filter_ft_backup
+        
+        return res
+    
+        
+        # ❤️❤️❤️ first, the entries that will retrieved will be translated to the filter, so that only the data belonging to the entry will be retrieved from Axis and Layer
+        
+        
+        
+#         self.bc[  ]
+        
+        return args
+#         if isinstance( index, tuple ) and len( index ) == 2 : # if the object received a tuple of length 2, assumes indices for two axes are given.
+#             index_barcode, index_feature = index
+#             if isinstance( index_barcode, slice ) :
+#                 index = index_feature
+#             elif isinstance( index_feature, slice ) :
+#                 index = index_barcode
+#         ''' handle single axis '''
+#         if isinstance( index, str ) : # if only a single string is given, wrap the string in a list
+#             index = [ index ]
+#         if index[ 0 ] in self._dict_name_feature_to_int_index :
+#             row, col, data = self.ramtx_for_feature[ self.__map_string_indices_to_valid_int_indices__( index, self._dict_name_feature_to_int_index ) ]
+#         else :
+#             row, col, data = self.ramtx_for_barcode[ self.__map_string_indices_to_valid_int_indices__( index, self._dict_id_cell_to_int_index ) ]
+            
+#         self.adata.X = scipy.sparse.csr_matrix( scipy.sparse.coo_matrix( ( data, ( col, row ) ), shape = ( self._int_num_barcodes, self._int_num_features ) ) ) # in anndata.X, row = barcode, column = feature
+#         return self.adata
+    
     
     def save( self, * l_name_adata ) :
         ''' wrapper of AnnDataContainer.save '''
         self.ad.update( * l_name_adata )
-    def __repr__( self ) :
-        """ # 2022-06-27 17:25:44 
-        """
-        return f"<RamData object ({self.metadata[ 'int_num_barcodes' ]} barcodes X {self.metadata[ 'int_num_features' ]} features, {self.metadata[ 'int_num_records' ]} records) stored at {self._path_folder_ramdata}\n\twith the following data : {self.layers}\n\tcurrent layer is '{self.layer}'>"
     def __map_string_indices_to_valid_int_indices__( self, l_index, dict_mapping ) :
         ''' map string indices 'l_index' to valid integer indices using the given 'dict_mapping' '''
         return list( dict_mapping[ e ] for e in l_index if e in dict_mapping )
-    def __getitem__( self, index ) :
-        ''' handle multiple axes '''
-        if isinstance( index, tuple ) and len( index ) == 2 : # if the object received a tuple of length 2, assumes indices for two axes are given.
-            index_barcode, index_feature = index
-            if isinstance( index_barcode, slice ) :
-                index = index_feature
-            elif isinstance( index_feature, slice ) :
-                index = index_barcode
-        ''' handle single axis '''
-        if isinstance( index, str ) : # if only a single string is given, wrap the string in a list
-            index = [ index ]
-        if index[ 0 ] in self._dict_name_feature_to_int_index :
-            row, col, data = self.ramtx_for_feature[ self.__map_string_indices_to_valid_int_indices__( index, self._dict_name_feature_to_int_index ) ]
-        else :
-            row, col, data = self.ramtx_for_barcode[ self.__map_string_indices_to_valid_int_indices__( index, self._dict_id_cell_to_int_index ) ]
-            
-        self.adata.X = scipy.sparse.csr_matrix( scipy.sparse.coo_matrix( ( data, ( col, row ) ), shape = ( self._int_num_barcodes, self._int_num_features ) ) ) # in anndata.X, row = barcode, column = feature
-        return self.adata
     ''' core methods for analyzing RamData '''
     def summarize( self, name_layer, axis, summarizing_func, int_num_threads = None, flag_overwrite_columns = True ) :
         ''' 
