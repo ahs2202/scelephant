@@ -11,7 +11,7 @@ import scanpy
 # define version
 _version_ = '0.0.0'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-07-02 19:57:12' 
+_last_modified_time_ = '2022-07-03 11:54:26' 
 
 ''' previosuly written for biobookshelf '''
 def CB_Parse_list_of_id_cell( l_id_cell, dropna = True ) :
@@ -1841,12 +1841,15 @@ class AnnDataContainer( ) :
 
 ''' a class for Zarr-based DataFrame object '''
 class ZarrDataFrame( ) :
-    """ # 2022-07-01 08:44:22 
+    """ # 2022-07-03 02:18:19 
     on-demend persistant DataFrame backed by Zarr persistent arrays.
     each column can be separately loaded, updated, and unloaded.
     a filter can be set, which allows updating and reading ZarrDataFrame as if it only contains the rows indicated by the given filter.
     the one of the functionality of this class is to provide a Zarr-based dataframe object that is compatible with Zarr.js (javascript implementation of Zarr), with a categorical data type (the format used in zarr is currently not supported in zarr.js) compatible with zarr.js.
     
+    Of note, secondary indexing (row indexing) is always applied to unfiltered columns, not to a subset of column containing filtered rows.
+    
+    === arguments ===
     'path_folder_zdf' : a folder to store persistant zarr dataframe.
     'df' : input dataframe.
     
@@ -1977,33 +1980,42 @@ class ZarrDataFrame( ) :
 
             self._ba_filter = ba_filter # set bitarray filter
     def __getitem__( self, args ) :
-        ''' # 2022-07-01 08:43:03 
+        ''' # 2022-07-03 02:51:00 
         retrieve data of a column.
-        partial read is allowed through indexing
+        partial read is allowed through indexing (slice/integer index/boolean mask/bitarray is supported)
         when a filter is active, the filtered data will be cached in the temporary directory as a Zarr object and will be retrieved in subsequent accesses
         '''
+        # initialize indexing
+        flag_indexing = False # a boolean flag indicating whether an indexing is active
+        flag_coords_in_bool_mask = False
         # parse arguments
         if isinstance( args, tuple ) :
-            name_col, coords = args
+            flag_indexing = True # update the flag
+            name_col, coords = args # parse the args
+            # detect boolean mask
+            flag_coords_in_bool_mask = bk.BA.detect_boolean_mask( coords )
+            # convert boolean masks to np.ndarray object
+            if flag_coords_in_bool_mask :
+                coords = bk.BA.convert_mask_to_array( coords )
         else :
             name_col, coords = args, slice( None, None, None ) # retrieve all data if only 'name_col' is given
             
         if name_col in self : # if name_col is valid
-            if name_col in self._loaded_data : # if a loaded data is available
-                return self._loaded_data[ name_col ][ coords ]
-            else :
-                if self.filter is None : # if filter is not active
+            if name_col in self._loaded_data and not flag_indexing : # if a loaded data is available and indexing is not active, return the cached data
+                return self._loaded_data[ name_col ]
+            else : # in other cases, read the data from Zarr object
+                if self.filter is None or flag_indexing : # if filter is not active or indexing is active, open a Zarr object containing all data
                     za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'r' ) # read data from the Zarr object
-                else : # if filter is active
+                else : # if filter is active and indexing is not active
                     path_folder_temp_zarr = f"{self._path_folder_temp}{name_col}/" # retrieve path of cached zarr object containing filtered data
                     if os.path.exists( path_folder_temp_zarr ) : # if a cache is available
-                        za = zarr.open( path_folder_temp_zarr, mode = 'r' ) # open the cached Zarr object containing
-                    else : # if a cache is not available, retrieve filtered data and write a cache
+                        za = zarr.open( path_folder_temp_zarr, mode = 'r' ) # open the cached Zarr object containing filtered data
+                    else : # if a cache is not available, retrieve filtered data and write a cache to disk
                         za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'r' ) # read data from the Zarr object
-                        za_cached = zarr.open( path_folder_temp_zarr, 'w', shape = ( self._n_rows_after_applying_filter, ), chunks = ( self._dict_zdf_metadata[ 'int_num_rows_in_a_chunk' ], ), dtype = za.dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # open a new Zarr object for caching # overwriting existing data
-                        za = za.get_mask_selection( bk.BA.to_array( self.filter ) ) # retrieve filtered data 
+                        za_cached = zarr.open( path_folder_temp_zarr, 'w', shape = ( self._n_rows_after_applying_filter, ), chunks = ( self._dict_zdf_metadata[ 'int_num_rows_in_a_chunk' ], ), dtype = za.dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # open a new Zarr object for caching # overwriting existing data # use the same dtype as the parent dtype
+                        za = za.get_mask_selection( bk.BA.to_array( self.filter ) ) # retrieve filtered data as np.ndarray
                         za_cached[ : ] = za # save the filtered data for caching
-                values = za[ coords ] # retrieve data
+                values = za[ coords ] if not flag_coords_in_bool_mask or isinstance( za, np.ndarray ) else za.get_mask_selection( coords ) # retrieve data using the 'get_mask_selection' method if 'flag_coords_in_bool_mask' is True and 'za' is not np.ndarray
                 
                 # check whether the current column contains categorical data
                 l_value_unique = self.get_categories( name_col )
@@ -2014,16 +2026,32 @@ class ZarrDataFrame( ) :
                     for i in range( len( values ) ) :
                         values_decoded[ i ] = l_value_unique[ values[ i ] ] if values[ i ] >= 0 else np.nan # convert integer representations to its original string values # -1 (negative integers) encodes np.nan
                     return values_decoded
-    def __setitem__( self, name_col, values ) :
-        ''' # 2022-06-23 13:58:56 
-        save a column. partial update is currently not supported.
-        when a filter is active, write filtered data
+    def __setitem__( self, args, values ) :
+        ''' # 2022-07-03 11:34:00 
+        save/update a column at indexed positions.
+        when a filter is active, only active entries will be saved/updated automatically.
+        boolean mask/integer arrays/slice indexing is supported. However, indexing will be applied to the original column with unfiltered rows (i.e., when indexing is active, filter will be ignored)
         '''
+        # initialize indexing
+        flag_indexing = False # a boolean flag indicating whether an indexing is active
+        flag_coords_in_bool_mask = False
+        # parse arguments
+        if isinstance( args, tuple ) :
+            flag_indexing = True # update the flag
+            name_col, coords = args # parse the args
+            # detect boolean mask
+            flag_coords_in_bool_mask = bk.BA.detect_boolean_mask( coords )
+            # convert boolean masks to np.ndarray object
+            if flag_coords_in_bool_mask :
+                coords = bk.BA.convert_mask_to_array( coords )
+        else :
+            name_col, coords = args, slice( None, None, None ) # retrieve all data if only 'name_col' is given
+
         # check whether the given name_col contains invalid characters(s)
         for char_invalid in self._str_invalid_char :
             if char_invalid in name_col :
                 raise TypeError( f"the character '{char_invalid}' cannot be used in 'name_col'. Also, the 'name_col' cannot contains the following characters: {self._str_invalid_char}" )
-
+            
         # ❤️❤️❤️ implement 'broadcasting'; when a single value is given, the value will be copied to all rows.
         # retrieve data values from the 'values' 
         if isinstance( values, pd.Series ) :
@@ -2050,27 +2078,42 @@ class ZarrDataFrame( ) :
         int_num_values = len( values )
         if self.n_rows is not None : # if a valid information about the number of rows is available
             # check the number of rows of the current Zdf (after applying filter, if a filter is available)
-            assert int_num_values == self.n_rows
+#             assert int_num_values == self.n_rows
+            pass # currently validality will not be checked # implemented in the future ❤️❤️❤️
         else :
             self._dict_zdf_metadata[ 'int_num_rows' ] = int_num_values # record the number of rows of the dataframe
             self._save_metadata_( ) # save metadata
         
-        # compose metadata of the column
-        dict_col_metadata = { 'flag_categorical' : False } # set a default value for 'flag_categorical' metadata attribute
-        dict_col_metadata[ 'flag_filtered' ] = self.filter is not None # mark the column containing filtered data
+        # define zarr object directory
+        path_folder_col = f"{self._path_folder_zdf}{name_col}/" # compose the output folder
+        # retrieve/initialize metadata
+        flag_col_already_exists = os.path.exists( path_folder_col ) # retrieve a flag indicating that the column already exists
+        if flag_col_already_exists :
+            za = zarr.open( path_folder_col, 'a' ) # open Zarr object
+            dict_col_metadata = za.attrs[ 'dict_col_metadata' ] # load previous written metadata
+        else :
+            dict_col_metadata = { 'flag_categorical' : False } # set a default value for 'flag_categorical' metadata attribute
+            dict_col_metadata[ 'flag_filtered' ] = self.filter is not None # mark the column containing filtered data
         
-        # write data
+        # write categorical data
         if dtype is str and self._dict_zdf_metadata[ 'flag_store_string_as_categorical' ] : # storing categorical data            
-            dict_col_metadata[ 'flag_categorical' ] = True # update metadata for categorical datatype
+            # compose metadata of the column
+            dict_col_metadata[ 'flag_categorical' ] = True # set metadata for categorical datatype
             
             set_value_unique = set( values ) # retrieve a set of unique values
             # handle when np.nan value exist 
-            if np.nan in set_value_unique : 
-                dict_col_metadata[ 'flag_contains_nan' ] = True # mark that the column contains np.nan values
+            if np.nan in set_value_unique : # when np.nan value was detected
+                if 'flag_contains_nan' not in dict_col_metadata : # update metadata
+                    dict_col_metadata[ 'flag_contains_nan' ] = True # mark that the column contains np.nan values
                 set_value_unique.remove( np.nan ) # removes np.nan from the category
             
-            l_value_unique = list( set_value_unique ) # retrieve a list of unique values # can contain mixed types (int, float, str)
-            dict_col_metadata[ 'l_value_unique' ] = list( str( e ) for e in set_value_unique ) # update metadata # convert entries to string (so that all values with mixed types can be interpreted as strings)
+            if 'l_value_unique' not in dict_col_metadata :
+                l_value_unique = list( set_value_unique ) # retrieve a list of unique values # can contain mixed types (int, float, str)
+                dict_col_metadata[ 'l_value_unique' ] = list( str( e ) for e in l_value_unique ) # update metadata # convert entries to string (so that all values with mixed types can be interpreted as strings)
+            else :
+                set_value_unique_previously_set = set( dict_col_metadata[ 'l_value_unique' ] )
+                l_value_unique = dict_col_metadata[ 'l_value_unique' ] + list( val for val in list( set_value_unique ) if val not in set_value_unique_previously_set ) # extend 'l_value_unique'
+                dict_col_metadata[ 'l_value_unique' ] = l_value_unique # update metadata
             
             # retrieve appropriate datatype for encoding unique categorical values
             int_min_number_of_bits = int( np.ceil( math.log2( len( l_value_unique ) ) ) ) + 1 # since signed int will be used, an additional bit is required to encode the data
@@ -2083,7 +2126,7 @@ class ZarrDataFrame( ) :
             
             # open Zarr object representing the current column
             # ❤️❤️❤️ handles the different dtype in 'a' mode. if dtype is different -> overwrite?... of at least previous dtype is compatible with the current dtype, use the dtype or upgrade the dtype...
-            za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'a', shape = ( self._n_rows_unfiltered, ), chunks = ( self._dict_zdf_metadata[ 'int_num_rows_in_a_chunk' ], ), dtype = dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # (data will be not overwritten) # saved data will have 'self._n_rows_unfiltered' number of items 
+            za = zarr.open( path_folder_col, mode = 'a', synchronizer = zarr.ThreadSynchronizer( ) ) if os.path.exists( path_folder_col ) else zarr.open( path_folder_col, mode = 'w', shape = ( self._n_rows_unfiltered, ), chunks = ( self._dict_zdf_metadata[ 'int_num_rows_in_a_chunk' ], ), dtype = dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object if the object does not exist.
             
             # encode data
             dict_encode_category = dict( ( e, i ) for i, e in enumerate( l_value_unique ) ) # retrieve a dictionary encoding value to integer representation of the value
@@ -2092,17 +2135,23 @@ class ZarrDataFrame( ) :
                 values = values_encoded
             
             # write data 
-            if self.filter is None : # when filter is not set
-                za[ : ] = values_encoded # write encoded data
-            else : # when filter is present
-                za.set_mask_selection( bk.BA.to_array( bk.BA.to_array( self.filter ) ), values_encoded )  # save filtered data 
+            if self.filter is None or flag_indexing : # when filter is not set or indexing is active
+                if flag_coords_in_bool_mask : # indexing with mask
+                    za.set_mask_selection( coords, values_encoded )  # save partial data 
+                else : # indexing with slice or integer coordinates
+                    za[ coords ] = values_encoded # write encoded data
+            else : # when filter is present and indexing is not active
+                za.set_mask_selection( bk.BA.to_array( self.filter ), values_encoded )  # save filtered data 
                 
         else : # storing non-categorical data
-            za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'a', shape = ( self._n_rows_unfiltered, ), chunks = ( self._dict_zdf_metadata[ 'int_num_rows_in_a_chunk' ], ), dtype = dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # (data will be not overwritten) # saved data will have 'self._n_rows_unfiltered' number of items 
+            za = zarr.open( path_folder_col, mode = 'a', synchronizer = zarr.ThreadSynchronizer( ) ) if os.path.exists( path_folder_col ) else zarr.open( path_folder_col, mode = 'w', shape = ( self._n_rows_unfiltered, ), chunks = ( self._dict_zdf_metadata[ 'int_num_rows_in_a_chunk' ], ), dtype = dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object if the object does not exist.
             
             # write data
-            if self.filter is None : # when filter is not set
-                za[ : ] = values # write data
+            if self.filter is None or flag_indexing : # when filter is not set or indexing is active
+                if flag_coords_in_bool_mask : # indexing with mask
+                    za.set_mask_selection( coords, values )  # write data 
+                else : # indexing with slice or integer coordinates
+                    za[ coords ] = values # write data
             else : # when filter is present
                 za.set_mask_selection( bk.BA.to_array( self.filter ), values ) # save filtered data 
             
@@ -2114,8 +2163,11 @@ class ZarrDataFrame( ) :
             self._dict_zdf_metadata[ 'columns' ].add( name_col )
             self._save_metadata_( )
         
-        # add data to the loaded data dictionary (object cache) if 'self._flag_load_data_after_adding_new_column' is True
-        if self._flag_load_data_after_adding_new_column :
+        # if indexing was used to partially update the data, remove the cache, because it can cause in consistency
+        if flag_indexing and name_col in self._loaded_data :
+            del self._loaded_data[ name_col ]
+        # add data to the loaded data dictionary (object cache) if 'self._flag_load_data_after_adding_new_column' is True and indexing was not used
+        if self._flag_load_data_after_adding_new_column and not flag_indexing : 
             self._loaded_data[ name_col ] = values
     def __delitem__( self, name_col ) :
         ''' # 2022-06-20 21:57:38 
@@ -2617,7 +2669,7 @@ def Convert_MTX_10X_to_RamData( path_folder_mtx_10x_input, path_folder_ramdata_o
         'layers' : [ name_layer ],
         'version' : _version_,
     }
-
+    
 ''' a class for accessing Zarr-backed count matrix data (RAMtx, Random-access matrix) '''
 class RAMtx( ) :
     """ # 2022-07-02 12:36:41 
@@ -2976,6 +3028,11 @@ class Axis( ) :
             ba_filter = bk.BA.to_bitarray( ba_filter )
         assert isinstance( ba_filter, bitarray ) # check the return is bitarray object
         return ba_filter
+    def __iter__( self ) :
+        """ # 2022-07-02 22:16:56 
+        iterate through valid entries in the axis, according to the filter and whether the string representations are loaded or not
+        """
+        return ( ( bk.BA.to_integer_indices( self.filter ) if self.filter is not None else np.arange( len( self ) ) ) if self._dict_str_to_i is None else self._dict_str_to_i ).__iter__( )
     def __len__( self ) :
         ''' # 2022-07-02 09:45:27 
         returns the number of entries in the Axis
@@ -3749,9 +3806,9 @@ class RamData( ) :
     'int_index_str_rep_for_barcodes', 'int_index_str_rep_for_features' : a integer index for the column for the string representation of 'barcodes'/'features' in the string Zarr object (the object storing strings) of 'barcodes'/'features'
     
     ==== AnnDataContainer ====
-    'flag_enforce_name_adata_with_only_valid_characters' : enforce
+    'flag_enforce_name_adata_with_only_valid_characters' : enforce valid characters in the name of AnnData
     """
-    def __init__( self, path_folder_ramdata, name_layer = 'raw', int_num_cpus = 64, dtype_of_feature_and_barcode_indices = np.int32, dtype_of_values = np.float64, int_index_str_rep_for_barcodes = 0, int_index_str_rep_for_features = 1, dict_kw_zdf = { 'flag_retrieve_categorical_data_as_integers' : False, 'flag_load_data_after_adding_new_column' : True, 'flag_enforce_name_col_with_only_valid_characters' : True }, verbose = False, flag_debugging = False ) :
+    def __init__( self, path_folder_ramdata, name_layer = 'raw', int_num_cpus = 64, dtype_of_feature_and_barcode_indices = np.int32, dtype_of_values = np.float64, int_index_str_rep_for_barcodes = 0, int_index_str_rep_for_features = 1, dict_kw_zdf = { 'flag_retrieve_categorical_data_as_integers' : False, 'flag_load_data_after_adding_new_column' : True, 'flag_enforce_name_col_with_only_valid_characters' : True }, flag_enforce_name_adata_with_only_valid_characters = True, verbose = False, flag_debugging = False ) :
         """ # 2022-06-28 20:57:37 
         """
         # handle input arguments
@@ -3768,22 +3825,9 @@ class RamData( ) :
         
         # initialize layor object
         self.layer = name_layer
-#         # load the main anndata object
-#         if not os.path.exists( f'{self._path_folder_ramdata}main.h5ad' ) :
-#             raise FileNotFoundError( f'{self._path_folder_ramdata}main.h5ad does not exist.' )
-#         self.adata = sc.read_h5ad( f'{self._path_folder_ramdata}main.h5ad' )
-#         self._int_num_barcodes, self._int_num_features, self._int_num_records = len( self.adata.obs ), len( self.adata.var ), self.ramtx_for_feature._int_num_records # retrieve the number of barcodes, features, and entries
         
-#         # retrieve mapping from string representations of cells and features to integer indices
-#         self._dict_name_feature_to_int_index = dict( ( e, i ) for i, e in enumerate( self.adata.var.index.values ) )
-#         self._dict_id_cell_to_int_index = dict( ( e, i ) for i, e in enumerate( self.adata.obs.index.values ) )
-        
-#         # set AnnDataContainer attribute for containing various AnnData objects associated with the current RamData
-#         self.ad = AnnDataContainer( path_prefix_default = self._path_folder_ramdata, flag_enforce_name_adata_with_only_valid_characters = flag_enforce_name_adata_with_only_valid_characters, main = self.adata, ** PD_Select( GLOB_Retrive_Strings_in_Wildcards( f'{self._path_folder_ramdata}*.h5ad' ), wildcard_0 = 'main', deselect = True ).set_index( 'wildcard_0' ).path.to_dict( ) ) # load the 'main' AnnData and file paths of the other AnnData objects as place holders to the 'AnnDataContainer' object
-        
-#         # set miscellaneous attributes
-#         self.set_int_barcode = None # 'None' means all attributes are active
-#         self.set_int_feature = None # 'None' means all attributes are active
+        # set AnnDataContainer attribute for containing various AnnData objects associated with the current RamData
+        self.ad = AnnDataContainer( path_prefix_default = self._path_folder_ramdata, flag_enforce_name_adata_with_only_valid_characters = flag_enforce_name_adata_with_only_valid_characters, ** GLOB_Retrive_Strings_in_Wildcards( f'{self._path_folder_ramdata}*.h5ad' ).set_index( 'wildcard_0' ).path.to_dict( ) ) # load locations of AnnData objects stored in the RamData directory
     @property
     def metadata( self ) :
         # implement lazy-loading of metadata
@@ -3977,48 +4021,25 @@ class RamData( ) :
         self.ft.filter = ba_filter_ft_backup
         
         return adata # return resulting AnnData
-        # ❤️❤️❤️ first, the entries that will retrieved will be translated to the filter, so that only the data belonging to the entry will be retrieved from Axis and Layer
-#         if isinstance( index, tuple ) and len( index ) == 2 : # if the object received a tuple of length 2, assumes indices for two axes are given.
-#             index_barcode, index_feature = index
-#             if isinstance( index_barcode, slice ) :
-#                 index = index_feature
-#             elif isinstance( index_feature, slice ) :
-#                 index = index_barcode
-#         ''' handle single axis '''
-#         if isinstance( index, str ) : # if only a single string is given, wrap the string in a list
-#             index = [ index ]
-#         if index[ 0 ] in self._dict_name_feature_to_int_index :
-#             row, col, data = self.ramtx_for_feature[ self.__map_string_indices_to_valid_int_indices__( index, self._dict_name_feature_to_int_index ) ]
-#         else :
-#             row, col, data = self.ramtx_for_barcode[ self.__map_string_indices_to_valid_int_indices__( index, self._dict_id_cell_to_int_index ) ]
-            
-#         self.adata.X = scipy.sparse.csr_matrix( scipy.sparse.coo_matrix( ( data, ( col, row ) ), shape = ( self._int_num_barcodes, self._int_num_features ) ) ) # in anndata.X, row = barcode, column = feature
-#         return self.adata
     def save( self, * l_name_adata ) :
         ''' wrapper of AnnDataContainer.save '''
         self.ad.update( * l_name_adata )
-    def __map_string_indices_to_valid_int_indices__( self, l_index, dict_mapping ) :
-        ''' map string indices 'l_index' to valid integer indices using the given 'dict_mapping' '''
-        return list( dict_mapping[ e ] for e in l_index if e in dict_mapping )
-    ''' core methods for analyzing RamData '''
     def summarize( self, name_layer, axis, summarizing_func, int_num_threads = None, flag_overwrite_columns = True ) :
-        ''' 
+        ''' # 2022-07-02 22:08:54 
         this function summarize entries of the given axis (0 = barcode, 1 = feature) using the given function
         
-        example usage: calculate normalized count data, perform log1p transformation, cell filtering, etc.
+        example usage: calculate total sum, standard deviation, pathway enrichment score calculation, etc.
         
         =========
         inputs 
         =========
-
-        'ram': an input RamData object
         'name_layer' : name of the data in the given RamData object to summarize
         'axis': int or str. 
                0 or 'barcode' for applying a given summarizing function for barcodes
                1 or 'feature' for applying a given summarizing function for features
-        'summarizing_func' : function object. a function that takes a sparse matrix (note: not indexed like a dataframe, and integer representations of barcodes and features should be used to summarize the matrix) and return a dictionary containing 'name_of_summarized_data' as key and 'value_of_summarized_data' as value. the resulting summarized outputs will be added as columns of appriproate dataframe of the AnnData of the given RamData object (self.adata.obs or self.adata.var)
+        'summarizing_func' : function object. a function that takes a RAMtx output and return a dictionary containing 'name_of_summarized_data' as key and 'value_of_summarized_data' as value. the resulting summarized outputs will be added as metadata of the given Axis (self.bc.meta or self.ft.meta)
         
-                    summarizing_func( self, arr_int_barcode_of_an_entry, arr_int_feature_of_an_entry, arr_value_of_an_entry ) -> dictionary containing 'key' as summarized metric name and 'value' as a summarized value for the entry
+                    summarizing_func( self, int_entry_indexed, arr_int_entries_not_indexed, arr_value ) -> dictionary containing 'key' as summarized metric name and 'value' as a summarized value for the entry
                     
                     a list of pre-defined functions are the followings :
                     'sum' :
@@ -4034,12 +4055,6 @@ class RamData( ) :
                             useful for identifying informative features
                             
                             returns: 'sum', 'mean', 'deviation', 'variance'
-                            
-                    'sum_scarab_feature_category' (axis = 'barcode') :
-                            calculate the total sum (and mean) for each feature classification type of the scarab output for each barcode ('cell')
-                            useful for initial barcode filtering
-                            
-                            returns: 'sum', 'mean', and summed values of features for each feature classification type of the scarab output
                     
         'int_num_threads' : the number of CPUs to use. by default, the number of CPUs set by the RamData attribute 'int_num_cpus' will be used.
         'flag_overwrite_columns' : (Default: True) overwrite the columns of the output annotation dataframe of RamData.adata if columns with the same colume name exists
@@ -4050,8 +4065,11 @@ class RamData( ) :
         the summarized metrics will be added to appropriate dataframe attribute of the AnnData of the current RamData (self.adata.obs for axis = 0 and self.adata.var for axis = 1).
         the column names will be constructed as the following :
             f"{name_layer}_{key}"
-        if the column name already exist in the dataframe, the values of the columns will be overwritten (alternatively, a suffix of current datetime will be added to the column name, by setting 'flag_overwrite_columns' to True)
+        if the column name already exist in the dataframe, the values of the columns will be overwritten (alternatively, a suffix of current datetime will be added to the column name, by setting 'flag_overwrite_columns' to False)
         '''
+        """
+        1) Prepare
+        """
         # check the validility of the input arguments
         if name_layer not in self.layers :
             if self.verbose :
@@ -4061,55 +4079,38 @@ class RamData( ) :
             if self.verbose :
                 print( f"[ERROR] [RamData.summarize] invalid argument 'axis' : '{name_layer}' is invalid. use one of { { 0, 'barcode', 1, 'feature' } }" )
             return -1 
+        # set layer
+        self.layer = name_layer
         # handle inputs
         flag_summarizing_barcode = axis in { 0, 'barcode' } # retrieve a flag indicating whether the data is summarized for each barcode or not
-        if int_num_threads is None :
+        if int_num_threads is None : # use default number of threads
             int_num_threads = self.int_num_cpus
         if summarizing_func == 'sum' :
-            def summarizing_func( self, arr_int_barcode_of_an_entry, arr_int_feature_of_an_entry, arr_value_of_an_entry ) :
+            def summarizing_func( self, int_entry_indexed, arr_int_entries_not_indexed, arr_value ) :
                 ''' # 2022-05-23 12:11:55 
                 calculate sum of the values of the current entry
                 
                 assumes 'int_num_records' > 0
                 '''
-                int_num_records = len( arr_value_of_an_entry ) # retrieve the number of records of the current entry
-                dict_summary = { 'sum' : np.sum( arr_value_of_an_entry ) if int_num_records > 30 else sum( arr_value_of_an_entry ) } # if an input array has more than 30 elements, use np.sum to calculate the sum
-                int_num_entries = self._int_num_barcodes if flag_summarizing_barcode else self._int_num_features # retrieve the number of entries based on the axis
+                int_num_records = len( arr_value ) # retrieve the number of records of the current entry
+                dict_summary = { 'sum' : np.sum( arr_value ) if int_num_records > 30 else sum( arr_value ) } # if an input array has more than 30 elements, use np.sum to calculate the sum
+                int_num_entries = self.bc.meta.n_rows if flag_summarizing_barcode else self.ft.meta.n_rows # retrieve the number of entries based on the axis
                 dict_summary[ 'mean' ] = dict_summary[ 'sum' ] / int_num_entries # calculate the mean
                 return dict_summary
         elif summarizing_func == 'sum_and_dev' :
-            def summarizing_func( self, arr_int_barcode_of_an_entry, arr_int_feature_of_an_entry, arr_value_of_an_entry ) :
+            def summarizing_func( self, int_entry_indexed, arr_int_entries_not_indexed, arr_value ) :
                 ''' # 2022-05-23 12:11:55 
                 calculate sum and deviation of the values of the current entry
                 
                 assumes 'int_num_records' > 0
                 '''
-                int_num_records = len( arr_value_of_an_entry ) # retrieve the number of records of the current entry
-                dict_summary = { 'sum' : np.sum( arr_value_of_an_entry ) if int_num_records > 30 else sum( arr_value_of_an_entry ) } # if an input array has more than 30 elements, use np.sum to calculate the sum
-                int_num_entries = self._int_num_barcodes if flag_summarizing_barcode else self._int_num_features # retrieve the number of entries based on the axis
+                int_num_records = len( arr_value ) # retrieve the number of records of the current entry
+                dict_summary = { 'sum' : np.sum( arr_value ) if int_num_records > 30 else sum( arr_value ) } # if an input array has more than 30 elements, use np.sum to calculate the sum
+                int_num_entries = self.bc.meta.n_rows if flag_summarizing_barcode else self.ft.meta.n_rows # retrieve the number of entries based on the axis
                 dict_summary[ 'mean' ] = dict_summary[ 'sum' ] / int_num_entries # calculate the mean
-                arr_dev = ( arr_value_of_an_entry - dict_summary[ 'mean' ] ) ** 2 # calculate the deviation
+                arr_dev = ( arr_value - dict_summary[ 'mean' ] ) ** 2 # calculate the deviation
                 dict_summary[ 'deviation' ] = np.sum( arr_dev ) if int_num_records > 30 else sum( arr_dev )
                 dict_summary[ 'variance' ] = dict_summary[ 'deviation' ] / ( int_num_entries - 1 ) if int_num_entries > 1 else np.nan
-                return dict_summary
-        elif summarizing_func == 'sum_scarab_feature_category' and flag_summarizing_barcode :
-            self._classify_feature_of_scarab_output_( ) # classify feature with a default setting
-            def summarizing_func( self, arr_int_barcode_of_an_entry, arr_int_feature_of_an_entry, arr_value_of_an_entry ) :
-                ''' # 2022-05-30 15:23:37 
-                calculate sum of each category of the features 
-
-                assumes 'int_num_records' > 0
-                '''
-                dict_data = self._dict_data_for_feature_classification
-                
-                dict_summary = dict( ( 'sum___category_detailed___' + e, 0 ) for e in dict_data[ 'l_name_feaure_category_detailed' ] ) # initialize the output dictionary
-                dict_res = pd.DataFrame( { 2 : arr_value_of_an_entry, 3 : dict_data[ 'vectorized_get_int_feature_category_detailed' ]( arr_int_feature_of_an_entry ) }, index = np.zeros( len( arr_int_feature_of_an_entry ), dtype = np.uint8 ) ).groupby( [ 3 ] ).sum( )[ 2 ].to_dict( ) # currently the most efficient way of summarizing result (as far as the method tested..)
-                dict_summary.update( dict( ( 'sum___category_detailed___' + dict_data[ 'l_name_feaure_category_detailed' ][ int_feature_class ], dict_res[ int_feature_class ] ) for int_feature_class in dict_res ) ) 
-                
-                int_num_records = len( arr_value_of_an_entry ) # retrieve the number of records of the current entry
-                dict_summary[ 'sum' ] = np.sum( arr_value_of_an_entry ) if int_num_records > 30 else sum( arr_value_of_an_entry ) # if an input array has more than 30 elements, use np.sum to calculate the sum
-                int_num_entries = self._int_num_barcodes if flag_summarizing_barcode else self._int_num_features # retrieve the number of entries based on the axis
-                dict_summary[ 'mean' ] = dict_summary[ 'sum' ] / int_num_entries # calculate the mean
                 return dict_summary
         elif not hasattr( summarizing_func, '__call__' ) : # if 'summarizing_func' is not a function, report error message and exit
             if self.verbose :
@@ -4117,142 +4118,63 @@ class RamData( ) :
             return -1
         # retrieve the list of key values returned by 'summarizing_func' by applying dummy values
         arr_dummy_one, arr_dummy_zero = np.ones( 10, dtype = int ), np.zeros( 10, dtype = int )
-        dict_res = summarizing_func( self, arr_dummy_zero, arr_dummy_zero, arr_dummy_one )
+        dict_res = summarizing_func( self, arr_dummy_zero, arr_dummy_one )
         l_name_col_summarized = sorted( list( dict_res ) ) # retrieve the list of key values of an dict_res result returned by 'summarizing_func'
         
-        def RAMtx_Summarize( self, rtx, summarizing_func, l_name_col_summarized, int_num_threads = 8 ) :
-            ''' # 2022-05-23 11:38:24 
-            Assumes 'flag_return_arrays_of_int_feature_int_barcode_value_from_getitem_calls_and_access_items_using_integer_indices_only' setting for RAmtx object is set to 'True'
-            
-            =========
-            inputs 
-            =========
-
-            'self' : an input RamData object
-            'rtx': an input RAMtx object
-            'summarizing_func' : function object. a function that takes a sparse matrix (note: not indexed like a dataframe, and integer representations of barcodes and features should be used to summarize the matrix) and return a dictionary containing 'name_of_summarized_data' as key and 'value_of_summarized_data' as value. the resulting summarized outputs will be added as columns of appriproate dataframe of the AnnData of the given RamData object (self.adata.obs or self.adata.var)
         
-                    summarizing_func( self, arr_int_barcode_of_an_entry, arr_int_feature_of_an_entry, arr_value_of_an_entry ) -> dictionary containing 'key' as summarized metric name and 'value' as a summarized value for the entry
-                    
+        
+        # retrieve RAMtx object to summarize
+        rtx = ram._layer._ramtx_barcodes if flag_summarizing_barcode else ram._layer._ramtx_features
+        
+        int_total_weight_for_each_batch = 100000
+
+
+        def __process_batch__( file_summary_output, l_int_entry_current_batch ) :
+            ''' # 2022-05-08 13:19:07 
+            process the current batch of entries
             '''
-            """ convert matrix values and save it to the output RAMtx object """
-            # use multiple processes
-            # create a temporary folder inside the folder containing the input RAMtx object
-            path_folder_temp = f'{rtx.path_folder_mtx}temp_{UUID( )}/'
-            os.makedirs( path_folder_temp, exist_ok = True )
+            # retrieve the number of index_entries
+            int_num_entries = len( l_int_entry_current_batch )
+            # handle invalid inputs
+            if int_num_entries == 0 :
+                return -1
+            
+            for int_entry_indexed_valid, arr_int_entry_not_indexed, arr_value in zip( * rtx[ l_int_entry_current_batch ] ) : # retrieve data for the current batch
+                # retrieve summary for the entry
+                dict_res = summarizing_func( self, int_entry_indexed_valid, arr_int_entry_not_indexed, arr_value ) # summarize the data for the entry
+                # write the result to an output file
+                file_summary_output.write( ( '\t'.join( map( str, [ int_entry_indexed_valid ] + list( dict_res[ name_col ] if name_col in dict_res else np.nan for name_col in l_name_col_summarized ) ) ) + '\n' ).encode( ) ) # write an index for the current entry # 0>1 coordinate conversion for 'int_entry'
 
-            # prepare multiprocessing
-            arr_int_entry = rtx._df_index.index.values 
-            l_arr_int_entry_for_each_chunk, l_arr_weight_for_each_chunk = LIST_Split( arr_int_entry, int_num_threads, flag_contiguous_chunk = True, arr_weight_for_load_balancing = rtx._df_index.loc[ arr_int_entry ].int_num_bytes.values, return_split_arr_weight = True ) # perform load balancing using the total count for each entry as a weight
-
-            # setting for the pipeline
-            int_total_weight_for_each_batch = 2500000
-            def __summarize_a_portion_of_ramtx_as_a_worker__( index_chunk ) :
-                ''' # 2022-05-08 13:19:13 
-                summarize a portion of a sparse matrix containined in the input RAMtx object, referenced by 'index_chunk'
-                '''
-                # open output files
-                file_summary_output = gzip.open( f'{path_folder_temp}summarized.{index_chunk}.tsv.gz', 'wb' )
-
-                # methods and variables for handling metadata
-                int_total_weight_current_batch = 0
-                l_int_entry_current_batch = [ ]
-                def __process_batch__( file_summary_output, l_int_entry_current_batch ) :
-                    ''' # 2022-05-08 13:19:07 
-                    process the current batch of entries
-                    '''
-                    # retrieve the number of index_entries
-                    int_num_entries = len( l_int_entry_current_batch )
-                    # handle invalid inputs
-                    if int_num_entries == 0 :
-                        return -1
-
-                    # retrieve data for the current batch
-                    arr_int_feature, arr_int_barcode, arr_value = rtx[ l_int_entry_current_batch ]
-                    # renumber indices of sorted entries to match that in the sorted matrix
-                    
-                    # prepare
-                    # retrieve the start of the block, marked by the change of int_entry 
-                    l_pos_start_block = [ 0 ] + list( np.where( np.diff( arr_int_feature if rtx.flag_ramtx_sorted_by_id_feature else arr_int_barcode ) )[ 0 ] + 1 ) + [ len( arr_value ) ] # np.diff decrease the index of entries where change happens, and +1 should be done # 10X matrix data: row = feature, col = barcodes
-                    for index_block in range( len( l_pos_start_block ) - 1 ) : # for each block (each block contains records of a single entry)
-                        slice_for_the_current_block = slice( l_pos_start_block[ index_block ], l_pos_start_block[ index_block + 1 ] )
-                        arr_int_feature_of_the_current_block, arr_int_barcode_of_the_current_block, arr_value_of_the_current_block = arr_int_feature[ slice_for_the_current_block ], arr_int_barcode[ slice_for_the_current_block ], arr_value[ slice_for_the_current_block ] # retrieve data for the current block
-                        int_entry = ( arr_int_feature_of_the_current_block if rtx.flag_ramtx_sorted_by_id_feature else arr_int_barcode_of_the_current_block )[ 0 ] # retrieve the interger representation of the current entry
-                        
-                        dict_res = summarizing_func( self, arr_int_barcode_of_the_current_block, arr_int_feature_of_the_current_block, arr_value_of_the_current_block ) # summarize result
-                        # write the result
-                        file_summary_output.write( ( '\t'.join( map( str, [ int_entry ] + list( dict_res[ name_col ] if name_col in dict_res else np.nan for name_col in l_name_col_summarized ) ) ) + '\n' ).encode( ) ) # write an index for the current entry # 0>1 coordinate conversion for 'int_entry'
-
-                for int_entry, float_weight in zip( l_arr_int_entry_for_each_chunk[ index_chunk ], l_arr_weight_for_each_chunk[ index_chunk ] ) : # retrieve inputs for the current process
-                    # add current index_sorting to the current batch
-                    l_int_entry_current_batch.append( int_entry )
-                    int_total_weight_current_batch += float_weight
-                    # if the weight becomes larger than the threshold, process the batch and reset the batch
-                    if int_total_weight_current_batch > int_total_weight_for_each_batch :
-                        # process the current batch
-                        __process_batch__( file_summary_output, l_int_entry_current_batch )
-                        # initialize the next batch
-                        l_int_entry_current_batch = [ ]
-                        int_total_weight_current_batch = 0
-
-                # process the remaining entries
+        for int_entry, float_weight in zip( l_arr_int_entry_for_each_chunk[ index_chunk ], l_arr_weight_for_each_chunk[ index_chunk ] ) : # retrieve inputs for the current process
+            # add current index_sorting to the current batch
+            l_int_entry_current_batch.append( int_entry )
+            int_total_weight_current_batch += float_weight
+            # if the weight becomes larger than the threshold, process the batch and reset the batch
+            if int_total_weight_current_batch > int_total_weight_for_each_batch :
+                # process the current batch
                 __process_batch__( file_summary_output, l_int_entry_current_batch )
+                # initialize the next batch
+                l_int_entry_current_batch = [ ]
+                int_total_weight_current_batch = 0
 
-                # close files
-                for file in [ file_summary_output ] :
-                    file.close( )
-            
-            # organize workers
-            l_worker = list( mp.Process( target = __summarize_a_portion_of_ramtx_as_a_worker__, args = ( index_chunk, ) ) for index_chunk in range( int_num_threads ) )
+        # process the remaining entries
+        __process_batch__( file_summary_output, l_int_entry_current_batch )
 
-            ''' start works and wait until all works are completed by workers '''
-            for p in l_worker :
-                p.start( ) # start workers
-            for p in l_worker :
-                p.join( )  
+        # close files
+        for file in [ file_summary_output ] :
+            file.close( )
 
-            ''' combine outputs matrix '''
-            # combine output matrix files
-            for str_filename_glob in [ 'summarized.*.tsv.gz' ] :
-                # collect the list of input files in the order of 'index_chunk'
-                df = GLOB_Retrive_Strings_in_Wildcards( f'{path_folder_temp}{str_filename_glob}' )
-                df[ 'wildcard_0' ] = df.wildcard_0.astype( int )
-                df.sort_values( 'wildcard_0', inplace = True ) # sort the list of input files in the order of 'index_chunk'
-                # combine input files
-                OS_Run( [ 'cat' ] + list( df.path.values ), path_file_stdout = f"{path_folder_temp}{str_filename_glob.replace( '.*.', '.' )}", stdout_binary = True )
-                # delete input files
-                for path_file in df.path.values :
-                    os.remove( path_file )
+        # organize workers
+        l_worker = list( mp.Process( target = __summarize_a_portion_of_ramtx_as_a_worker__, args = ( index_chunk, ) ) for index_chunk in range( int_num_threads ) )
 
-            ''' read combined output file '''
-            df_summarized = pd.read_csv( f"{path_folder_temp}summarized.tsv.gz", sep = '\t', header = None )
-            df_summarized.columns = [ 'int_entry' ] + l_name_col_summarized # add appropriate column names
-            
-            # delete temporary folder
-            if not self.flag_debugging :
-                shutil.rmtree( path_folder_temp ) 
-                
-            # return summarized result as a dataframe
-            return df_summarized
+        ''' start works and wait until all works are completed by workers '''
+        for p in l_worker :
+            p.start( ) # start workers
+        for p in l_worker :
+            p.join( )  
         
-        df_summarized = RAMtx_Summarize( self, ( self.ramtx_for_barcode if flag_summarizing_barcode else self.ramtx_for_feature ), summarizing_func = summarizing_func, l_name_col_summarized = l_name_col_summarized, int_num_threads = int_num_threads ) # summarize a RAMtx object of a given axis
         
-        # append the summarized results to the annotation dataframe of the main AnnData attribute of the current RamData
-        df_entry = self.adata.obs if flag_summarizing_barcode else self.adata.var
-        arr_entry = df_entry.index.values
-        df_summarized[ 'str_entry' ] = list( arr_entry[ i ] for i in df_summarized.int_entry.values )
-        df_summarized.drop( columns = [ 'int_entry' ], inplace = True )
-        df_summarized.set_index( 'str_entry', inplace = True )
-        df_summarized.columns = list( f"{name_layer}_{s}" for s in df_summarized.columns.values ) # rename column names and add 'name_layer' + '_' as a prefix
-        if flag_overwrite_columns :
-            set_df_summarized_columns = set( df_summarized.columns.values )
-            df_entry.drop( columns = list( s for s in df_entry.columns.values if s in set_df_summarized_columns ), inplace = True ) # drop columns of df_entry that exist in 'df_summarized', a data that will be added to 'df_entry'
-        df_entry = df_entry.join( df_summarized, how = 'left', rsuffix = TIME_GET_timestamp( ) ) # add time stamp as a suffix
-        if flag_summarizing_barcode :
-            self.adata.obs = df_entry
-        else :
-            self.adata.var = df_entry
-        return df_entry # return resulting dataframe
+        
     def apply( self, name_layer, name_layer_new = None, func = None, path_folder_ramdata_output = None, flag_dtype_output = np.float64, flag_output_value_is_float = True, file_format = 'mtx_gzipped', int_num_digits_after_floating_point_for_export = 5, int_num_threads = None, dtype_of_row_and_col_indices = np.uint32, dtype_of_value = None, flag_simultaneous_processing_of_paired_ramtx = True, ba_mask_barcode = None, ba_mask_feature = None, verbose = False ) :
         ''' # 2022-06-04 02:06:56 
         this function apply a function and/or filters to the records of the given data, and create a new data object with 'name_layer_new' as its name.
