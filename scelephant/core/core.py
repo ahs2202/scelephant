@@ -11,7 +11,7 @@ import scanpy
 # define version
 _version_ = '0.0.0'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-07-03 11:54:26' 
+_last_modified_time_ = '2022-07-04 10:59:59' 
 
 ''' previosuly written for biobookshelf '''
 def CB_Parse_list_of_id_cell( l_id_cell, dropna = True ) :
@@ -1841,13 +1841,16 @@ class AnnDataContainer( ) :
 
 ''' a class for Zarr-based DataFrame object '''
 class ZarrDataFrame( ) :
-    """ # 2022-07-03 02:18:19 
+    """ # 2022-07-03 20:00:28 
     on-demend persistant DataFrame backed by Zarr persistent arrays.
     each column can be separately loaded, updated, and unloaded.
     a filter can be set, which allows updating and reading ZarrDataFrame as if it only contains the rows indicated by the given filter.
     the one of the functionality of this class is to provide a Zarr-based dataframe object that is compatible with Zarr.js (javascript implementation of Zarr), with a categorical data type (the format used in zarr is currently not supported in zarr.js) compatible with zarr.js.
     
     Of note, secondary indexing (row indexing) is always applied to unfiltered columns, not to a subset of column containing filtered rows.
+    
+    # ❤️❤️❤️ # 2022-07-04 10:40:14 implement handling of categorical series inputs/categorical series output. Therefore, convertion of ZarrDataFrame categorical data to pandas categorical data should occurs only when dataframe was given as input/output is in dataframe format.
+    # ❤️❤️❤️ # 2022-07-04 10:40:20  also, implement a flag-based switch for returning series-based outputs
     
     === arguments ===
     'path_folder_zdf' : a folder to store persistant zarr dataframe.
@@ -2027,10 +2030,12 @@ class ZarrDataFrame( ) :
                         values_decoded[ i ] = l_value_unique[ values[ i ] ] if values[ i ] >= 0 else np.nan # convert integer representations to its original string values # -1 (negative integers) encodes np.nan
                     return values_decoded
     def __setitem__( self, args, values ) :
-        ''' # 2022-07-03 11:34:00 
+        ''' # 2022-07-03 19:55:10 
         save/update a column at indexed positions.
         when a filter is active, only active entries will be saved/updated automatically.
         boolean mask/integer arrays/slice indexing is supported. However, indexing will be applied to the original column with unfiltered rows (i.e., when indexing is active, filter will be ignored)
+        
+        automatically detect dtype of the input array/list, including that of categorical data (all string data will be interpreted as categorical data). when the original dtype and dtype inferred from the updated values are different, an error will occur.
         '''
         # initialize indexing
         flag_indexing = False # a boolean flag indicating whether an indexing is active
@@ -2125,8 +2130,17 @@ class ZarrDataFrame( ) :
                 dtype = np.int32
             
             # open Zarr object representing the current column
-            # ❤️❤️❤️ handles the different dtype in 'a' mode. if dtype is different -> overwrite?... of at least previous dtype is compatible with the current dtype, use the dtype or upgrade the dtype...
             za = zarr.open( path_folder_col, mode = 'a', synchronizer = zarr.ThreadSynchronizer( ) ) if os.path.exists( path_folder_col ) else zarr.open( path_folder_col, mode = 'w', shape = ( self._n_rows_unfiltered, ), chunks = ( self._dict_zdf_metadata[ 'int_num_rows_in_a_chunk' ], ), dtype = dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object if the object does not exist.
+            
+            # if dtype changed from the previous zarr object, re-write the entire Zarr object with changed dtype. (this will happens very rarely, and will not significantly affect the performance)
+            if dtype != za.dtype : # dtype should be larger than za.dtype if they are not equal (due to increased number of bits required to encode categorical data)
+                print( f'{za.dtype} will be changed to {dtype}' )
+                path_folder_col_new = f"{self._path_folder_zdf}{name_col}_{UUID( )}/" # compose the new output folder
+                za_new = zarr.open( path_folder_col_new, mode = 'w', shape = ( self._n_rows_unfiltered, ), chunks = ( self._dict_zdf_metadata[ 'int_num_rows_in_a_chunk' ], ), dtype = dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object using the new dtype
+                za_new[ : ] = za[ : ] # copy the data 
+                shutil.rmtree( path_folder_col ) # delete the previous Zarr object
+                os.rename( path_folder_col_new, path_folder_col ) # replace the previous Zarr object with the new object
+                za = zarr.open( path_folder_col, mode = 'a', synchronizer = zarr.ThreadSynchronizer( ) ) # open the new Zarr object
             
             # encode data
             dict_encode_category = dict( ( e, i ) for i, e in enumerate( l_value_unique ) ) # retrieve a dictionary encoding value to integer representation of the value
@@ -2226,13 +2240,18 @@ class ZarrDataFrame( ) :
                 return dict_col_metadata[ 'l_value_unique' ]
             else :
                 return [ ]
-    def update( self, df ) :
+    def update( self, df, flag_use_index_as_integer_indices = True ) :
         """ # 2022-06-20 21:36:55 
         update ZarrDataFrame with the given 'df'
+        
+        'flag_use_index_as_integer_indices' : partial update is possible by setting indices of the rows of input DataFrame as the integer indices of the rows of the current ZarrDataFrame and setting 'flag_use_index_as_integer_indices' to True
         """
+        # retrieve coordinates for partial 
+        coords = df.index.values if flag_use_index_as_integer_indices else slice( None, None, None )
+        
         # update each column
         for name_col in df.columns.values :
-            self[ name_col ] = df[ name_col ]
+            self[ name_col, coords ] = df[ name_col ]
     def load( self, * l_name_col ) :
         ''' # 2022-06-20 22:09:42 
         load given column(s) into the memory
@@ -2672,7 +2691,7 @@ def Convert_MTX_10X_to_RamData( path_folder_mtx_10x_input, path_folder_ramdata_o
     
 ''' a class for accessing Zarr-backed count matrix data (RAMtx, Random-access matrix) '''
 class RAMtx( ) :
-    """ # 2022-07-02 12:36:41 
+    """ # 2022-07-04 00:55:53 
     This class represent a random-access mtx format for memory-efficient exploration of extremely large single-cell transcriptomics/genomics data.
     This class use a count matrix data stored in a random read-access compatible format, called RAMtx, enabling exploration of a count matrix with hundreds of millions cells with hundreds of millions of features.
     Also, the RAMtx format is supports multi-processing, and provide convenient interface for parallel processing of single-cell data
@@ -2990,6 +3009,52 @@ class RAMtx( ) :
             l_int_entry_indexed_valid, l_arr_int_entry_not_indexed, l_arr_value = __retrieve_data_from_ramtx_as_a_worker__( l_int_entry, flag_as_a_worker = False )
         
         return l_int_entry_indexed_valid, l_arr_int_entry_not_indexed, l_arr_value
+    def batch_generator( self, ba = None, int_num_entries_for_each_weight_calculation_batch = 1000, int_total_weight_for_each_batch = 1000000 ) :
+        ''' # 2022-07-04 00:45:48 
+        generate batches of list of integer indices of the active entries in the given bitarray 'ba'
+        
+        'ba' : (default None) if None is given, self.ba_active_entries bitarray will be used.
+        '''
+        # set defaule arguments
+        if ba is None :
+            ba = self.ba_active_entries #  if None is given, self.ba_active_entries bitarray will be used.
+        # initialize
+        # a namespace that can safely shared between functions
+        ns = { 'int_accumulated_weight_current_batch' : 0, 'l_int_entry_current_batch' : [ ], 'l_int_entry_for_weight_calculation_batch' : [ ] }
+        
+        def find_batch( ) :
+            """ # 2022-07-03 22:11:06 
+            retrieve indices of the current 'weight_current_batch', calculate weights, and yield a batch
+            """
+            st, en = self._za_mtx_index.get_orthogonal_selection( ns[ 'l_int_entry_for_weight_calculation_batch' ] ).T # retrieve start and end coordinates of the entries
+            arr_weight = en - st # calculate weight for each entry
+            del st, en
+            for int_entry, weight in zip( ns[ 'l_int_entry_for_weight_calculation_batch' ], arr_weight ) :
+                # update the current batch
+                ns[ 'l_int_entry_current_batch' ].append( int_entry )
+                ns[ 'int_accumulated_weight_current_batch' ] += weight
+
+                # check whether the current batch is full
+                if ns[ 'int_accumulated_weight_current_batch' ] >= int_total_weight_for_each_batch : # a current batch is full, yield the batch
+                    yield ns[ 'l_int_entry_current_batch' ] # return a batch
+                    # initialize the next batch
+                    ns[ 'l_int_entry_current_batch' ] = [ ] 
+                    ns[ 'int_accumulated_weight_current_batch' ] = 0
+
+            # initialize next 'weight_calculation_batch'
+            ns[ 'l_int_entry_for_weight_calculation_batch' ] = [ ]
+
+        for int_entry in bk.BA.find( ba ) : # iterate through active entries of the given bitarray
+            ns[ 'l_int_entry_for_weight_calculation_batch' ].append( int_entry ) # collect int_entry for the current 'weight_calculation_batch'
+            # once 'weight_calculation' batch is full, process the 'weight_calculation' batch
+            if len( ns[ 'l_int_entry_for_weight_calculation_batch' ] ) == int_num_entries_for_each_weight_calculation_batch :
+                for e in find_batch( ) : # generate batch from the 'weight_calculation' batch
+                    yield e
+        for e in find_batch( ) : # generate batch from the last 'weight_calculation_batch'
+            yield e
+        # return the remaining int_entries as the last batch (if available)
+        if len( ns[ 'l_int_entry_current_batch' ] ) > 0 :
+            yield ns[ 'l_int_entry_current_batch' ]
 ''' a class for representing axis of RamData (barcodes/features) '''
 class Axis( ) :
     """ # 2022-06-28 20:48:11 
@@ -4024,8 +4089,8 @@ class RamData( ) :
     def save( self, * l_name_adata ) :
         ''' wrapper of AnnDataContainer.save '''
         self.ad.update( * l_name_adata )
-    def summarize( self, name_layer, axis, summarizing_func, int_num_threads = None, flag_overwrite_columns = True ) :
-        ''' # 2022-07-02 22:08:54 
+    def summarize( self, name_layer, axis, summarizing_func, int_num_threads = None, flag_overwrite_columns = True, int_num_entries_for_each_weight_calculation_batch = 1000, int_total_weight_for_each_batch = 1000000 ) :
+        ''' # 2022-07-04 10:59:32 
         this function summarize entries of the given axis (0 = barcode, 1 = feature) using the given function
         
         example usage: calculate total sum, standard deviation, pathway enrichment score calculation, etc.
@@ -4058,6 +4123,8 @@ class RamData( ) :
                     
         'int_num_threads' : the number of CPUs to use. by default, the number of CPUs set by the RamData attribute 'int_num_cpus' will be used.
         'flag_overwrite_columns' : (Default: True) overwrite the columns of the output annotation dataframe of RamData.adata if columns with the same colume name exists
+        'int_num_entries_for_each_weight_calculation_batch' : number of entries to process for each batch for calculation of weights of each entries (weight = the number of unfiltered matrix records to process)
+        'int_total_weight_for_each_batch' : the total weight (minimum weight) for each batch for summary calculation
         
         =========
         outputs 
@@ -4118,20 +4185,23 @@ class RamData( ) :
             return -1
         # retrieve the list of key values returned by 'summarizing_func' by applying dummy values
         arr_dummy_one, arr_dummy_zero = np.ones( 10, dtype = int ), np.zeros( 10, dtype = int )
-        dict_res = summarizing_func( self, arr_dummy_zero, arr_dummy_one )
+        dict_res = summarizing_func( self, 0, arr_dummy_zero, arr_dummy_one )
         l_name_col_summarized = sorted( list( dict_res ) ) # retrieve the list of key values of an dict_res result returned by 'summarizing_func'
         
         
-        
         # retrieve RAMtx object to summarize
-        rtx = ram._layer._ramtx_barcodes if flag_summarizing_barcode else ram._layer._ramtx_features
+        rtx = self._layer._ramtx_barcodes if flag_summarizing_barcode else self._layer._ramtx_features
+        # retrieve Axis object to summarize 
+        ax = self.bc if flag_summarizing_barcode else self.ft
         
-        int_total_weight_for_each_batch = 100000
-
-
-        def __process_batch__( file_summary_output, l_int_entry_current_batch ) :
+        # create a temporary folder
+        path_folder_temp = f"{rtx._path_folder_ramtx}temp_{UUID( )}/" 
+        os.makedirs( path_folder_temp, exist_ok = True )
+        
+        # define functions for multiprocessing step
+        def process_batch( l_int_entry_current_batch, pipe_to_main_process ) :
             ''' # 2022-05-08 13:19:07 
-            process the current batch of entries
+            summarize a given list of entries, and write summarized result as a tsv file, and return the path to the output file
             '''
             # retrieve the number of index_entries
             int_num_entries = len( l_int_entry_current_batch )
@@ -4139,42 +4209,31 @@ class RamData( ) :
             if int_num_entries == 0 :
                 return -1
             
+            # open an output file
+            path_file_output = f"{path_folder_temp}{UUID( )}.tsv.gz" # define path of the output file
+            newfile = gzip.open( path_file_output, 'wb' )
+            
+            # iterate through the data of each entry
             for int_entry_indexed_valid, arr_int_entry_not_indexed, arr_value in zip( * rtx[ l_int_entry_current_batch ] ) : # retrieve data for the current batch
                 # retrieve summary for the entry
                 dict_res = summarizing_func( self, int_entry_indexed_valid, arr_int_entry_not_indexed, arr_value ) # summarize the data for the entry
                 # write the result to an output file
-                file_summary_output.write( ( '\t'.join( map( str, [ int_entry_indexed_valid ] + list( dict_res[ name_col ] if name_col in dict_res else np.nan for name_col in l_name_col_summarized ) ) ) + '\n' ).encode( ) ) # write an index for the current entry # 0>1 coordinate conversion for 'int_entry'
-
-        for int_entry, float_weight in zip( l_arr_int_entry_for_each_chunk[ index_chunk ], l_arr_weight_for_each_chunk[ index_chunk ] ) : # retrieve inputs for the current process
-            # add current index_sorting to the current batch
-            l_int_entry_current_batch.append( int_entry )
-            int_total_weight_current_batch += float_weight
-            # if the weight becomes larger than the threshold, process the batch and reset the batch
-            if int_total_weight_current_batch > int_total_weight_for_each_batch :
-                # process the current batch
-                __process_batch__( file_summary_output, l_int_entry_current_batch )
-                # initialize the next batch
-                l_int_entry_current_batch = [ ]
-                int_total_weight_current_batch = 0
-
-        # process the remaining entries
-        __process_batch__( file_summary_output, l_int_entry_current_batch )
-
-        # close files
-        for file in [ file_summary_output ] :
-            file.close( )
-
-        # organize workers
-        l_worker = list( mp.Process( target = __summarize_a_portion_of_ramtx_as_a_worker__, args = ( index_chunk, ) ) for index_chunk in range( int_num_threads ) )
-
-        ''' start works and wait until all works are completed by workers '''
-        for p in l_worker :
-            p.start( ) # start workers
-        for p in l_worker :
-            p.join( )  
+                newfile.write( ( '\t'.join( map( str, [ int_entry_indexed_valid ] + list( dict_res[ name_col ] if name_col in dict_res else np.nan for name_col in l_name_col_summarized ) ) ) + '\n' ).encode( ) ) # write an index for the current entry # 0>1 coordinate conversion for 'int_entry'
+            newfile.close( ) # close file
+            pipe_to_main_process.send( path_file_output ) # send information about the output file
+        def post_process_batch( path_file_result ) :
+            """ # 2022-07-04 10:42:04 
+            """
+            df = pd.read_csv( path_file_result, sep = '\t', index_col = 0, header = None ) # read summarized output file, using the first column as the integer indices of the entries
+            df.columns = l_name_col_summarized # name columns of the dataframe
+            ax.meta.update( df, flag_use_index_as_integer_indices = True ) # update metadata using ZarrDataFrame method
+            os.remove( path_file_result ) # remove the output file
+        # summarize the RAMtx using multiple processes
+        bk.Multiprocessing_Batch( rtx.batch_generator( ax.filter, int_num_entries_for_each_weight_calculation_batch, int_total_weight_for_each_batch ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 )
         
-        
-        
+        # remove temp folder
+        shutil.rmtree( path_folder_temp )
+        return 
     def apply( self, name_layer, name_layer_new = None, func = None, path_folder_ramdata_output = None, flag_dtype_output = np.float64, flag_output_value_is_float = True, file_format = 'mtx_gzipped', int_num_digits_after_floating_point_for_export = 5, int_num_threads = None, dtype_of_row_and_col_indices = np.uint32, dtype_of_value = None, flag_simultaneous_processing_of_paired_ramtx = True, ba_mask_barcode = None, ba_mask_feature = None, verbose = False ) :
         ''' # 2022-06-04 02:06:56 
         this function apply a function and/or filters to the records of the given data, and create a new data object with 'name_layer_new' as its name.
