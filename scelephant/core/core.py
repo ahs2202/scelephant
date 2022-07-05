@@ -11,7 +11,7 @@ import scanpy
 # define version
 _version_ = '0.0.0'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-07-04 10:59:59' 
+_last_modified_time_ = '2022-07-05 21:08:12' 
 
 ''' previosuly written for biobookshelf '''
 def CB_Parse_list_of_id_cell( l_id_cell, dropna = True ) :
@@ -1408,6 +1408,16 @@ _dict_file_format_to_ext = {
     'feather_lz4' :'feather_lz4.stacked',
     'index' :'idx.tsv.gz',
 }
+def _base64_decode( str_content ) :
+    """ # 2022-07-04 23:19:18 
+    receive base64-encoded string and return decoded bytes
+    """
+    return base64.b64decode( str_content.encode( 'ascii' ) )
+def _base64_encode( byte_content ) :
+    """ # 2022-07-04 23:19:18 
+    receive bytes and return base64-encoded string
+    """
+    return base64.b64encode( byte_content ).decode( 'ascii' )
 def _gzip_bytes( bytes_content ) :
     """ # 2022-05-24 23:43:36 
     gzip the given bytes 
@@ -2219,7 +2229,6 @@ class ZarrDataFrame( ) :
         else :
             df = pd.DataFrame( index = arr_index ) # build an empty dataframe using the integer indices
         return df
-        
     def _save_metadata_( self ) :
         ''' # 2022-06-20 21:44:42 
         save metadata of the current ZarrDataFrame
@@ -2293,6 +2302,26 @@ class ZarrDataFrame( ) :
         df = self.df # retrieve dataframe
         self.unload( ) # empty the cache
         return df
+    def save( self, path_folder_zdf, * l_name_col ) :
+        """ # 2022-07-04 21:09:34 
+        save data contained in the ZarrDataFrame object to the new path.
+        if a filter is active, filtered ZarrDataFrame will be saved.
+        
+        'path_folder_zdf' : the output ZarrDataFrame object
+        'l_name_col' : the list of names of columns to save. if no column name is given, copy all columns in the current ZarrDataFrame
+        """
+        # check validity of the path
+        path_folder_zdf = os.path.abspath( path_folder_zdf ) + '/' # retrieve abspath of the output object
+        assert self._path_folder_zdf != path_folder_zdf # the output folder should not be same as the folder of the current ZarrDataFrame
+
+        zdf = ZarrDataFrame( path_folder_zdf, flag_retrieve_categorical_data_as_integers = self._flag_retrieve_categorical_data_as_integers, flag_load_data_after_adding_new_column = self._flag_load_data_after_adding_new_column ) # open a new zdf using the same setting as the current ZarrDataFrame
+        
+        # handle empty 'l_name_col'
+        if len( l_name_col ) == 0 :
+            l_name_col = self.columns # if no column name is given, copy all columns in the current ZarrDataFrame to the new ZarrDataFrame
+        
+        for name_col in self.columns.intersection( l_name_col ) : # copy column by column
+            zdf[ name_col ] = self[ name_col ]
 ''' methods for creating RAMtx objects '''
 def __Merge_Sort_MTX_10X_and_Write_and_Index_Zarr__( za_mtx, za_mtx_index, * l_path_file_input, flag_ramtx_sorted_by_id_feature = True, flag_delete_input_file_upon_completion = False, dtype_mtx = np.float64, dtype_mtx_index = np.float64, int_size_buffer_for_mtx_index = 1000 ) :
     """ # 2022-07-02 11:37:05 
@@ -2644,7 +2673,7 @@ def Convert_MTX_10X_to_RAMtx( path_folder_mtx_10x_input, path_folder_ramtx_outpu
         with open( path_file_flag, 'w' ) as file :
             file.write( TIME_GET_timestamp( True ) )
 def Convert_MTX_10X_to_RamData( path_folder_mtx_10x_input, path_folder_ramdata_output, name_layer = 'raw', int_num_threads = 15, int_max_num_entries_for_chunk = 10000000, int_max_num_files_for_each_merge_sort = 5, dtype_mtx = np.float64, dtype_mtx_index = np.float64, int_num_of_records_in_a_chunk_zarr_matrix = 10000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, flag_simultaneous_indexing_of_cell_and_barcode = True, verbose = False, flag_debugging = False ) :
-    """ # 2022-06-22 00:11:46 
+    """ # 2022-07-04 21:31:51 
     convert 10X count matrix data to the two RAMtx object, one sorted by features and the other sorted by barcodes, and construct a RamData data object on disk, backed by Zarr persistant arrays
 
     inputs:
@@ -2671,7 +2700,7 @@ def Convert_MTX_10X_to_RamData( path_folder_mtx_10x_input, path_folder_ramdata_o
     # copy features/barcode string representation zarr objects
     # copy features/barcode ZarrDataFrame containing number/categorical data
     for name_axis_singular in [ 'feature', 'barcode' ] :
-        for str_suffix in [ 's.tsv.gz.base64.concatanated.txt', 's.index.tsv.gz.base64.txt', 's.str.zarr', 's.num_and_cat.zdf' ] :
+        for str_suffix in [ 's.str.tsv.gz.base64.concatenated.txt', 's.str.index.tsv.gz.base64.txt', 's.str.zarr', 's.num_and_cat.zdf' ] :
             OS_Run( [ 'cp', '-r', f"{path_folder_data}sorted_by_{name_axis_singular}/{name_axis_singular}{str_suffix}", f"{path_folder_ramdata_output}{name_axis_singular}{str_suffix}" ] )
             
     # write metadata 
@@ -3261,6 +3290,74 @@ class Axis( ) :
             if 0 <= i < n and ba_filter[ i ] :
                 ba_filter_of_selected_entries[ i ] = True
         return ba_filter_of_selected_entries
+    def save( self, path_folder ) :
+        """ # 2022-07-05 00:52:39 
+        save data contained in the Axis object (and metadata saved as ZarrDataFrame) to the new path.
+        if a filter is active, filtered data will be saved.
+        
+        'path_folder' : the path of the output Axis object
+        """
+        # check validity of the path
+        path_folder = os.path.abspath( path_folder ) + '/' # retrieve abspath of the output object
+        assert self._path_folder != path_folder
+        
+        # create output folder
+        os.makedirs( path_folder, exist_ok = True )
+        
+        # save number and categorical data
+        self.meta.save( f"{path_folder}{self._name_axis}.num_and_cat.zdf" ) # save all columns
+        
+        # save string data
+        # initialize
+        za = zarr.open( f"{self._path_folder}{self._name_axis}.str.zarr", mode = 'r', synchronizer = zarr.ThreadSynchronizer( ) ) # open a zarr object containing the string representation of the entries
+        za_new = zarr.open( f"{path_folder}{self._name_axis}.str.zarr", mode = 'w', shape = ( self.meta.n_rows, za.shape[ 1 ] ), chunks = za.chunks, dtype = str, synchronizer = zarr.ThreadSynchronizer( ) ) # writing a new zarr object
+        # open Base64-encoded data
+        newfile_chunked_data = open( f'{path_folder}{self._name_axis}s.str.tsv.gz.base64.concatenated.txt', 'w' ) # base64-encodec concatenated data files
+        l_index_chunked_data = [ ] # a list that will contains indices of concatenated chunks 
+        
+        int_size_buffer = za.chunks[ 0 ] # use the chunk size as the size of the buffer
+        ns = dict( ) # namespace that can be safely modified across the scopes of the functions
+        ns[ 'int_num_entries_written' ] = 0 # initialize the last position of written entries (after filter applied)
+        ns[ 'int_num_bytes_written' ] = 0 # initialize the last position of written entries (after filter applied)
+        ns[ 'l_buffer' ] = [ ] # initialize the buffer
+        
+        def flush_buffer( ) :
+            ''' # 2022-07-04 23:34:40 
+            transfer string representations of entries to output Zarr object and the base64-encoded chunked data
+            '''
+            # retrieve data of the entries in the buffer, and empty the buffer
+            n = len( ns[ 'l_buffer' ] ) # retrieve number of entries in the buffer
+            data = za.get_orthogonal_selection( ns[ 'l_buffer' ] ) # retrieve data from the Zarr object
+            ns[ 'l_buffer' ] = [ ] # empty the buffer
+            
+            # write Zarr object
+            za_new[ ns[ 'int_num_entries_written' ] : ns[ 'int_num_entries_written' ] + n, : ] = data # transfer data to the new Zarr object
+            ns[ 'int_num_entries_written' ] += n # update the number of entries written
+            
+            # write a chunk for a file containing concatenated chunks (for javascript access)
+            str_content = ' ' + _base64_encode( _gzip_bytes( ( '\n'.join( '\t'.join( row ) for row in data.T ) + '\n' ).encode( ) ) ) # retrieved base64-encoded, padded string
+            int_num_bytes = len( str_content ) # retrieve number of bytes of the current 
+            newfile_chunked_data.write( str_content )
+            l_index_chunked_data.append( [ ns[ 'int_num_bytes_written' ], ns[ 'int_num_bytes_written' ] + int_num_bytes ] )
+            ns[ 'int_num_bytes_written' ] += int_num_bytes # update the number of bytes written for the concatenated chunks
+            
+        # process entries using a buffer
+        for i in range( len( self ) ) if self.filter is None else bk.BA.find( self.filter, val = 1 ) : # iteratre through active integer representations of the entries
+            ns[ 'l_buffer' ].append( i )
+            if len( ns[ 'l_buffer' ] ) >= int_size_buffer : # flush the buffer if it is full
+                flush_buffer( )
+        if len( ns[ 'l_buffer' ] ) >= 0 : # empty the buffer
+            flush_buffer( )
+        newfile_chunked_data.close( ) # close file
+        
+        # write index of the file containing concatenated chunks
+        df_index = pd.DataFrame( l_index_chunked_data, columns = [ 'index_byte_start', 'index_byte_end' ] )
+        df_index[ 'index_chunk' ] = np.arange( len( df_index ) ) # retrieve 'index_chunk'
+        with io.BytesIO( ) as file :
+            df_index[ [ 'index_chunk', 'index_byte_start', 'index_byte_end' ] ].T.to_csv( file, sep = '\t', index = True, header = False )
+            file.seek( 0 )
+            with open( f'{path_folder}{self._name_axis}s.str.index.tsv.gz.base64.txt', 'w' ) as newfile :
+                newfile.write( _base64_encode( _gzip_bytes( file.read( ) ) ) )
     def __repr__( self ) :
         """ # 2022-06-24 22:41:12 
         """
@@ -3877,6 +3974,7 @@ class RamData( ) :
         """ # 2022-06-28 20:57:37 
         """
         # handle input arguments
+        path_folder_ramdata = os.path.abspath( path_folder_ramdata ) + '/' # retrieve abs path
         self._path_folder_ramdata = path_folder_ramdata
         self.verbose = verbose
         self.flag_debugging = flag_debugging
@@ -4205,9 +4303,6 @@ class RamData( ) :
             '''
             # retrieve the number of index_entries
             int_num_entries = len( l_int_entry_current_batch )
-            # handle invalid inputs
-            if int_num_entries == 0 :
-                return -1
             
             # open an output file
             path_file_output = f"{path_folder_temp}{UUID( )}.tsv.gz" # define path of the output file
@@ -4233,9 +4328,8 @@ class RamData( ) :
         
         # remove temp folder
         shutil.rmtree( path_folder_temp )
-        return 
-    def apply( self, name_layer, name_layer_new = None, func = None, path_folder_ramdata_output = None, flag_dtype_output = np.float64, flag_output_value_is_float = True, file_format = 'mtx_gzipped', int_num_digits_after_floating_point_for_export = 5, int_num_threads = None, dtype_of_row_and_col_indices = np.uint32, dtype_of_value = None, flag_simultaneous_processing_of_paired_ramtx = True, ba_mask_barcode = None, ba_mask_feature = None, verbose = False ) :
-        ''' # 2022-06-04 02:06:56 
+    def apply( self, name_layer, name_layer_new, func = None, path_folder_ramdata_output = None, dtype_of_row_and_col_indices = np.int32, dtype_of_value = np.float64, int_num_threads = None, flag_simultaneous_processing_of_paired_ramtx = True, int_num_entries_for_each_weight_calculation_batch = 1000, int_total_weight_for_each_batch = 1000000 ) :
+        ''' # 2022-07-05 17:41:57 
         this function apply a function and/or filters to the records of the given data, and create a new data object with 'name_layer_new' as its name.
         
         example usage: calculate normalized count data, perform log1p transformation, cell filtering, etc.                             
@@ -4244,25 +4338,24 @@ class RamData( ) :
         inputs 
         =========
 
-        'name_layer' : name of the data in the given RamData object to analyze
-        'name_layer_new' : (Default: 'name_layer') name of the new data for the paired RAMtx objects that will contains transformed values (the outputs of the functions applied to previous data values). The disk size of the RAMtx objects can be larger or smaller than the RAMtx objects of 'name_layer'. please make sure that sufficient disk space remains before calling this function.
-        'path_folder_ramdata_output' : (Default: store inside the current RamData). The directory of the RamData object that will contain the outputs (paired RAMtx objects). if integer representations of features and barcodes are updated from filtering, the output RAMtx is now incompatible with the current RamData and should be stored outside the current RamData object. The output directory of the new RamData object can be given through this argument. The RamData object directory should contains new features.tsv.gz and barcodes.tsv.gz (with updated integer representation of features and barcodes)
-        'flag_dtype_output' : a datatype of the output values
+        'name_layer' : (required) name of the data in the given RamData object to analyze
+        'name_layer_new' : (required) name of the new data for the paired RAMtx objects that will contains transformed values (the outputs of the functions applied to previous data values). The disk size of the RAMtx objects can be larger or smaller than the RAMtx objects of 'name_layer'. please make sure that sufficient disk space remains before calling this function.
+        'path_folder_ramdata_output' : (Default: store inside the current RamData). The directory of the RamData object that will contain the outputs (paired RAMtx objects). if integer representations of features and barcodes are updated from filtering, the output RAMtx is now incompatible with the current RamData and should be stored as a separate RamData object. The output directory of the new RamData object can be given through this argument.
         'func' : function object or string (Default: identity) a function that takes a tuple of two integers (integer representations of barcode and feature) and another integer or float (value) and returns a modified record. Also, the current RamData object will be given as the first argument (self), and attributes of the current RamData can be used inside the function
 
-                 func( self, int_barcode, int_feature, value ) -> int_barcode_new, int_feature_new, value_new
+                 func( self, int_entry_indexed, arr_int_entries_not_indexed, arr_value ) -> int_entry_indexed, arr_int_entries_not_indexed, arr_value
 
                  if None is returned, the entry will be discarded in the output RAMtx object. Therefore, the function can be used to both filter or/and transform values
                  
                  a list of pre-defined functions are the followings:
                  'log1p' :
                           X_new = log_10(X_old + 1)
+                 'ident' or None :
+                          X_new = X_old
                  
-        'flag_output_value_is_float' : (Default: True) a flag indicating whether the output value is a floating point number. If True, 'int_num_digits_after_floating_point_for_export' argument will be active. if 'flag_output_value_is_float' is None, use the same setting as the input RAMtx object. This argument is only valid for the 'mtx_gzipped' output format
-        'int_num_digits_after_floating_point_for_export' : (Default: 5) the number of digitst after the floating point when exporting the resulting values to the disk.
         'flag_simultaneous_processing_of_paired_ramtx' : (Default: True) process the paired RAMtx simultaneously using two processes.
-        'ba_mask_barcode', 'ba_mask_feature' : the bitarray masks of integer representations of barcodes and features to be included in the output RAMtx (0 = exclude, 1 = include). the barcodes that are exist in the given RAMtx object but absent in the 'ba_mask_barcode' will be deleted from the list. However, the integer representations will NOT be updated automatically, and the user should implement the function given through the 'func' argument to update the 'int_barcode' and 'int_feature'
         'int_num_threads' : the number of CPUs to use. by default, the number of CPUs set by the RamData attribute 'int_num_cpus' will be used.
+        'dtype_of_row_and_col_indices', 'dtype_of_value' : the dtype of the output matrix
 
         =================
         input attributes 
@@ -4285,16 +4378,14 @@ class RamData( ) :
             name_layer_new = name_layer
         if path_folder_ramdata_output is None :
             path_folder_ramdata_output = self._path_folder_ramdata
-        if func is None :
+            
+        if func == 'ident' or func is None  :
             # define identity function if 'func' has not been given
-            def func( self, int_barcode, int_feature, value ) :
-                return int_barcode, int_feature, value
+            def func( self, int_entry_indexed, arr_int_entries_not_indexed, arr_value ) :
+                return int_entry_indexed, arr_int_entries_not_indexed, arr_value
         elif func == 'log1p' :
-            def func( self, int_barcode, int_feature, value ) :
-                try :
-                    return int_barcode, int_feature, math.log10( value + 1 )
-                except : # if an error occurred, return 'None' indicating the output value is invalid
-                    return int_barcode, int_feature, None
+            def func( self, int_entry_indexed, arr_int_entries_not_indexed, arr_value ) :
+                return int_entry_indexed, arr_int_entries_not_indexed, np.log10( arr_value + 1 )
         # check the validility of the input arguments
         if not name_layer in self.layers :
             if verbose :
@@ -4305,269 +4396,175 @@ class RamData( ) :
                 print( f"[ERROR] [RamData.Apply] invalid argument 'name_layer_new' : '{name_layer_new}' is already present in the current RamData." )
             return -1 
         
-        ''' set 'name_layer' as current data of RamData '''
-        self.set_data( name_layer )
-        ''' retrieve the default setting '''
-        if flag_output_value_is_float is None : # for mtx_gzipped file format, if the input file is integer format, the output file will be also in the integer format
-            flag_output_value_is_float = 'flag_output_value_is_float' in self.ramtx_for_barcode._dict_metadata and self.ramtx_for_barcode._dict_metadata[ 'flag_output_value_is_float' ]
+        ''' set 'name_layer' as a current layer of RamData '''
+        self.layer = name_layer
         
-        """ retrieve RAMtx_file_format specific export settings """
-        str_format_value = "{:." + str( int_num_digits_after_floating_point_for_export ) + "f}" if flag_output_value_is_float else "{}" # a string for formating value # format for a float or an integer 
-        str_etx, str_ext_index, func_arrays_mtx_to_processed_bytes = _get_func_arrays_mtx_to_processed_bytes_and_other_settings_based_on_file_format( file_format, str_format_value, dtype_of_row_and_col_indices, dtype_of_value )
-        
-        def RAMtx_Apply( self, rtx, path_folder_ramtx_output, func, flag_output_value_is_float = True, file_format = 'feather_lz4', int_num_digits_after_floating_point_for_export = 5, flag_dtype_output = np.float64, int_num_threads = 8, ba_mask_barcode = None, ba_mask_feature = None, verbose = False, flag_debugging = False ) :
-            ''' 
-            Assumes 'flag_return_arrays_of_int_feature_int_barcode_value_from_getitem_calls_and_access_items_using_integer_indices_only' setting for RAmtx object is set to 'True'
+        def RAMtx_Apply( self, rtx, ax, path_folder_ramtx_output, int_num_threads ) :
+            ''' # 2022-07-05 17:41:52 
             
             inputs 
             =========
 
             'rtx': an input RAMtx object
             'path_folder_ramtx_output' : an output folder for the new RAMtx object
-            'func' : a function that takes a tuple of two integers (integer representations of barcode and feature) and another integer or float and returns an modified record. 
-
-                     func( self, int_barcode, int_feature, value ) -> int_barcode_new, int_feature_new, value_new
-
-                     if None or np.nan is returned, the entry will be discarded in the output RAMtx object. Therefore, the function can be used to filter or/and transform values
-            'flag_output_value_is_float' : (Default: True) a flag indicating whether the output value is a floating point number. If True, 'int_num_digits_after_floating_point_for_export' argument will be active.
-            'file_format' : for more detail, see docstring of the RAMtx class
-            'int_num_digits_after_floating_point_for_export' : (Default: 5) the number of digitst after the floating point when exporting the resulting values to the disk.
-            'ba_mask_barcode', 'ba_mask_feature' : the bitarray masks of integer representations of barcodes and features to be included in the output RAMtx (0 = exclude, 1 = include). the barcodes that are exist in the given RAMtx object but absent in the 'ba_mask_barcode' will be deleted from the list. However, the integer representations will NOT be updated automatically, and the user should implement the function given through the 'func' argument to update the 'int_barcode' and 'int_feature'
             '''
             # create an ramtx output folder
             os.makedirs( path_folder_ramtx_output, exist_ok = True )
-
-            """ convert matrix values and save it to the output RAMtx object """
-            # use multiple processes
             # create a temporary folder
             path_folder_temp = f'{path_folder_ramtx_output}temp_{UUID( )}/'
-            os.makedirs( path_folder_temp, exist_ok = True )
-
-            # prepare multiprocessing
-            ''' does not retrieve data of entries not included in 'ba_mask_feature' (if 'flag_ramtx_sorted_by_id_feature' is True) or 'ba_mask_barcode'. '''
-            ba_mask_entry = ba_mask_feature if rtx.flag_ramtx_sorted_by_id_feature else ba_mask_barcode # retrieve valid set of 'int_entry'
-            if ba_mask_entry is not None : # isinstance( ba, bitarray )
-                arr_int_entry = list( i for i in rtx._df_index.index.values if ba_mask_entry[ i ] ) # retrieve valid set of 'int_entry' (given by 'ba_mask') available in the current RAMtx
-            else :
-                arr_int_entry = rtx._df_index.index.values # if 'ba_mask' is None, use all 'int_entry' available in the current RAMtx
-            l_arr_int_entry_for_each_chunk, l_arr_weight_for_each_chunk = LIST_Split( arr_int_entry, int_num_threads, flag_contiguous_chunk = True, arr_weight_for_load_balancing = rtx._df_index.loc[ arr_int_entry ].int_num_bytes.values, return_split_arr_weight = True ) # perform load balancing using the total count for each entry as a weight
-
-            # setting for the pipeline
-            int_total_weight_for_each_batch = 2500000
-            def __compress_and_index_a_portion_of_ramtx_as_a_worker__( index_chunk, q ) :
-                ''' # 2022-05-08 13:19:13 
-                save a portion of a sparse matrix referenced by 'index_chunk'
-                'q' : multiprocessing.Queue object for collecting results
+            for path_folder in [ path_folder_ramtx_output, path_folder_temp ] :
+                os.makedirs( path_folder, exist_ok = True )
+                
+            # open Zarr matrix and index objects of the output RAMtx
+            path_folder_za_mtx_ramtx = f"{path_folder_ramtx_output}matrix.zarr/" # retrieve the folder path of the output RAMtx Zarr matrix object.
+            za_mtx_index = zarr.open( f'{path_folder_ramtx_output}matrix.index.zarr', mode = 'w', shape = rtx._za_mtx_index.shape, chunks = rtx._za_mtx_index.chunks, dtype = rtx._za_mtx_index.dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # use the same dtype and chunk size of the current RAMtx
+            za_mtx = zarr.open( path_folder_za_mtx_ramtx, mode = 'w', shape = rtx._za_mtx.shape, chunks = rtx._za_mtx.chunks, dtype = dtype_of_value, synchronizer = zarr.ThreadSynchronizer( ) ) # use the same chunk size of the current RAMtx
+            ns = dict( ) # create a namespace that can safely shared between different scopes of the functions
+            ns[ 'int_num_records_written_to_ramtx' ] = 0 # initlaize the total number of records written to ramtx object
+            ns[ 'int_num_chunks_written_to_ramtx' ] = 0 # initialize the number of chunks written to ramtx object
+            int_num_records_in_a_chunk_of_mtx = rtx._za_mtx.chunks[ 0 ] # retrieve the number of records in a chunk of a Zarr matrix
+            
+            
+            """ convert matrix values and save it to the output RAMtx object """
+            # define functions for multiprocessing step
+            def process_batch( l_int_entry_current_batch, pipe_to_main_process ) :
+                ''' # 2022-05-08 13:19:07 
+                retrieve data for a given list of entries, transform values, and save to a Zarr object and index the object, and returns the number of written records and the paths of the written objects (index and Zarr matrix)
                 '''
-                # open output files
-                file_output = open( f'{path_folder_temp}indexed.{index_chunk}.{str_etx}', 'wb' )
-                file_index_output = gzip.open( f'{path_folder_temp}indexed.{index_chunk}.{str_etx}.{str_ext_index}', 'wb' )
+                # retrieve the number of index_entries
+                int_num_entries = len( l_int_entry_current_batch )
 
-                int_num_bytes_written = 0 # track the number of written bytes
-                int_num_records_written = 0 # track the number of records written to the output file
-                # methods and variables for handling metadata
-                int_total_weight_current_batch = 0
-                l_int_entry_current_batch = [ ]
-                def __process_batch__( file_output, file_index_output, int_num_bytes_written, int_num_records_written, l_int_entry_current_batch ) :
-                    ''' # 2022-05-08 13:19:07 
-                    process the current batch and return updated 'int_num_bytes_written' and 'int_num_records_written'
-                    '''
-                    # retrieve the number of index_entries
-                    int_num_entries = len( l_int_entry_current_batch )
-                    # handle invalid inputs
-                    if int_num_entries == 0 :
-                        return int_num_bytes_written, int_num_records_written
+                # open an Zarr object
+                path_folder_zarr_output = f"{path_folder_temp}{UUID( )}.zarr/" # define output Zarr object path
+                za_output = zarr.open( path_folder_zarr_output, mode = 'w', shape = rtx._za_mtx.shape, chunks = rtx._za_mtx.chunks, dtype = dtype_of_value, synchronizer = zarr.ThreadSynchronizer( ) )
+                # open an index file
+                path_file_index_output = f"{path_folder_temp}{UUID( )}.index.tsv.gz" # define output index file path
+                newfile_index = gzip.open( path_file_index_output, 'wb' )
+                int_num_records_written = 0 # initialize the record count
 
-                    # retrieve data for the current batch
-                    arr_int_feature, arr_int_barcode, arr_value = rtx[ l_int_entry_current_batch ]
-                    # renumber indices of sorted entries to match that in the sorted matrix
+                # iterate through the data of each entry
+                for int_entry_indexed_valid, arr_int_entry_not_indexed, arr_value in zip( * rtx[ l_int_entry_current_batch ] ) : # retrieve data for the current batch
+                    # transform the values of an entry
+                    int_entry_indexed_valid, arr_int_entry_not_indexed, arr_value = func( self, int_entry_indexed_valid, arr_int_entry_not_indexed, arr_value ) 
+                    int_num_records = len( arr_value ) # retrieve number of returned records
+                    za_output[ int_num_records_written : int_num_records_written + int_num_records ] = np.vstack( ( arr_int_entry_not_indexed, arr_value ) ).T # save transformed data
+                    # write the result to the index file
+                    newfile_index.write( ( '\t'.join( map( str, [ int_entry_indexed_valid, int_num_records_written, int_num_records_written + int_num_records ] ) ) + '\n' ).encode( ) ) # write an index for the current entry # 0>1 coordinate conversion for 'int_entry'
+                    # update the number of records written
+                    int_num_records_written += int_num_records
+                newfile_index.close( ) # close file
+                za_output.resize( int_num_records_written, 2 ) # resize the output Zarr object so that there is no 
+                pipe_to_main_process.send( ( int_num_records_written, path_folder_zarr_output, path_file_index_output ) ) # send information about the output files
+            def post_process_batch( res ) :
+                """ # 2022-07-04 10:42:04 
+                """
+                # parse result
+                int_num_records_written, path_folder_zarr_output, path_file_index_output = res
+                
+                ns[ 'int_num_records_written_to_ramtx' ] += int_num_records_written # update the number of records written to the output RAMtx
+                int_num_chunks_written_for_a_batch = int( np.ceil( int_num_records_written / int_num_records_in_a_chunk_of_mtx ) ) # retrieve the number of chunks that were written for a batch
+                int_num_chunks_written_to_ramtx = ns[ 'int_num_chunks_written_to_ramtx' ] # retrieve the number of chunks already present in the output RAMtx zarr matrix object
+                
+                # copy Zarr chunks to RAMtx Zarr matrix object
+                os.chdir( path_folder_zarr_output )
+                for e in glob.glob( '*.0' ) : # to reduce the size of file paths returned by glob, use relative path to retrieve the list of chunk files of the Zarr matrix of the current batch
+                    index_chunk = int( e.split( '.0', 1 )[ 0 ] ) # retrieve the integer index of the chunk
+                    os.rename( e, path_folder_za_mtx_ramtx + str( index_chunk + int_num_chunks_written_to_ramtx ) + '.0' ) # simply rename the chunk to transfer stored values
+                
+                # retrieve index data of the current batch
+                arr_index = pd.read_csv( path_file_index_output, header = None, sep = '\t' ).values.astype( int ) # convert to integer dtype
+                arr_index[ :, 1 : ] += int_num_chunks_written_to_ramtx * int_num_records_in_a_chunk_of_mtx # match the chunk boundary. if there are empty rows in the chunks currently written to ramtx, these empty rows will be considered as rows containing records, so that Zarr matrix written for a batch can be easily transferred by simply renaming the chunk files
+                za_mtx_index.set_orthogonal_selection( arr_index[ :, 0 ], arr_index[ :, 1 : ] ) # update the index of the entries of the current batch
+                
+                # update the number of chunks written to RAMtx Zarr matrix object
+                ns[ 'int_num_chunks_written_to_ramtx' ] += int_num_chunks_written_for_a_batch
+                
+                # delete temporary files and folders
+                shutil.rmtree( path_folder_zarr_output )
+                os.remove( path_file_index_output )
+                
+            # transform the values of the RAMtx using multiple processes
+            bk.Multiprocessing_Batch( rtx.batch_generator( ax.filter, int_num_entries_for_each_weight_calculation_batch, int_total_weight_for_each_batch ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 )
 
-                    # retrieve the start of the block, marked by the change of int_entry 
-                    l_pos_start_block = [ 0 ] + list( np.where( np.diff( arr_int_feature if rtx.flag_ramtx_sorted_by_id_feature else arr_int_barcode ) )[ 0 ] + 1 ) + [ len( arr_value ) ] # np.diff decrease the index of entries where change happens, and +1 should be done # 10X matrix data: row = feature, col = barcodes
-                    # prepare
-                    
-                    for index_block in range( len( l_pos_start_block ) - 1 ) : # for each block (each block contains records of a single entry)
-                        slice_for_the_current_block = slice( l_pos_start_block[ index_block ], l_pos_start_block[ index_block + 1 ] )
-                        arr_int_feature_of_the_current_block, arr_int_barcode_of_the_current_block, arr_value_of_the_current_block = arr_int_feature[ slice_for_the_current_block ], arr_int_barcode[ slice_for_the_current_block ], arr_value[ slice_for_the_current_block ] # retrieve data for the current block
-
-                        ''' iterate through each record, and apply function to each record '''
-                        l_int_feature_of_the_current_block, l_int_barcode_of_the_current_block, l_value_of_the_current_block = [ ], [ ], [ ] # collect the result values
-                        int_entry = None # initialize the int_entry
-                        for int_feature, int_barcode, value in zip( arr_int_feature_of_the_current_block, arr_int_barcode_of_the_current_block, arr_value_of_the_current_block ) :
-                            ''' filter the record based on the given 'ba_mask_feature' and 'ba_mask_barcode' '''
-                            if ( ba_mask_feature is not None ) and ( not ba_mask_feature[ int_feature ] ) :
-                                continue
-                            elif ( ba_mask_barcode is not None ) and ( not ba_mask_barcode[ int_barcode ] ) :
-                                continue
-
-                            """ apply function (filter) to each record  """
-                            int_barcode_new, int_feature_new, value_new = func( self, int_barcode, int_feature, value )
-                            if int_entry is None : # retrieve the int_entry
-                                int_entry = int_feature_new if rtx.flag_ramtx_sorted_by_id_feature else int_barcode_new # retrieve int_entry of the current block # row = feature, col = barcode
-
-                            ''' convert output values to a line in the output file '''
-                            if value_new is not None :
-                                l_int_feature_of_the_current_block.append( int_feature_new )
-                                l_int_barcode_of_the_current_block.append( int_barcode_new )
-                                l_value_of_the_current_block.append( value_new )
-                                
-                        int_num_records_written_for_the_current_entry = len( l_value_of_the_current_block )    
-                        if int_num_records_written_for_the_current_entry > 0 : # if current entry contains valid record(s)
-                            # convert list of values to numpy arrays
-                            arr_int_feature_of_the_current_block_new = np.array( l_int_feature_of_the_current_block, dtype = arr_int_feature_of_the_current_block.dtype )
-                            arr_int_barcode_of_the_current_block_new = np.array( l_int_barcode_of_the_current_block, dtype = arr_int_barcode_of_the_current_block.dtype )
-                            arr_value_of_the_current_block_new = np.array( l_value_of_the_current_block, dtype = arr_value_of_the_current_block.dtype if flag_dtype_output is None else flag_dtype_output ) # by default, use the datatype of the current block
-
-                            bytes_processed = func_arrays_mtx_to_processed_bytes( ( arr_int_feature_of_the_current_block_new, arr_int_barcode_of_the_current_block_new, arr_value_of_the_current_block_new ) ) # convert arrays_mtx_new to processed bytes
-                            int_num_bytes_written_for_the_current_entry = len( bytes_processed ) # record the number of bytes of the written data
-                            # write the processed bytes to the output file
-                            file_output.write( bytes_processed )
-
-                            # write the index
-                            file_index_output.write( ( '\t'.join( map( str, [ int_entry + 1, int_num_bytes_written, int_num_bytes_written + int_num_bytes_written_for_the_current_entry, int_num_records_written_for_the_current_entry ] ) ) + '\n' ).encode( ) ) # write an index for the current entry # 0>1 coordinate conversion for 'int_entry'
-
-                            int_num_bytes_written += int_num_bytes_written_for_the_current_entry # update the number of bytes written
-                            int_num_records_written += int_num_records_written_for_the_current_entry # update the number of records written
-
-                    return int_num_bytes_written, int_num_records_written
-
-                for int_entry, float_weight in zip( l_arr_int_entry_for_each_chunk[ index_chunk ], l_arr_weight_for_each_chunk[ index_chunk ] ) : # retrieve inputs for the current process
-                    # add current index_sorting to the current batch
-                    l_int_entry_current_batch.append( int_entry )
-                    int_total_weight_current_batch += float_weight
-                    # if the weight becomes larger than the threshold, process the batch and reset the batch
-                    if int_total_weight_current_batch > int_total_weight_for_each_batch :
-                        # process the current batch
-                        int_num_bytes_written, int_num_records_written = __process_batch__( file_output, file_index_output, int_num_bytes_written, int_num_records_written, l_int_entry_current_batch )
-                        # initialize the next batch
-                        l_int_entry_current_batch = [ ]
-                        int_total_weight_current_batch = 0
-
-                # process the remaining entries
-                int_num_bytes_written, int_num_records_written = __process_batch__( file_output, file_index_output, int_num_bytes_written, int_num_records_written, l_int_entry_current_batch )
-
-                # close files
-                for file in [ file_output, file_index_output ] :
-                    file.close( )
-
-                # record the number of records written for the current chunk
-                q.put( int_num_records_written ) 
-
-            q = mp.Queue( ) # multiprocessing queue is process-safe
-            l_worker = list( mp.Process( target = __compress_and_index_a_portion_of_ramtx_as_a_worker__, args = ( index_chunk, q ) ) for index_chunk in range( int_num_threads ) )
-
-            ''' start works and wait until all works are completed by workers '''
-            for p in l_worker :
-                p.start( ) # start workers
-            for p in l_worker :
-                p.join( )  
-
-            ''' summarize output values '''
-            # make sure the number of returned results match that of deployed workers (make sure that no threads have exited through an unexpected error)
-            assert q.qsize( ) == len( l_worker ) 
-            int_num_records_written = int( np.sum( list( q.get( ) for i in range( q.qsize( ) ) ) ) ) # retrieve the total number of written records
-
-            ''' retrieve metadata '''
-            # 10X matrix: row  = barcode, col = feature
-            int_num_features = rtx._int_num_features if ba_mask_feature is None else ba_mask_feature.count( ) # retrieve the total number of features after filtering
-            int_num_barcodes = rtx._int_num_barcodes if ba_mask_barcode is None else ba_mask_barcode.count( ) # retrieve the total number of barcodes after filtering
-            int_num_records = int_num_records_written # retrieve the number of entries
-
-            ''' write the metadata row of the matrix '''
-            with gzip.open( f'{path_folder_temp}indexed.-1.{str_etx}', 'wb' ) as file : # the metadata row should be located at the front of the output matrix file
-                file.write( f"""%%MatrixMarket matrix coordinate integer general\n%\n{int_num_features} {int_num_barcodes} {int_num_records}\n""".encode( ) ) # 10X matrix: row = feature, col = barcode
-            int_num_bytes_for_mtx_header = os.stat( f'{path_folder_temp}indexed.-1.{str_etx}' ).st_size # retrieve the file size of the matrix header
-
-            ''' combine outputs matrix '''
-            # combine output matrix files
-            for str_filename_glob in [ f'indexed.*.{str_etx}' ] :
-                # collect the list of input files in the order of 'index_chunk'
-                df = GLOB_Retrive_Strings_in_Wildcards( f'{path_folder_temp}{str_filename_glob}' )
-                df[ 'wildcard_0' ] = df.wildcard_0.astype( int )
-                df.sort_values( 'wildcard_0', inplace = True ) # sort the list of input files in the order of 'index_chunk'
-                # combine input files
-                OS_Run( [ 'cat' ] + list( df.path.values ), path_file_stdout = f"{path_folder_temp}{str_filename_glob.replace( '.*.', '.' )}", stdout_binary = True )
-                # delete input files
-                for path_file in df.path.values :
-                    os.remove( path_file )
-            ''' combine output index '''
-            # collect the paths of the index files
-            df_file = GLOB_Retrive_Strings_in_Wildcards( f'{path_folder_temp}indexed.*.{str_etx}.{str_ext_index}' )
-            df_file[ 'wildcard_0' ] = df_file.wildcard_0.astype( int )
-            df_file.sort_values( 'wildcard_0', inplace = True ) # sort the list of input files in the order of 'index_chunk'
-            # update index information after concatenation of the chunks and combine index files
-            l = [ ]
-            int_num_bytes_written = int_num_bytes_for_mtx_header # consider the number of bytes for the written header line
-            for path_file in df_file.path.values :
-                # read index of the current chunk
-                df_index = pd.read_csv( path_file, sep = '\t', header = None )
-                df_index.columns = [ 'index_entry', 'int_pos_start', 'int_pos_end', 'int_num_records' ]
-                # update index information after concatenation
-                int_num_bytes_written_for_the_current_chunk = df_index.int_pos_end.values[ -1 ]
-                df_index[ 'int_pos_start' ] = df_index.int_pos_start + int_num_bytes_written
-                df_index[ 'int_pos_end' ] = df_index.int_pos_end + int_num_bytes_written
-                int_num_bytes_written += int_num_bytes_written_for_the_current_chunk # update the number of bytes written after concatenation
-                l.append( df_index )
-            pd.concat( l ).to_csv( f'{path_folder_temp}indexed.{str_etx}.{str_ext_index}', sep = '\t', index = False )
-            ''' delete temporary files '''
-            if not flag_debugging :
-                # delete temporary files
-                for str_name_file_glob in [ 'indexed.*.mtx.idx.tsv.gz' ] :
-                    for path_file in glob.glob( f'{path_folder_temp}{str_name_file_glob}' ) :
-                        os.remove( path_file )
-
-            ''' export features and barcodes '''
-            # rename output files
-            os.rename( f"{path_folder_temp}indexed.{str_etx}", f"{path_folder_ramtx_output}matrix.{str_etx}" )
-            os.rename( f"{path_folder_temp}indexed.{str_etx}.{str_ext_index}", f"{path_folder_ramtx_output}matrix.{str_etx}.{str_ext_index}" )
-                      
-            # delete temporary folder
-            if not flag_debugging :
-                shutil.rmtree( path_folder_temp ) 
-
-            ''' export settings used for sort, indexing, and exporting '''
-            dict_metadata = { 
-                'path_folder_mtx_10x_input' : None,
+            # remove temp folder
+            shutil.rmtree( path_folder_temp )
+            
+            ''' export ramtx settings '''
+            root = zarr.group( path_folder_ramtx_output )
+            root.attrs[ 'dict_ramtx_metadata' ] = { 
                 'flag_ramtx_sorted_by_id_feature' : rtx.flag_ramtx_sorted_by_id_feature,
                 'str_completed_time' : TIME_GET_timestamp( True ),
-                'flag_output_value_is_float' : flag_output_value_is_float,
-                'int_num_digits_after_floating_point_for_export' : int_num_digits_after_floating_point_for_export,
-                'int_num_features' : int_num_features,
-                'int_num_barcodes' : int_num_barcodes,
-                'int_num_records' : int_num_records,
-                'file_format' : [ file_format ],
+                'int_num_features' : rtx._int_num_features,
+                'int_num_barcodes' : rtx._int_num_barcodes,
+                'int_num_records' : ns[ 'int_num_records_written_to_ramtx' ],
+                'int_num_of_records_in_a_chunk_zarr_matrix' : rtx._za_mtx.chunks[ 0 ],
+                'int_num_of_entries_in_a_chunk_zarr_matrix_index' : rtx._za_mtx_index.chunks[ 0 ],
+                'version' : _version_,
             }
-            with open( f"{path_folder_ramtx_output}ramtx.metadata.json", 'w' ) as file :
-                json.dump( dict_metadata, file )
-                
+            return 
+            
         """
         Create output folders and copy feature and barcode files
         """
         # apply the given function to each RAMtx object
         path_folder_data_new = f"{path_folder_ramdata_output}{name_layer_new}/" # compose the output directory of the paird RAMtx objects inside the output RamData object
-        for path_folder_ramtx_output in [ f"{path_folder_data_new}sorted_by_feature/", f"{path_folder_data_new}sorted_by_barcode/" ] :
-            # create an ramtx output folder
-            os.makedirs( path_folder_ramtx_output, exist_ok = True )
-
-            ''' output copy features and barcode files of the input RamData object to the RAMtx output object without modification '''
-            for name_file in [ 'features.tsv.gz', 'barcodes.tsv.gz' ] :
-                # if the feature and barcode files does not exist in the root directory of the input RamData, copy the files from the input RAMtx object.
-                if not os.path.exists( f"{self._path_folder_ramdata}{name_file}" ) :
-                    OS_Run( [ 'cp', f"{self.ramtx_for_feature.path_folder_mtx}{name_file}", f"{self._path_folder_ramdata}{name_file}" ] ) # copy the feature and barcode files of tje currently active RAMtx # using shell program to speed up the process 
-                OS_Run( [ 'cp', f"{self._path_folder_ramdata}{name_file}", f"{path_folder_ramtx_output}{name_file}" ] )
                 
         if flag_simultaneous_processing_of_paired_ramtx :
-            l_process = list( mp.Process( target = RAMtx_Apply, args = ( self, rtx, path_folder_ramtx_output, func, flag_output_value_is_float, file_format, int_num_digits_after_floating_point_for_export, flag_dtype_output, int_num_threads_for_the_current_process, ba_mask_barcode, ba_mask_feature ) ) for rtx, path_folder_ramtx_output, int_num_threads_for_the_current_process in zip( [ self.ramtx_for_barcode, self.ramtx_for_feature ], [ f"{path_folder_data_new}sorted_by_barcode/", f"{path_folder_data_new}sorted_by_feature/" ], [ int( np.floor( int_num_threads / 2 ) ), int( np.ceil( int_num_threads / 2 ) ) ] ) )
+            l_process = list( mp.Process( target = RAMtx_Apply, args = ( self, rtx, ax, path_folder_ramtx_output, int_num_threads_for_the_current_process ) ) for rtx, ax, path_folder_ramtx_output, int_num_threads_for_the_current_process in zip( [ self._layer._ramtx_features, self._layer._ramtx_barcodes ], [ self.ft, self.bc ], [ f"{path_folder_data_new}sorted_by_feature/", f"{path_folder_data_new}sorted_by_barcode/" ], [ int( np.floor( int_num_threads / 2 ) ), int( np.ceil( int_num_threads / 2 ) ) ] ) )
             for p in l_process : p.start( )
             for p in l_process : p.join( )
         else :
-            RAMtx_Apply( self, self.ramtx_for_feature, f"{path_folder_data_new}sorted_by_feature/", func = func, flag_output_value_is_float = flag_output_value_is_float, file_format = file_format, int_num_digits_after_floating_point_for_export = int_num_digits_after_floating_point_for_export, flag_dtype_output = flag_dtype_output, int_num_threads = int_num_threads, ba_mask_barcode = ba_mask_barcode, ba_mask_feature = ba_mask_feature )
-            RAMtx_Apply( self, self.ramtx_for_barcode, f"{path_folder_data_new}sorted_by_barcode/", func = func, flag_output_value_is_float = flag_output_value_is_float, file_format = file_format, int_num_digits_after_floating_point_for_export = int_num_digits_after_floating_point_for_export, flag_dtype_output = flag_dtype_output, int_num_threads = int_num_threads, ba_mask_barcode = ba_mask_barcode, ba_mask_feature = ba_mask_feature )
+            RAMtx_Apply( self, self._layer._ramtx_features, self.ft, f"{path_folder_data_new}sorted_by_feature/", int_num_threads = int_num_threads )
+            RAMtx_Apply( self, self._layer._ramtx_barcodes, self.bc, f"{path_folder_data_new}sorted_by_barcode/", int_num_threads = int_num_threads )
 
         if self.verbose :
-            print( f'new data {name_layer_new} has been successfully added' )
-        # update 'set_name_layer'
-        self.layers.add( name_layer_new )
+            print( f'new layer {name_layer_new} has been successfully created' )
+            
+        # update 'layers' if the layer has been saved in the current RamData
+        if path_folder_ramdata_output == self._path_folder_ramdata :
+            self.layers.add( name_layer_new )
+            self._save_metadata_( )
+    def subset( self, path_folder_ramdata_output, l_name_layer = [ ], int_num_threads = None ) :
+        ''' # 2022-07-05 01:51:17 
+        this function will create a new RamData object on disk by creating a subset of the current RamData according to the current filters
+
+        =========
+        inputs 
+        =========
+        'path_folder_ramdata_output' : The directory of the RamData object that will contain a subset of the barcodes/features of the current RamData.
+        'l_name_layer' : the list of name_layers to subset and transfer to the new RamData object
+        'int_num_threads' : the number of CPUs to use. by default, the number of CPUs set by the RamData attribute 'int_num_cpus' will be used.
+        '''
+        ''' handle inputs '''
+        # check invalid input
+        if path_folder_ramdata_output == self._path_folder_ramdata:
+            if self.verbose :
+                print( f'the output RamData object directory is exactly same that of the current RamData object, exiting' )
+        # create the RamData output folder
+        os.makedirs( path_folder_ramdata_output, exist_ok = True ) 
+
+        # copy axes and associated metadata
+        self.bc.save( path_folder_ramdata_output )
+        self.ft.save( path_folder_ramdata_output )
+
+        # retrieve valid set of name_layer
+        set_name_layer = self.layers.intersection( l_name_layer )
+        
+        # compose metadata
+        root = zarr.group( path_folder_ramdata_output )
+        root.attrs[ 'dict_ramdata_metadata' ] = { 
+            'str_completed_time' : TIME_GET_timestamp( True ),
+            'int_num_features' : self.ft.meta.n_rows, # record the number of features/barcodes after filtering
+            'int_num_barcodes' : self.bc.meta.n_rows,
+            'int_num_of_records_in_a_chunk_zarr_matrix' : self.metadata[ 'int_num_of_records_in_a_chunk_zarr_matrix' ],
+            'int_num_of_entries_in_a_chunk_zarr_matrix_index' : self.metadata[ 'int_num_of_entries_in_a_chunk_zarr_matrix_index' ],
+            'layers' : list( set_name_layer ),
+            'version' : _version_,
+        }
+        
+        ''' filter the RAMtx matrices '''
+        for name_layer in set_name_layer : # for each valid name_layer
+            self.apply( name_layer, name_layer_new = None, func = 'ident', path_folder_ramdata_output = path_folder_ramdata_output, flag_dtype_output = None, flag_output_value_is_float = None, flag_simultaneous_processing_of_paired_ramtx = flag_simultaneous_processing_of_paired_ramtx, ba_mask_barcode = ba_mask_barcode, ba_mask_feature = ba_mask_feature, int_num_threads = int_num_threads, ** args ) # flag_dtype_output = None : use the same dtype as the input RAMtx object
     ''' satellite methods for analyzing RamData '''
     def _classify_feature_of_scarab_output_( self, int_min_num_occurrence_to_identify_valid_feature_category = 1000 ) :
         """ # 2022-05-30 12:39:01 
@@ -4664,111 +4661,7 @@ class RamData( ) :
                 MPL_Scatter_Align_Two_Series( df[ f'{name_layer}_sum_for_atac_mode' ], df[ f'{name_layer}_proportion_of_promoter_in_atac_mode' ], x_scale = 'log', alpha = 0.01 )
 
         self.ad[ name_adata ].obs = df # save the result        
-    def subset( self, path_folder_ramdata_output, set_str_barcode = None, set_str_feature = None, int_num_threads = None, flag_simultaneous_processing_of_paired_ramtx = True, ** args ) :
-        ''' # 2022-06-01 15:01:30 
-        this function will create a new RamData object on disk by creating a subset of the current RamData given by the 'set_str_barcode' and 'set_str_feature'
 
-        example usage: 
-            1) in preprocessing step. removing droplets and low-quality cells from RamData before starting the analysis
-            2) subclustering of a specific subset of cells for more detailed analysis.
-
-        =========
-        inputs 
-        =========
-
-        'path_folder_ramdata_output' : (Default: store inside the current RamData). The directory of the RamData object that will contain the outputs (paired RAMtx objects). if integer representations of features and barcodes are updated from filtering (either 'RamData.set_int_barcode' or 'RamData.set_int_feature' is not None), the output RAMtx is now incompatible with the current RamData and should be stored outside the current RamData object. The output directory of the new RamData object can be given through this argument. The RamData object directory should contains new features.tsv.gz and barcodes.tsv.gz (with updated integer representation of features and barcodes)
-        'flag_simultaneous_processing_of_paired_ramtx' : (Default: True) process the paired RAMtx simultaneously using two processes at a time.
-        'set_str_barcode', 'set_str_feature' : the sets of string representation of barcodes and features to be included in the output RamData. the barcodes that are exist in the given RamData object but absent in the 'set_str_barcode' will be deleted from the list (similar for 'set_str_feature').
-        'int_num_threads' : the number of CPUs to use. by default, the number of CPUs set by the RamData attribute 'int_num_cpus' will be used.
-        '''
-
-        ''' handle inputs '''
-        # check invalid input
-        if path_folder_ramdata_output == self._path_folder_ramdata:
-            if self.verbose :
-                print( f'the output RamData object directory is exactly same that of the current RamData object, exiting' )
-        #     return -1
-        if set_str_barcode is None and set_str_feature is None :
-            if self.verbose :
-                print( f"no filtering is needed since 'set_str_barcode' and 'set_str_feature' is None, exiting" )
-        #     return -1
-        # create the RamData output folder
-        os.makedirs( path_folder_ramdata_output, exist_ok = True ) 
-
-        """ 
-        Prepare data required for filtering
-        """
-        dict_name_file_to_dict_data = dict(  )
-        for name_file, set_str_entry, int_num_entries in zip( [ 'features.tsv.gz', 'barcodes.tsv.gz' ], [ set_str_feature, set_str_barcode ], [ self._int_num_features, self._int_num_barcodes ] ) :
-            ''' if current RamData object lack features or barcode files in its root folder, find  '''
-            path_file_input = f"{self._path_folder_ramdata}{name_file}"
-            path_file_output = f"{path_folder_ramdata_output}{name_file}"
-            if not os.path.exists( path_file_input ) :
-                l_path_file = glob.glob( f"{self._path_folder_ramdata}*/*/{name_file}" )
-                assert len( l_path_file ) > 0 # there should be at least one available RAMtx object that contains features.tsv.gz or barcodes.tsv.gz
-                OS_Run( [ 'cp', l_path_file[ 0 ], path_file_input ], stdout_binary = True )
-
-            ''' retrieve required data for filtering for barcode/feature files '''
-            # initialize the data dictionary
-            dict_data = dict( )
-
-            flag_is_filter_active = set_str_entry is not None # retrieve a flag indicating whether a filter is active
-            ba_mask = bitarray( int_num_entries ) # initialize the bit array
-            ba_mask.setall( 1 ) # by default, include all entries # 0 = absent, 1 = inclusion
-
-            # read data
-            arr = pd.read_csv( path_file_input, sep = '\t', header = None ).values
-
-            if flag_is_filter_active :
-                arr_int_entry_new = np.full( int_num_entries, - 1 ) # by default, all entries are excluded
-                int_entry_new_current = 0 # new entry_new starts from 0
-                for int_entry_prev, str_entry in enumerate( arr[ :, 0 ] ) :
-                    if str_entry not in set_str_entry :
-                        ba_mask[ int_entry_prev ] = 0 # modify bitarray to set the current entry will be excluded
-                    else :
-                        # update tne int_entry_new
-                        arr_int_entry_new[ int_entry_prev ] = int_entry_new_current
-                        int_entry_new_current += 1
-                dict_data[ 'arr_int_entry_new' ] = arr_int_entry_new
-
-                pd.DataFrame( arr[ arr_int_entry_new != -1 ] ).to_csv( path_file_output, sep = '\t', index = False, header = False )
-            else :
-                OS_Run( [ 'cp', path_file_input, path_file_output ], stdout_binary = True ) # if there is no filtering, use the input file as the output file as-is.
-
-            dict_data[ 'flag_is_filter_active' ] = flag_is_filter_active
-            dict_data[ 'ba_mask' ] = ba_mask
-            dict_name_file_to_dict_data[ name_file ] = dict_data
-
-
-        """
-        Set a filtering function based on the settings
-        """
-        flag_is_filter_active_barcode, flag_is_filter_active_feature = dict_name_file_to_dict_data[ 'barcodes.tsv.gz' ][ 'flag_is_filter_active' ], dict_name_file_to_dict_data[ 'features.tsv.gz' ][ 'flag_is_filter_active' ]
-        ba_mask_barcode, ba_mask_feature = dict_name_file_to_dict_data[ 'barcodes.tsv.gz' ][ 'ba_mask' ], dict_name_file_to_dict_data[ 'features.tsv.gz' ][ 'ba_mask' ]
-        arr_int_barcode_new = dict_name_file_to_dict_data[ 'barcodes.tsv.gz' ][ 'arr_int_entry_new' ] if flag_is_filter_active_barcode else None 
-        arr_int_features_new = dict_name_file_to_dict_data[ 'features.tsv.gz' ][ 'arr_int_entry_new' ] if flag_is_filter_active_feature else None 
-
-        # retrieve a subset the main AnnData object based on filtering settings
-        if flag_is_filter_active_barcode and flag_is_filter_active_feature :
-            adata_subset = self.adata[ arr_int_barcode_new != -1, arr_int_features_new != -1 ].copy( ) 
-            def func_subset( self, int_barcode, int_feature, value ) :
-                return arr_int_barcode_new[ int_barcode ], arr_int_features_new[ int_feature ], value # renumber both int_barcode and int_feature
-        elif flag_is_filter_active_barcode and not flag_is_filter_active_feature :
-            adata_subset = self.adata[ arr_int_barcode_new != -1 ].copy( )
-            def func_subset( self, int_barcode, int_feature, value ) :
-                return arr_int_barcode_new[ int_barcode ], int_feature, value # renumber of int_barcode
-        elif not flag_is_filter_active_barcode and flag_is_filter_active_feature :
-            adata_subset = self.adata[ :, arr_int_features_new != -1 ].copy( )
-            def func_subset( self, int_barcode, int_feature, value ) :
-                return int_barcode, arr_int_features_new[ int_feature ], value # renumber int_feature
-        else :
-            return - 1
-        adata_subset.X = scipy.sparse.csr_matrix( scipy.sparse.coo_matrix( ( [], ( [], [] ) ), shape = ( len( adata_subset.obs ), len( adata_subset.var ) ) ) ) # store the empty sparse matrix
-        adata_subset.write( f'{path_folder_ramdata_output}main.h5ad' ) # save the resulting AnnData object
-
-        ''' filter the RAMtx matrices '''
-        for name_layer in self.layers :
-            self.apply( name_layer, name_layer_new = None, func = func_subset, path_folder_ramdata_output = path_folder_ramdata_output, flag_dtype_output = None, flag_output_value_is_float = None, flag_simultaneous_processing_of_paired_ramtx = flag_simultaneous_processing_of_paired_ramtx, ba_mask_barcode = ba_mask_barcode, ba_mask_feature = ba_mask_feature, int_num_threads = int_num_threads, ** args ) # flag_dtype_output = None : use the same dtype as the input RAMtx object
     def _filter_cell_scarab_output_( self, path_folder_ramdata_output, name_layer = 'raw', name_adata = 'main', int_min_sum_for_atac_mode = 1500, float_min_proportion_of_promoter_in_atac_mode = 0.22, int_min_sum_for_gex_mode = 250 ) :
         ''' # 2022-06-03 15:25:02 
         filter cells from scarab output 
