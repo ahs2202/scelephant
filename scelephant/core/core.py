@@ -1851,7 +1851,7 @@ class AnnDataContainer( ) :
 
 ''' a class for Zarr-based DataFrame object '''
 class ZarrDataFrame( ) :
-    """ # 2022-07-03 20:00:28 
+    """ # 2022-07-06 01:30:23 
     on-demend persistant DataFrame backed by Zarr persistent arrays.
     each column can be separately loaded, updated, and unloaded.
     a filter can be set, which allows updating and reading ZarrDataFrame as if it only contains the rows indicated by the given filter.
@@ -1929,6 +1929,9 @@ class ZarrDataFrame( ) :
         if isinstance( df, pd.DataFrame ) : # if a valid pandas.dataframe has been given
             # update zdf with the given dataframe
             self.update( df )
+            
+        # initialize attribute storing columns as dictionaries
+        self.dict = dict( )
     def _initialize_temp_folder_( self ) :
         """ # 2022-06-22 21:49:38
         empty the temp folder
@@ -1963,7 +1966,7 @@ class ZarrDataFrame( ) :
         return self._ba_filter
     @filter.setter
     def filter( self, ba_filter ) :
-        """ # 2022-07-01 08:43:08 
+        """ # 2022-07-05 23:49:10 
         change filter, and empty the cache
         """
         if ba_filter is None : # if filter is removed, 
@@ -1971,6 +1974,7 @@ class ZarrDataFrame( ) :
             if self.filter is not None :
                 self._loaded_data = dict( ) # empty the cache
                 self._initialize_temp_folder_( ) # empty the temp folder
+                self.dict = dict( ) # empty the cache for columns stored as dictionaries
             self._ba_filter = None
             self._n_rows_after_applying_filter = None
         else :
@@ -1989,6 +1993,7 @@ class ZarrDataFrame( ) :
 
             self._loaded_data = dict( ) # empty the cache
             self._initialize_temp_folder_( ) # empty the temp folder
+            self.dict = dict( ) # empty the cache for columns stored as dictionaries
             self._n_rows_after_applying_filter = ba_filter.count( ) # retrieve the number of rows after applying the filter
 
             self._ba_filter = ba_filter # set bitarray filter
@@ -2320,8 +2325,30 @@ class ZarrDataFrame( ) :
         if len( l_name_col ) == 0 :
             l_name_col = self.columns # if no column name is given, copy all columns in the current ZarrDataFrame to the new ZarrDataFrame
         
-        for name_col in self.columns.intersection( l_name_col ) : # copy column by column
+        for name_col in self.columns.intersection( l_name_col ) : # copy column by column to the output ZarrDataFrame object
             zdf[ name_col ] = self[ name_col ]
+    def load_as_dict( self, * l_name_col, float_min_proportion_of_active_rows_for_using_array_as_dict = 0.1 ) :
+        """ # 2022-07-06 01:29:51 
+        load columns as dictionaries, which is accessible through the self.dict attribute, where keys are integer representation of rows and values are data values
+        
+        'float_min_proportion_of_active_rows_for_using_array_as_dict' : A threshold for the transition from dictionary to array for the conversion of coordinates. empirically, dictionary of the same length takes about ~10 times more memory than the array. 
+                                                                        By default, when the number of active entries in an exis > 10% (or above any proportion that can set by 'float_min_proportion_of_active_rows_for_using_array_as_dict'), an array representing all rows will be used for the conversion of coordinates.
+        """
+        set_name_col = self.columns.intersection( l_name_col ) # retrieve a set of valid column names
+        if len( set_name_col ) == 0 : # exit if there is no valid column names
+            return
+        
+        n = self._n_rows_unfiltered # retrieve the number of rows in the unfiltered ZarrDataFrame
+        arr_index = np.arange( n, dtype = int ) if self.filter is None else bk.BA.to_integer_indices( self.filter ) # retrieve integer indices of the rows
+        for name_col in set_name_col : 
+            if name_col in self.dict : # ignore columns that were already loaded
+                continue
+            values = self[ name_col ] # retrieve values of the given column
+            dict_data = np.zeros( n, dtype = values.dtype ) if ( self.n_rows / n ) > float_min_proportion_of_active_rows_for_using_array_as_dict else dict( ) # implement a dictionary using an array if the proportion of active rows of ZarrDataFrame is larger than the given threshold to reduce the memory footprint and increase the efficiency of access
+            for int_index_row, val in zip( arr_index, values ) : # iterate through data values of the active rows
+                dict_data[ int_index_row ] = val
+            del values
+            self.dict[ name_col ] = dict_data # add column loaded as a dictionary to the cache    
 ''' methods for creating RAMtx objects '''
 def __Merge_Sort_MTX_10X_and_Write_and_Index_Zarr__( za_mtx, za_mtx_index, * l_path_file_input, flag_ramtx_sorted_by_id_feature = True, flag_delete_input_file_upon_completion = False, dtype_mtx = np.float64, dtype_mtx_index = np.float64, int_size_buffer_for_mtx_index = 1000 ) :
     """ # 2022-07-02 11:37:05 
@@ -2711,7 +2738,6 @@ def Convert_MTX_10X_to_RamData( path_folder_mtx_10x_input, path_folder_ramdata_o
         'str_completed_time' : TIME_GET_timestamp( True ),
         'int_num_features' : int_num_features,
         'int_num_barcodes' : int_num_barcodes,
-        'int_num_records' : int_num_records,
         'int_num_of_records_in_a_chunk_zarr_matrix' : int_num_of_records_in_a_chunk_zarr_matrix,
         'int_num_of_entries_in_a_chunk_zarr_matrix_index' : int_num_of_entries_in_a_chunk_zarr_matrix_index,
         'layers' : [ name_layer ],
@@ -2720,7 +2746,7 @@ def Convert_MTX_10X_to_RamData( path_folder_mtx_10x_input, path_folder_ramdata_o
     
 ''' a class for accessing Zarr-backed count matrix data (RAMtx, Random-access matrix) '''
 class RAMtx( ) :
-    """ # 2022-07-04 00:55:53 
+    """ # 2022-07-05 23:13:02 
     This class represent a random-access mtx format for memory-efficient exploration of extremely large single-cell transcriptomics/genomics data.
     This class use a count matrix data stored in a random read-access compatible format, called RAMtx, enabling exploration of a count matrix with hundreds of millions cells with hundreds of millions of features.
     Also, the RAMtx format is supports multi-processing, and provide convenient interface for parallel processing of single-cell data
@@ -2759,43 +2785,9 @@ class RAMtx( ) :
         self.ba_filter_features = ramdata.ft.filter if ramdata is not None else None
         self.ba_filter_barcodes = ramdata.bc.filter if ramdata is not None else None
         
-        # set viewer (coordinate converter, a dictionary for converting coordinates) 
-        self.unload_dict_change( )
-        
         # open Zarr object containing matrix and matrix indices
         self._za_mtx_index = zarr.open( f'{self._path_folder_ramtx}matrix.index.zarr', 'r' )
         self._za_mtx = zarr.open( f'{self._path_folder_ramtx}matrix.zarr', 'r' )
-    def build_dict_change( self, float_min_proportion_of_active_entries_in_an_axis_for_using_array = 0.1 ) :
-        """ # 2022-07-02 17:02:01 
-        build 'dict_change' (dictionaries for conversion of coordinates) from the given filter.
-        
-        for example, when filter is 
-         0123456789
-        '1000101110'
-        
-        then, dict_change will be { 0 : 0, 4 : 1, 6 : 2, 7 : 3, 8 : 4 }
-        when the number of active entries in an exis > 10% (or above any proportion that can set by 'float_min_proportion_of_active_entries_in_an_axis_for_using_array'), an array with the same length will be used for the conversion of coordinates
-        
-        'float_min_proportion_of_active_entries_in_an_axis_for_using_array' : a threshold for the transition from dictionary to array for the conversion of coordinates. empirically, dictionary of the same length takes about ~10 times more memory than the array
-        """
-        # for each axis
-        for name_axis_singular in [ 'barcode', 'feature' ] :
-            dict_change = None # initialize 'dict_change'
-            ba = getattr( self, f"ba_filter_{name_axis_singular}s" ) # retrieve the filter of the axis
-            if ba is not None : # only build 'dict_change' if a filter is active
-                n = len( ba )
-                n_active_entries = ba.count( )
-                # initialize dictionary
-                dict_change = np.zeros( n, dtype = self._dtype_of_feature_and_barcode_indices ) if ( n_active_entries / n ) > float_min_proportion_of_active_entries_in_an_axis_for_using_array else dict( ) # implement a dictionary using an array if the proportion of active entries in the axis is larger than the given threshold to reduce the memory footprint and increase the efficiency of conversion process
-                for i, e in enumerate( bk.BA.to_integer_indices( ba ) ) : # iterate through 'int_entry' of the active entries
-                    dict_change[ e ] = i
-            setattr( self, f"dict_change_int_{name_axis_singular}", dict_change ) # set 'dict_change'
-    def unload_dict_change( self ) :
-        """ # 2022-07-02 17:02:45 
-        unload 'dict_change' (dictionaries for conversion of coordinates)
-        """
-        self.dict_change_int_feature = None
-        self.dict_change_int_barcode = None
     @property
     def ba_active_entries( self ) :
         """ # 2022-06-28 19:51:26 
@@ -2896,7 +2888,7 @@ class RAMtx( ) :
         else : # if filter is active, yield indices of active elements only
             return iter( bk.BA.to_integer_indices( self.ba_filter_indexed_axis ) )
     def __getitem__( self, l_int_entry ) : 
-        """ # 2022-07-02 12:35:40 
+        """ # 2022-07-05 23:13:11 
         Retrieve data from RAMtx as lists of values and arrays, each value and array contains data of a single 'int_entry' of the indexed axis
         
         Returns:
@@ -2937,12 +2929,14 @@ class RAMtx( ) :
         flag_change_dtype_of_values = self._za_mtx.dtype != self._dtype_of_values
         
         # retrieve dictionaries for changing coordinates
-        if self.flag_ramtx_sorted_by_id_feature :
-            dict_change_int_entry_indexed = self.dict_change_int_feature
-            dict_change_int_entry_not_indexed = self.dict_change_int_barcode
-        else :
-            dict_change_int_entry_indexed = self.dict_change_int_barcode
-            dict_change_int_entry_not_indexed = self.dict_change_int_feature
+        dict_change_int_entry_indexed, dict_change_int_entry_not_indexed = None, None # initialize the dictionaries
+        if self._ramdata is not None : # if RAMtx has been attached to RamData, retrieve dictionaries that can be used to change coordinate
+            if self.flag_ramtx_sorted_by_id_feature :
+                dict_change_int_entry_indexed = self._ramdata.ft.dict_change
+                dict_change_int_entry_not_indexed = self._ramdata.bc.dict_change
+            else :
+                dict_change_int_entry_indexed = self._ramdata.bc.dict_change
+                dict_change_int_entry_not_indexed = self._ramdata.ft.dict_change
         # compose a vectorized function for the conversion of int_entries of the non-indexed axis.
         def f( i ) :
             return dict_change_int_entry_not_indexed[ i ]
@@ -3107,6 +3101,9 @@ class Axis( ) :
         self._dict_i_to_str = None 
         self._ramdata = ramdata # initialize RamData reference
         self.filter = ba_filter # set filter
+        
+        # initialize viewer (coordinate converter, a dictionary for converting coordinates) 
+        self.unload_dict_change( )
     def _convert_to_bitarray( self, ba_filter ) :
         ''' # 2022-06-28 20:01:25 
         handle non-None filter objects and convert these formats to the bitarray filter object
@@ -3132,6 +3129,34 @@ class Axis( ) :
         returns the number of entries in the Axis
         '''
         return self.int_num_entries
+    def load_dict_change( self, float_min_proportion_of_active_entries_in_an_axis_for_using_array = 0.1 ) :
+        """ # 2022-07-05 22:53:51 
+        build 'dict_change' (dictionaries for conversion of coordinates) from the given filter.
+        
+        for example, when filter is 
+         0123456789  - index
+        '1000101110' - filter 
+        
+        then, dict_change will be { 0 : 0, 4 : 1, 6 : 2, 7 : 3, 8 : 4 }
+        when the number of active entries in an exis > 10% (or above any proportion that can set by 'float_min_proportion_of_active_entries_in_an_axis_for_using_array'), an array with the same length will be used for the conversion of coordinates
+        
+        'float_min_proportion_of_active_entries_in_an_axis_for_using_array' : a threshold for the transition from dictionary to array for the conversion of coordinates. empirically, dictionary of the same length takes about ~10 times more memory than the array
+        """
+        dict_change = None # initialize 'dict_change'
+        ba = self.filter
+        if ba is not None : # only build 'dict_change' if a filter is active
+            n = len( ba )
+            n_active_entries = ba.count( )
+            # initialize dictionary
+            dict_change = np.zeros( n, dtype = self._dtype_of_feature_and_barcode_indices ) if ( n_active_entries / n ) > float_min_proportion_of_active_entries_in_an_axis_for_using_array else dict( ) # implement a dictionary using an array if the proportion of active entries in the axis is larger than the given threshold to reduce the memory footprint and increase the efficiency of conversion process
+            for i, e in enumerate( bk.BA.to_integer_indices( ba ) ) : # iterate through 'int_entry' of the active entries
+                dict_change[ e ] = i
+        self.dict_change = dict_change # set 'dict_change'
+    def unload_dict_change( self ) :
+        """ # 2022-07-05 22:53:55 
+        unload 'dict_change' (dictionaries for conversion of coordinates)
+        """
+        self.dict_change = None
     @property
     def filter( self ) :
         """ # 2022-06-24 22:20:43 
@@ -3140,13 +3165,15 @@ class Axis( ) :
         return self._ba_filter
     @filter.setter
     def filter( self, ba_filter ) :
-        """ # 2022-06-27 17:14:18 
+        """ # 2022-07-05 23:12:34 
         set a new bitarray filter on the Axis and the RamData object to which the current axis belongs to.
         
         a given mask will be further masked so that only entries with a valid count data is included in the resulting filter
         
         """
         ''' convert other formats to bitarray if a filter has been given '''
+        self.unload_dict_change( ) # if a filter has been updated, 'dict_change' will be unloaded
+        
         if ba_filter is not None :
             ba_filter = self._convert_to_bitarray( ba_filter ) # convert mask to bitarray filter
             ba_filter &= self.all( flag_return_valid_entries_in_the_currently_active_layer = True ) # only use the entries with a valid count data
@@ -3959,7 +3986,7 @@ def Convert_df_count_to_RAMtx( path_file_df_count, path_folder_ramtx_output, fla
         json.dump( dict_metadata, file )
 
 class RamData( ) :
-    """ # 2022-06-23 23:54:51 
+    """ # 2022-07-06 01:53:26 
     This class provides frameworks for single-cell transcriptomic/genomic data analysis, utilizing RAMtx data structures, which is backed by Zarr persistant arrays.
     Extreme lazy loading strategies used by this class allows efficient parallelization of analysis of single cell data with minimal memory footprint, loading only essential data required for analysis. 
     
@@ -4055,7 +4082,19 @@ class RamData( ) :
         """ # 2022-06-27 17:25:44 
         display RamData
         """
-        return f"<RamData object ({self.metadata[ 'int_num_barcodes' ]} barcodes X {self.metadata[ 'int_num_features' ]} features, {self.metadata[ 'int_num_records' ]} records) stored at {self._path_folder_ramdata}\n\twith the following data : {self.layers}\n\tcurrent layer is '{self.layer}'>"
+        return f"<RamData object ({self.metadata[ 'int_num_barcodes' ]} barcodes X {self.metadata[ 'int_num_features' ]} features" + ( '' if self.layer is None else f", {self._layer._ramtx_barcodes._int_num_records} records for the current layer {self.layer}" ) + f") stored at {self._path_folder_ramdata}\n\twith the following layers : {self.layers}\n\tcurrent layer is '{self.layer}'>" # show the number of records of the current layer if available.
+    def load_dict_change( self, float_min_proportion_of_active_entries_in_an_axis_for_using_array = 0.1 ) :
+        """  # 2022-07-05 22:55:22 
+        load dictionaries for coordinate conversion for filtered barcodes/features
+        """
+        self.ft.load_dict_change( float_min_proportion_of_active_entries_in_an_axis_for_using_array = float_min_proportion_of_active_entries_in_an_axis_for_using_array )
+        self.bc.load_dict_change( float_min_proportion_of_active_entries_in_an_axis_for_using_array = float_min_proportion_of_active_entries_in_an_axis_for_using_array )
+    def unload_dict_change( self ) :
+        """  # 2022-07-05 22:55:22 
+        unload dictionaries for coordinate conversion for filtered barcodes/features
+        """
+        self.ft.unload_dict_change( )
+        self.bc.unload_dict_change( )
     def __getitem__( self, args ) :
         ''' # 2022-07-02 18:14:17 
         please include 'str' in 'barcode_column' and 'feature_column' in order to use string representations in the output AnnData object
@@ -4135,10 +4174,10 @@ class RamData( ) :
         rtx = self._layer._ramtx_features if flag_use_ramtx_indexed_by_features else self._layer._ramtx_barcodes
         
         # retrieve count data
-        rtx.build_dict_change( ) # load 'dict_change' for coordinate conversion according to the given filter
+        self.load_dict_change( ) # load 'dict_change' for coordinate conversion according to the given filter
         res = rtx[ [ ] ]
         l_int_entry_indexed_valid, l_arr_int_entry_not_indexed, l_arr_value = res # parse retrieved result
-        rtx.unload_dict_change( ) # unload 'dict_change' after the conversion process
+        self.unload_dict_change( ) # unload 'dict_change' after the conversion process
         print( 'data retrieved at ' + TIME_GET_timestamp( True ) )
         
         # combine the arrays
@@ -4378,14 +4417,24 @@ class RamData( ) :
             name_layer_new = name_layer
         if path_folder_ramdata_output is None :
             path_folder_ramdata_output = self._path_folder_ramdata
-            
-        if func == 'ident' or func is None  :
+        
+        # parse 'func' or set default functions, retrieving 'func_bc' and 'func_ft'.
+        if isinstance( func, dict ) : # if 'func' is dictionary, parse functions for each axes
+            func_bc = func[ 'barcode' ]
+            func_ft = func[ 'feature' ]
+        elif isinstance( func, tuple ) :
+            assert len( func ) == 2 # if 'func' is tuple, the length of 'func' should be 2
+            func_bc, func_ft = func
+        elif func == 'ident' or func is None  :
             # define identity function if 'func' has not been given
-            def func( self, int_entry_indexed, arr_int_entries_not_indexed, arr_value ) :
+            def func_bc( self, int_entry_indexed, arr_int_entries_not_indexed, arr_value ) :
                 return int_entry_indexed, arr_int_entries_not_indexed, arr_value
+            func_ft = func_bc # use the same function for the other axis
         elif func == 'log1p' :
-            def func( self, int_entry_indexed, arr_int_entries_not_indexed, arr_value ) :
+            def func_bc( self, int_entry_indexed, arr_int_entries_not_indexed, arr_value ) :
                 return int_entry_indexed, arr_int_entries_not_indexed, np.log10( arr_value + 1 )
+            func_ft = func_bc # use the same function for the other axis
+            
         # check the validility of the input arguments
         if not name_layer in self.layers :
             if verbose :
@@ -4399,7 +4448,7 @@ class RamData( ) :
         ''' set 'name_layer' as a current layer of RamData '''
         self.layer = name_layer
         
-        def RAMtx_Apply( self, rtx, ax, path_folder_ramtx_output, int_num_threads ) :
+        def RAMtx_Apply( self, rtx, ax, func, path_folder_ramtx_output, int_num_threads ) :
             ''' # 2022-07-05 17:41:52 
             
             inputs 
@@ -4423,7 +4472,6 @@ class RamData( ) :
             ns[ 'int_num_records_written_to_ramtx' ] = 0 # initlaize the total number of records written to ramtx object
             ns[ 'int_num_chunks_written_to_ramtx' ] = 0 # initialize the number of chunks written to ramtx object
             int_num_records_in_a_chunk_of_mtx = rtx._za_mtx.chunks[ 0 ] # retrieve the number of records in a chunk of a Zarr matrix
-            
             
             """ convert matrix values and save it to the output RAMtx object """
             # define functions for multiprocessing step
@@ -4510,12 +4558,12 @@ class RamData( ) :
         path_folder_data_new = f"{path_folder_ramdata_output}{name_layer_new}/" # compose the output directory of the paird RAMtx objects inside the output RamData object
                 
         if flag_simultaneous_processing_of_paired_ramtx :
-            l_process = list( mp.Process( target = RAMtx_Apply, args = ( self, rtx, ax, path_folder_ramtx_output, int_num_threads_for_the_current_process ) ) for rtx, ax, path_folder_ramtx_output, int_num_threads_for_the_current_process in zip( [ self._layer._ramtx_features, self._layer._ramtx_barcodes ], [ self.ft, self.bc ], [ f"{path_folder_data_new}sorted_by_feature/", f"{path_folder_data_new}sorted_by_barcode/" ], [ int( np.floor( int_num_threads / 2 ) ), int( np.ceil( int_num_threads / 2 ) ) ] ) )
+            l_process = list( mp.Process( target = RAMtx_Apply, args = ( self, rtx, ax, func, path_folder_ramtx_output, int_num_threads_for_the_current_process ) ) for rtx, ax, func, path_folder_ramtx_output, int_num_threads_for_the_current_process in zip( [ self._layer._ramtx_features, self._layer._ramtx_barcodes ], [ self.ft, self.bc ], [ func_ft, func_bc ], [ f"{path_folder_data_new}sorted_by_feature/", f"{path_folder_data_new}sorted_by_barcode/" ], [ int( np.floor( int_num_threads / 2 ) ), int( np.ceil( int_num_threads / 2 ) ) ] ) )
             for p in l_process : p.start( )
             for p in l_process : p.join( )
         else :
-            RAMtx_Apply( self, self._layer._ramtx_features, self.ft, f"{path_folder_data_new}sorted_by_feature/", int_num_threads = int_num_threads )
-            RAMtx_Apply( self, self._layer._ramtx_barcodes, self.bc, f"{path_folder_data_new}sorted_by_barcode/", int_num_threads = int_num_threads )
+            RAMtx_Apply( self, self._layer._ramtx_features, self.ft, func_ft, f"{path_folder_data_new}sorted_by_feature/", int_num_threads = int_num_threads )
+            RAMtx_Apply( self, self._layer._ramtx_barcodes, self.bc, func_bc, f"{path_folder_data_new}sorted_by_barcode/", int_num_threads = int_num_threads )
 
         if self.verbose :
             print( f'new layer {name_layer_new} has been successfully created' )
@@ -4524,8 +4572,8 @@ class RamData( ) :
         if path_folder_ramdata_output == self._path_folder_ramdata :
             self.layers.add( name_layer_new )
             self._save_metadata_( )
-    def subset( self, path_folder_ramdata_output, l_name_layer = [ ], int_num_threads = None ) :
-        ''' # 2022-07-05 01:51:17 
+    def subset( self, path_folder_ramdata_output, l_name_layer = [ ], int_num_threads = None, flag_simultaneous_processing_of_paired_ramtx = True, int_num_entries_for_each_weight_calculation_batch = 1000, int_total_weight_for_each_batch = 1000000 ) :
+        ''' # 2022-07-05 23:20:02 
         this function will create a new RamData object on disk by creating a subset of the current RamData according to the current filters
 
         =========
@@ -4550,6 +4598,12 @@ class RamData( ) :
         # retrieve valid set of name_layer
         set_name_layer = self.layers.intersection( l_name_layer )
         
+        ''' filter each layer '''
+        self.load_dict_change( ) # load 'dict_change' for coordinate conversion according to the given filter
+        for name_layer in set_name_layer : # for each valid name_layer
+            self.apply( name_layer, name_layer_new = None, func = 'ident', path_folder_ramdata_output = path_folder_ramdata_output, flag_simultaneous_processing_of_paired_ramtx = flag_simultaneous_processing_of_paired_ramtx, int_num_threads = int_num_threads, int_num_entries_for_each_weight_calculation_batch = int_num_entries_for_each_weight_calculation_batch, int_total_weight_for_each_batch = int_total_weight_for_each_batch ) # flag_dtype_output = None : use the same dtype as the input RAMtx object
+        self.unload_dict_change( ) # unload 'dict_change' after the conversion process
+        
         # compose metadata
         root = zarr.group( path_folder_ramdata_output )
         root.attrs[ 'dict_ramdata_metadata' ] = { 
@@ -4561,10 +4615,51 @@ class RamData( ) :
             'layers' : list( set_name_layer ),
             'version' : _version_,
         }
+    def normalize( self, name_layer = 'raw', name_layer_new = 'normalized', name_col_total_count = 'sum', int_total_count_target = 10000, flag_simultaneous_processing_of_paired_ramtx = True, int_num_threads = None, ** args ) :
+        ''' # 2022-07-06 01:53:31 
+        this function perform normalization of a given data and will create a new data in the current RamData object.
+
+        =========
+        inputs 
+        =========
+
+        'name_layer' : name of input data
+        'name_layer_new' : name of the output (normalized) data
+        'name_col_total_count' : name of column of barcode metadata (ZarrDataFrame) to use as total counts of barcodes
+        'int_total_count_target' : the target total count. the count data will be normalized according to the total counts of barcodes so that the total counts of each barcode after normalization becomes 'int_total_count_target'.
+        'flag_simultaneous_processing_of_paired_ramtx' : (Default: True) process the paired RAMtx simultaneously using two processes at a time.
+        'int_num_threads' : the number of CPUs to use. by default, the number of CPUs set by the RamData attribute 'int_num_cpus' will be used.
         
-        ''' filter the RAMtx matrices '''
-        for name_layer in set_name_layer : # for each valid name_layer
-            self.apply( name_layer, name_layer_new = None, func = 'ident', path_folder_ramdata_output = path_folder_ramdata_output, flag_dtype_output = None, flag_output_value_is_float = None, flag_simultaneous_processing_of_paired_ramtx = flag_simultaneous_processing_of_paired_ramtx, ba_mask_barcode = ba_mask_barcode, ba_mask_feature = ba_mask_feature, int_num_threads = int_num_threads, ** args ) # flag_dtype_output = None : use the same dtype as the input RAMtx object
+        ** args : arguments for 'self.apply' method
+        '''
+        # check validity of inputs
+        assert name_col_total_count in self.bc.meta # 'name_col_total_count' column should be available in the metadata
+        
+        # load total count data
+        flag_name_col_total_count_already_loaded = name_col_total_count in self.bc.meta.dict # a flag indicating that the total count data of barcodes has been already loaded
+        if not flag_name_col_total_count_already_loaded : # load count data of barcodes in memory
+            self.bc.meta.load_as_dict( name_col_total_count )
+        dict_count = self.bc.meta.dict[ name_col_total_count ] # retrieve total count data as a dictionary
+        
+        # load layer
+        self.layer = name_layer
+        
+        # define functions for normalization
+        def func_norm_barcode_indexed( self, int_entry_indexed, arr_int_entries_not_indexed, arr_value ) :
+            return int_entry_indexed, arr_int_entries_not_indexed, ( arr_value / dict_count[ int_entry_indexed ] * int_total_count_target ) # normalize count data of a single barcode
+        
+        def func_norm_feature_indexed( self, int_entry_indexed, arr_int_entries_not_indexed, arr_value ) : # normalize count data of a single feature containing (possibly) multiple barcodes
+            # perform normalization in-place
+            for i, e in enumerate( arr_value.astype( int ) ) : # iterate through barcodes
+                arr_value[ i ] = arr_value[ i ] / dict_count[ e ] # perform normalization of count data for each barcode
+            arr_value *= int_total_count_target
+            return int_entry_indexed, arr_int_entries_not_indexed, arr_value
+        
+        ''' normalize the RAMtx matrices '''
+        self.apply( name_layer, name_layer_new, func = ( func_norm_barcode_indexed, func_norm_feature_indexed ), flag_simultaneous_processing_of_paired_ramtx = flag_simultaneous_processing_of_paired_ramtx, int_num_threads = int_num_threads, ** args ) # flag_dtype_output = None : use the same dtype as the input RAMtx object
+    
+        if not flag_name_col_total_count_already_loaded : # unload count data of barcodes from memory if the count data was not loaded before calling this method
+            del self.bc.meta.dict[ name_col_total_count ]
     ''' satellite methods for analyzing RamData '''
     def _classify_feature_of_scarab_output_( self, int_min_num_occurrence_to_identify_valid_feature_category = 1000 ) :
         """ # 2022-05-30 12:39:01 
@@ -4676,63 +4771,6 @@ class RamData( ) :
         self.subset( path_folder_ramdata_output, set_str_barcode = set_str_barcode )
         if self.verbose :
             print( f'cell filtering completed for {len( set_str_barcode )} cells. A filtered RamData was exported at {path_folder_ramdata_output}' )
-    def _normalize_scarab_output_( self, name_layer = 'raw', name_layer_new = 'normalized', name_adata = 'main', name_col_total_count_atac_mode = 'raw_sum_for_atac_mode', name_col_total_count_gex_mode = 'raw_sum_for_gex_mode', int_total_count_target_gex_mode = 10000, int_total_count_target_atac_mode = 30000, flag_dtype_output = np.float64, flag_simultaneous_processing_of_paired_ramtx = True, int_num_threads = None, ** args ) :
-        ''' # 2022-06-06 02:36:49 
-        this function perform normalization of a given data and will create a new data in the current RamData object.
-
-        =========
-        inputs 
-        =========
-
-        'name_layer' : name of input data
-        'name_layer_new' : name of the output (normalized) data
-        'name_adata' : name of the anndata to retrieve total counts of each cell
-        'name_col_total_count_atac_mode' : name of column of the given anndata containing total counts of cells in atac mode
-        'name_col_total_count_gex_mode' : name of column of the given anndata containing total counts of cells in gex mode
-        'flag_simultaneous_processing_of_paired_ramtx' : (Default: True) process the paired RAMtx simultaneously using two processes at a time.
-        'int_num_threads' : the number of CPUs to use. by default, the number of CPUs set by the RamData attribute 'int_num_cpus' will be used.
-        'int_total_count_target_gex_mode' = 10000 : 
-        'int_total_count_target_atac_mode' = 30000, :
-        'flag_dtype_output' = np.float64 : the 
-        '''
-        
-        ''' handle inputs '''
-        
-        """ 
-        Prepare data for normalization
-        """
-        
-        self._classify_feature_of_scarab_output_( ) # classify features using the default settings
-        ba_mask_feature_of_atac_mode = self._dict_data_for_feature_classification[ "ba_mask_feature_of_atac_mode" ] # retrieve mask for features of atac mode
-        
-        # classify inputs
-        df_obs = self.ad[ name_adata ].obs
-        flag_atac_mode = name_col_total_count_atac_mode in df_obs.columns.values
-        flag_gex_mode = name_col_total_count_gex_mode in df_obs.columns.values
-        
-        # retrieve normalization factors for atac/gex counts for each cell
-        if flag_atac_mode :
-            arr_normalization_factor_atac_mode = int_total_count_target_atac_mode / self.ad[ name_adata ].obs[ name_col_total_count_atac_mode ].values
-        if flag_gex_mode :
-            arr_normalization_factor_gex_mode = int_total_count_target_gex_mode / self.ad[ name_adata ].obs[ name_col_total_count_gex_mode ].values
-
-        # retrieve normalization function for each input classification
-        if flag_atac_mode and flag_gex_mode :
-            def func_norm( self, int_barcode, int_feature, value ) :
-                return int_barcode, int_feature, ( arr_normalization_factor_atac_mode[ int_barcode ] * value if ba_mask_feature_of_atac_mode[ int_feature ] else arr_normalization_factor_gex_mode[ int_barcode ] * value )
-        elif flag_atac_mode :
-            def func_norm( self, int_barcode, int_feature, value ) :
-                return int_barcode, int_feature, arr_normalization_factor_atac_mode[ int_barcode ] * value
-        elif flag_gex_mode :
-            def func_norm( self, int_barcode, int_feature, value ) :
-                return int_barcode, int_feature, arr_normalization_factor_gex_mode[ int_barcode ] * value
-        else :
-            if self.verbose :
-                print( 'invalid column names for total atac/gex counts for each cells' )
-            return -1 
-
-        ''' normalize the RAMtx matrices '''
-        self.apply( name_layer, name_layer_new = name_layer_new, func = func_norm, flag_dtype_output = flag_dtype_output, flag_output_value_is_float = True, flag_simultaneous_processing_of_paired_ramtx = flag_simultaneous_processing_of_paired_ramtx, int_num_threads = int_num_threads, ** args ) # flag_dtype_output = None : use the same dtype as the input RAMtx object
     def _identify_highly_variable_features_scarab_output_( self, name_adata = 'main', name_layer = 'normalized_log1p', flag_show_graph = True ) :
         """ # 2022-06-07 22:53:55 
         identify highly variable features for scarab output (multiome)
