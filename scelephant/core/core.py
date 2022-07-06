@@ -11,7 +11,7 @@ import scanpy
 # define version
 _version_ = '0.0.0'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-07-05 21:08:12' 
+_last_modified_time_ = '2022-07-06 10:22:29' 
 
 ''' previosuly written for biobookshelf '''
 def CB_Parse_list_of_id_cell( l_id_cell, dropna = True ) :
@@ -2802,10 +2802,10 @@ class RAMtx( ) :
             za = zarr.open( path_folder_zarr, mode = 'w', shape = ( self.len_indexed_axis, ), chunks = ( int_size_chunk * int_num_chunks_in_a_batch, ), dtype = bool, synchronizer = zarr.ThreadSynchronizer( ) ) # the size of the chunk will be 100 times of the chunk used for matrix index, since the dtype is boolean
             len_indexed_axis = self.len_indexed_axis
             int_pos_start = 0
+            int_num_entries_to_retrieve = int( int_size_chunk * int_num_chunks_in_a_batch )
             while int_pos_start < len_indexed_axis :
-                int_num_entries_to_retrieve = int( int_size_chunk * int_num_chunks_in_a_batch )
                 sl = slice( int_pos_start, int_pos_start + int_num_entries_to_retrieve )
-                za[ sl ] = self._za_mtx_index[ sl ][ :, 0 ] != - 1
+                za[ sl ] = ( self._za_mtx_index[ sl ][ :, 1 ] - self._za_mtx_index[ sl ][ :, 0 ] ) > 0 # active entry is defined by finding entries with at least one count record
                 int_pos_start += int_num_entries_to_retrieve # update the position
         else :
             za = zarr.open( path_folder_zarr, mode = 'r', synchronizer = zarr.ThreadSynchronizer( ) ) # open zarr object
@@ -3034,7 +3034,10 @@ class RAMtx( ) :
         return l_int_entry_indexed_valid, l_arr_int_entry_not_indexed, l_arr_value
     def batch_generator( self, ba = None, int_num_entries_for_each_weight_calculation_batch = 1000, int_total_weight_for_each_batch = 1000000 ) :
         ''' # 2022-07-04 00:45:48 
-        generate batches of list of integer indices of the active entries in the given bitarray 'ba'
+        generate batches of list of integer indices of the active entries in the given bitarray 'ba'. 
+        Each bach has the following characteristics:
+            monotonous: active entries in a batch are in an increasing order
+            balanced: the total weight of a batch is around (but not exactly) 'int_total_weight_for_each_batch'
         
         'ba' : (default None) if None is given, self.ba_active_entries bitarray will be used.
         '''
@@ -3438,6 +3441,31 @@ class Axis( ) :
         perform XOR operation between 'filter_1' and 'filter_2'
         """
         return self._convert_to_bitarray( filter_1 ) ^ self._convert_to_bitarray( filter_2 )
+    def batch_generator( self, ba = None, int_num_entries_for_batch = 1000 ) :
+        ''' # 2022-07-04 00:45:48 
+        generate batches of list of integer indices of the active entries in the given bitarray 'ba'. 
+        Each bach has the following characteristics:
+            monotonous: active entries in a batch are in an increasing order
+            same size: except for the last batch, each batch has the same number of active entries 'int_num_entries_for_batch'.
+        
+        'ba' : (default None) if None is given, self.filter bitarray will be used.
+        '''
+        # set defaule arguments
+        if ba is None :
+            ba = self.filter #  if None is given, self.filter bitarray will be used.
+        # initialize
+        # a namespace that can safely shared between functions
+        ns = { 'l_int_entry_current_batch' : [ ] }
+
+        for int_entry in bk.BA.find( ba ) : # iterate through active entries of the given bitarray
+            ns[ 'l_int_entry_current_batch' ].append( int_entry ) # collect int_entry for the current 'weight_calculation_batch'
+            # once 'weight_calculation' batch is full, process the 'weight_calculation' batch
+            if len( ns[ 'l_int_entry_current_batch' ] ) >= int_num_entries_for_batch :
+                yield ns[ 'l_int_entry_current_batch' ]
+                ns[ 'l_int_entry_current_batch' ] = [ ] # initialize the next batch
+        # return the remaining int_entries as the last batch (if available)
+        if len( ns[ 'l_int_entry_current_batch' ] ) > 0 :
+            yield ns[ 'l_int_entry_current_batch' ]
 ''' a class for representing a layer of RamData '''
 class Layer( ) :
     """ # 2022-06-25 16:32:19 
@@ -4227,7 +4255,7 @@ class RamData( ) :
         ''' wrapper of AnnDataContainer.save '''
         self.ad.update( * l_name_adata )
     def summarize( self, name_layer, axis, summarizing_func, int_num_threads = None, flag_overwrite_columns = True, int_num_entries_for_each_weight_calculation_batch = 1000, int_total_weight_for_each_batch = 1000000 ) :
-        ''' # 2022-07-04 10:59:32 
+        ''' # 2022-07-06 03:21:56 
         this function summarize entries of the given axis (0 = barcode, 1 = feature) using the given function
         
         example usage: calculate total sum, standard deviation, pathway enrichment score calculation, etc.
@@ -4324,6 +4352,7 @@ class RamData( ) :
         arr_dummy_one, arr_dummy_zero = np.ones( 10, dtype = int ), np.zeros( 10, dtype = int )
         dict_res = summarizing_func( self, 0, arr_dummy_zero, arr_dummy_one )
         l_name_col_summarized = sorted( list( dict_res ) ) # retrieve the list of key values of an dict_res result returned by 'summarizing_func'
+        l_name_col_summarized_with_name_layer_prefix = list( f"{name_layer}_{e}" for e in l_name_col_summarized ) # retrieve the name_col containing summarized data with f'{name_layer}_' prefix 
         
         
         # retrieve RAMtx object to summarize
@@ -4343,23 +4372,30 @@ class RamData( ) :
             # retrieve the number of index_entries
             int_num_entries = len( l_int_entry_current_batch )
             
+            if int_num_entries == 0 :
+                print( 'empty batch detected' )
+            
             # open an output file
             path_file_output = f"{path_folder_temp}{UUID( )}.tsv.gz" # define path of the output file
             newfile = gzip.open( path_file_output, 'wb' )
             
             # iterate through the data of each entry
+            f = False
             for int_entry_indexed_valid, arr_int_entry_not_indexed, arr_value in zip( * rtx[ l_int_entry_current_batch ] ) : # retrieve data for the current batch
+                f = True
                 # retrieve summary for the entry
                 dict_res = summarizing_func( self, int_entry_indexed_valid, arr_int_entry_not_indexed, arr_value ) # summarize the data for the entry
                 # write the result to an output file
                 newfile.write( ( '\t'.join( map( str, [ int_entry_indexed_valid ] + list( dict_res[ name_col ] if name_col in dict_res else np.nan for name_col in l_name_col_summarized ) ) ) + '\n' ).encode( ) ) # write an index for the current entry # 0>1 coordinate conversion for 'int_entry'
             newfile.close( ) # close file
+            if not f :
+                print( 'error batch is ', l_int_entry_current_batch )
             pipe_to_main_process.send( path_file_output ) # send information about the output file
         def post_process_batch( path_file_result ) :
-            """ # 2022-07-04 10:42:04 
+            """ # 2022-07-06 03:21:49 
             """
             df = pd.read_csv( path_file_result, sep = '\t', index_col = 0, header = None ) # read summarized output file, using the first column as the integer indices of the entries
-            df.columns = l_name_col_summarized # name columns of the dataframe
+            df.columns = l_name_col_summarized_with_name_layer_prefix # name columns of the dataframe using 'name_col' with f'{name_layer}_' prefix
             ax.meta.update( df, flag_use_index_as_integer_indices = True ) # update metadata using ZarrDataFrame method
             os.remove( path_file_result ) # remove the output file
         # summarize the RAMtx using multiple processes
@@ -4368,7 +4404,7 @@ class RamData( ) :
         # remove temp folder
         shutil.rmtree( path_folder_temp )
     def apply( self, name_layer, name_layer_new, func = None, path_folder_ramdata_output = None, dtype_of_row_and_col_indices = np.int32, dtype_of_value = np.float64, int_num_threads = None, flag_simultaneous_processing_of_paired_ramtx = True, int_num_entries_for_each_weight_calculation_batch = 1000, int_total_weight_for_each_batch = 1000000 ) :
-        ''' # 2022-07-05 17:41:57 
+        ''' # 2022-07-06 10:22:21 
         this function apply a function and/or filters to the records of the given data, and create a new data object with 'name_layer_new' as its name.
         
         example usage: calculate normalized count data, perform log1p transformation, cell filtering, etc.                             
@@ -4449,7 +4485,7 @@ class RamData( ) :
         self.layer = name_layer
         
         def RAMtx_Apply( self, rtx, ax, func, path_folder_ramtx_output, int_num_threads ) :
-            ''' # 2022-07-05 17:41:52 
+            ''' # 2022-07-06 10:22:12 
             
             inputs 
             =========
@@ -4504,7 +4540,7 @@ class RamData( ) :
                 za_output.resize( int_num_records_written, 2 ) # resize the output Zarr object so that there is no 
                 pipe_to_main_process.send( ( int_num_records_written, path_folder_zarr_output, path_file_index_output ) ) # send information about the output files
             def post_process_batch( res ) :
-                """ # 2022-07-04 10:42:04 
+                """ # 2022-07-06 10:22:05 
                 """
                 # parse result
                 int_num_records_written, path_folder_zarr_output, path_file_index_output = res
@@ -4512,6 +4548,11 @@ class RamData( ) :
                 ns[ 'int_num_records_written_to_ramtx' ] += int_num_records_written # update the number of records written to the output RAMtx
                 int_num_chunks_written_for_a_batch = int( np.ceil( int_num_records_written / int_num_records_in_a_chunk_of_mtx ) ) # retrieve the number of chunks that were written for a batch
                 int_num_chunks_written_to_ramtx = ns[ 'int_num_chunks_written_to_ramtx' ] # retrieve the number of chunks already present in the output RAMtx zarr matrix object
+                
+                # check size of Zarr matrix object, and increase the size if needed.
+                int_min_num_rows_required = ( int_num_chunks_written_to_ramtx + int_num_chunks_written_for_a_batch ) * int_num_records_in_a_chunk_of_mtx # calculate the minimal number of rows required in the RAMtx Zarr matrix object
+                if za_mtx.shape[ 0 ] < int_min_num_rows_required : # check whether the size of Zarr matrix is smaller than the minimum requirement
+                    za_mtx.resize( int_min_num_rows_required, 2 ) # resize the Zarr matrix so that data can be safely added
                 
                 # copy Zarr chunks to RAMtx Zarr matrix object
                 os.chdir( path_folder_zarr_output )
@@ -4615,7 +4656,7 @@ class RamData( ) :
             'layers' : list( set_name_layer ),
             'version' : _version_,
         }
-    def normalize( self, name_layer = 'raw', name_layer_new = 'normalized', name_col_total_count = 'sum', int_total_count_target = 10000, flag_simultaneous_processing_of_paired_ramtx = True, int_num_threads = None, ** args ) :
+    def normalize( self, name_layer = 'raw', name_layer_new = 'normalized', name_col_total_count = 'raw_sum', int_total_count_target = 10000, flag_simultaneous_processing_of_paired_ramtx = True, int_num_threads = None, ** args ) :
         ''' # 2022-07-06 01:53:31 
         this function perform normalization of a given data and will create a new data in the current RamData object.
 
@@ -4660,6 +4701,62 @@ class RamData( ) :
     
         if not flag_name_col_total_count_already_loaded : # unload count data of barcodes from memory if the count data was not loaded before calling this method
             del self.bc.meta.dict[ name_col_total_count ]
+    def identify_highly_variable_features( self, name_layer = 'normalized_log1p', flag_show_graph = True, coords_for_sampling = range( 0, 1000000 ) ) :
+        """ # 2022-06-07 22:53:55 
+        identify highly variable features
+        learns mean-variable relationship from the given data, and calculate residual variance to identify highly variable features.
+
+        'flag_show_graph' : show graphs
+
+        ==========
+        returns
+        ==========
+
+        new columns will be added to self.ft.meta metadata
+        """
+        # set the name of the columns that will be used in the current method
+        name_col_for_mean, name_col_for_variance = f'{name_layer}_mean', f'{name_layer}_variance'
+        
+        # check if required metadata (mean and variance data of features) is not available, and if not, calculate and save the data
+        if name_col_for_mean not in self.ft.meta or name_col_for_variance not in self.ft.meta :
+            self.summarize( name_layer, 'feature', 'sum_and_dev' ) # calculate mean and variance for features
+
+        # load mean and variance data in memory
+        arr_mean = self.ft.meta[ name_col_for_mean ]
+        arr_var = self.ft.meta[ name_col_for_variance ]
+
+        if flag_show_graph :
+            plt.plot( arr_mean[ : : 10 ], arr_var[ : : 10 ], '.', alpha = 0.01 )
+            MATPLOTLIB_basic_configuration( x_scale = 'log', y_scale = 'log', x_label = 'mean', y_label = 'variance', title = f"mean-variance relationship\nin '{name_layer}'" )
+            plt.show( )
+            
+        # learn mean-variance relationship for the data
+        mask = ~ np.isnan( arr_var ) # exclude values containing np.nan
+        if mask.sum( ) == 0 : # exit if no valid data is available for fitting
+            return
+        mean_var_relationship_fit = np.polynomial.polynomial.Polynomial.fit( arr_mean[ mask ], arr_var[ mask ], 2 ) # fit using polynomial with degree 2
+        del mask # delete temporary object
+
+        # initialize output values
+        n = len( arr_mean ) # the number of output entries
+        arr_ratio_of_variance_to_expected_variance_from_mean = np.full( n, np.nan )
+        arr_diff_of_variance_to_expected_variance_from_mean = np.full( n, np.nan )
+
+        for i in range( n ) : # iterate each row
+            mean, var = arr_mean[ i ], arr_var[ i ] # retrieve var and mean
+            if not np.isnan( var ) : # if current entry is valid
+                var_expected = mean_var_relationship_fit( mean ) # calculate expected variance from the mean
+                if var_expected == 0 : # handle the case when the current expected variance is zero 
+                    arr_ratio_of_variance_to_expected_variance_from_mean[ i ] = np.nan
+                    arr_diff_of_variance_to_expected_variance_from_mean[ i ] = np.nan
+                else :
+                    arr_ratio_of_variance_to_expected_variance_from_mean[ i ] = var / var_expected
+                    arr_diff_of_variance_to_expected_variance_from_mean[ i ] = var - var_expected
+
+        # add data to feature metadata
+        self.ft.meta[ f'{name_layer}__float_ratio_of_variance_to_expected_variance_from_mean' ] = arr_ratio_of_variance_to_expected_variance_from_mean
+        self.ft.meta[ f'{name_layer}__float_diff_of_variance_to_expected_variance_from_mean' ] = arr_diff_of_variance_to_expected_variance_from_mean
+        self.ft.meta[ f'{name_layer}__float_score_highly_variable_feature_from_mean' ] = arr_ratio_of_variance_to_expected_variance_from_mean * arr_diff_of_variance_to_expected_variance_from_mean # calculate the product of the ratio and difference of variance to expected variance for scoring and sorting highly variable features
     ''' satellite methods for analyzing RamData '''
     def _classify_feature_of_scarab_output_( self, int_min_num_occurrence_to_identify_valid_feature_category = 1000 ) :
         """ # 2022-05-30 12:39:01 
@@ -4771,75 +4868,7 @@ class RamData( ) :
         self.subset( path_folder_ramdata_output, set_str_barcode = set_str_barcode )
         if self.verbose :
             print( f'cell filtering completed for {len( set_str_barcode )} cells. A filtered RamData was exported at {path_folder_ramdata_output}' )
-    def _identify_highly_variable_features_scarab_output_( self, name_adata = 'main', name_layer = 'normalized_log1p', flag_show_graph = True ) :
-        """ # 2022-06-07 22:53:55 
-        identify highly variable features for scarab output (multiome)
-        learns mean-variable relationship separately for gex and atac results
 
-        'flag_show_graph' : show graphs
-
-        ==========
-        returns
-        ==========
-
-        f'{name_layer}__float_score_highly_variable_feature_from_mean' : the more positive this value is, the feature is likely to be highly variable and contains more information about the cellular heterogeneity of the dataset
-        """
-        # set the name of the columns that will be used in the current method
-        name_col_for_mean, name_col_for_variance = f'{name_layer}_mean', f'{name_layer}_variance'
-
-        # classify features
-        self._classify_feature_of_scarab_output_( )
-
-        # retrieve data from the given 'name_adata'
-        df_var = self.ad[ name_adata ].var
-        df_data = df_var[ [ name_col_for_mean, name_col_for_variance ] ]
-
-        arr_mask_feature_of_atac_mode = np.array( list( e == 1 for e in self._dict_data_for_feature_classification[ 'ba_mask_feature_of_atac_mode' ] ) ) # retrieve a mask indicating whether a given feature is from the atac mode
-        df_var[ 'feature_of_atac_mode' ] = arr_mask_feature_of_atac_mode # add mask to the dataframe
-        df_var[ f'{name_layer}__float_ratio_of_variance_to_expected_variance_from_mean' ] = np.nan # initialize the data
-        df_var[ f'{name_layer}__float_diff_of_variance_to_expected_variance_from_mean' ] = np.nan # initialize the data
-
-        for flag_atac_mode in [ True, False ] :
-            arr_mask = arr_mask_feature_of_atac_mode if flag_atac_mode else ( ~ arr_mask_feature_of_atac_mode ) # retrieve mask for atac/gex mode
-
-            df = df_data[ arr_mask ].dropna( ) # retrieve data for gex or atac mode separately
-            if len( df ) == 0 : # skip 
-                continue
-
-            # learn mean-variance relationship for the data
-            arr_mean, arr_var = df[ name_col_for_mean ].values, df[ name_col_for_variance ].values
-
-            if flag_show_graph :
-                plt.plot( arr_mean[ : : 10 ], arr_var[ : : 10 ], '.', alpha = 0.01 )
-                MATPLOTLIB_basic_configuration( x_scale = 'log', y_scale = 'log', x_label = 'mean', y_label = 'variance', title = f"({'ATAC' if flag_atac_mode else 'GEX'} mode) mean-variance relationship\nin '{name_layer}' in the '{name_adata}' AnnDAta" )
-                plt.show( )
-            mean_var_relationship_fit = np.polynomial.polynomial.Polynomial.fit( arr_mean, arr_var, 2 )
-
-            # calculate the deviation from the estimated variance from the mean for the current mode
-            arr_data = df_data[ arr_mask ].values
-            arr_ratio_of_variance_to_expected_variance_from_mean = np.full( len( arr_data ), np.nan )
-            arr_diff_of_variance_to_expected_variance_from_mean = np.full( len( arr_data ), np.nan )
-
-            for i in range( len( arr_data ) ) : # iterate list of means of the features
-                mean, var = arr_data[ i ] # retrieve var and mean
-                if not np.isnan( var ) : # if current entry is valid
-                    var_expected = mean_var_relationship_fit( mean ) # calculate expected variance from the mean
-                    if var_expected == 0 : # handle the case when the current expected variance is zero 
-                        arr_ratio_of_variance_to_expected_variance_from_mean[ i ] = np.nan
-                        arr_diff_of_variance_to_expected_variance_from_mean[ i ] = np.nan
-                    else :
-                        arr_ratio_of_variance_to_expected_variance_from_mean[ i ] = var / var_expected
-                        arr_diff_of_variance_to_expected_variance_from_mean[ i ] = var - var_expected
-
-            # add data to var dataframe
-            df_var.loc[ arr_mask, f'{name_layer}__float_ratio_of_variance_to_expected_variance_from_mean' ] = arr_ratio_of_variance_to_expected_variance_from_mean
-            df_var.loc[ arr_mask, f'{name_layer}__float_diff_of_variance_to_expected_variance_from_mean' ] = arr_diff_of_variance_to_expected_variance_from_mean
-
-        # calculate the product of the ratio and difference of variance to expected variance for scoring and sorting highly variable features
-        df_var[ f'{name_layer}__float_score_highly_variable_feature_from_mean' ] = df_var[ f'{name_layer}__float_ratio_of_variance_to_expected_variance_from_mean' ] * df_var[ f'{name_layer}__float_diff_of_variance_to_expected_variance_from_mean' ]
-
-        # save result in the given AnnData
-        self.ad[ name_adata ].var = df_var
     def umap( self, name_adata, l_str_feature, name_adata_new = None, l_name_col_for_regression = [ ], float_scale_max_value = 10, int_pca_n_comps = 150, int_neighbors_n_neighbors = 10, int_neighbors_n_pcs = 50, dict_kw_umap = dict( ), dict_leiden = dict( ) ) :
         ''' # 2022-06-06 02:32:29 
         using the given AnnData 'name_adata', retrieve all count data of given list of features 'l_str_feature', perform dimension reduction process, and save the new AnnData with umap coordinate and leiden cluster information 'name_adata_new'
