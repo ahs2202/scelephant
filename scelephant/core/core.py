@@ -3132,8 +3132,8 @@ class Axis( ) :
         returns the number of entries in the Axis
         '''
         return self.int_num_entries
-    def load_dict_change( self, float_min_proportion_of_active_entries_in_an_axis_for_using_array = 0.1 ) :
-        """ # 2022-07-05 22:53:51 
+    def load_dict_change( self, float_min_proportion_of_active_entries_in_an_axis_for_using_array = 0.1, dtype = np.int32 ) :
+        """ # 2022-07-06 21:18:07 
         build 'dict_change' (dictionaries for conversion of coordinates) from the given filter.
         
         for example, when filter is 
@@ -3151,7 +3151,7 @@ class Axis( ) :
             n = len( ba )
             n_active_entries = ba.count( )
             # initialize dictionary
-            dict_change = np.zeros( n, dtype = self._dtype_of_feature_and_barcode_indices ) if ( n_active_entries / n ) > float_min_proportion_of_active_entries_in_an_axis_for_using_array else dict( ) # implement a dictionary using an array if the proportion of active entries in the axis is larger than the given threshold to reduce the memory footprint and increase the efficiency of conversion process
+            dict_change = np.zeros( n, dtype = dtype ) if ( n_active_entries / n ) > float_min_proportion_of_active_entries_in_an_axis_for_using_array else dict( ) # implement a dictionary using an array if the proportion of active entries in the axis is larger than the given threshold to reduce the memory footprint and increase the efficiency of conversion process
             for i, e in enumerate( bk.BA.to_integer_indices( ba ) ) : # iterate through 'int_entry' of the active entries
                 dict_change[ e ] = i
         self.dict_change = dict_change # set 'dict_change'
@@ -4111,12 +4111,12 @@ class RamData( ) :
         display RamData
         """
         return f"<RamData object ({self.metadata[ 'int_num_barcodes' ]} barcodes X {self.metadata[ 'int_num_features' ]} features" + ( '' if self.layer is None else f", {self._layer._ramtx_barcodes._int_num_records} records for the current layer {self.layer}" ) + f") stored at {self._path_folder_ramdata}\n\twith the following layers : {self.layers}\n\tcurrent layer is '{self.layer}'>" # show the number of records of the current layer if available.
-    def load_dict_change( self, float_min_proportion_of_active_entries_in_an_axis_for_using_array = 0.1 ) :
-        """  # 2022-07-05 22:55:22 
+    def load_dict_change( self, float_min_proportion_of_active_entries_in_an_axis_for_using_array = 0.1, dtype = np.int32 ) :
+        """  # 2022-07-06 21:17:56 
         load dictionaries for coordinate conversion for filtered barcodes/features
         """
-        self.ft.load_dict_change( float_min_proportion_of_active_entries_in_an_axis_for_using_array = float_min_proportion_of_active_entries_in_an_axis_for_using_array )
-        self.bc.load_dict_change( float_min_proportion_of_active_entries_in_an_axis_for_using_array = float_min_proportion_of_active_entries_in_an_axis_for_using_array )
+        self.ft.load_dict_change( float_min_proportion_of_active_entries_in_an_axis_for_using_array = float_min_proportion_of_active_entries_in_an_axis_for_using_array, dtype = dtype )
+        self.bc.load_dict_change( float_min_proportion_of_active_entries_in_an_axis_for_using_array = float_min_proportion_of_active_entries_in_an_axis_for_using_array, dtype = dtype )
     def unload_dict_change( self ) :
         """  # 2022-07-05 22:55:22 
         unload dictionaries for coordinate conversion for filtered barcodes/features
@@ -4656,7 +4656,7 @@ class RamData( ) :
             'version' : _version_,
         }
     def normalize( self, name_layer = 'raw', name_layer_new = 'normalized', name_col_total_count = 'raw_sum', int_total_count_target = 10000, flag_simultaneous_processing_of_paired_ramtx = True, int_num_threads = None, ** args ) :
-        ''' # 2022-07-06 01:53:31 
+        ''' # 2022-07-06 23:58:15 
         this function perform normalization of a given data and will create a new data in the current RamData object.
 
         =========
@@ -4686,11 +4686,15 @@ class RamData( ) :
         
         # define functions for normalization
         def func_norm_barcode_indexed( self, int_entry_indexed, arr_int_entries_not_indexed, arr_value ) :
+            """ # 2022-07-06 23:58:27 
+            """
             return int_entry_indexed, arr_int_entries_not_indexed, ( arr_value / dict_count[ int_entry_indexed ] * int_total_count_target ) # normalize count data of a single barcode
         
         def func_norm_feature_indexed( self, int_entry_indexed, arr_int_entries_not_indexed, arr_value ) : # normalize count data of a single feature containing (possibly) multiple barcodes
+            """ # 2022-07-06 23:58:38 
+            """
             # perform normalization in-place
-            for i, e in enumerate( arr_value.astype( int ) ) : # iterate through barcodes
+            for i, e in enumerate( arr_int_entries_not_indexed.astype( int ) ) : # iterate through barcodes
                 arr_value[ i ] = arr_value[ i ] / dict_count[ e ] # perform normalization of count data for each barcode
             arr_value *= int_total_count_target
             return int_entry_indexed, arr_int_entries_not_indexed, arr_value
