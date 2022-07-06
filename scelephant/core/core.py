@@ -4206,7 +4206,6 @@ class RamData( ) :
         res = rtx[ [ ] ]
         l_int_entry_indexed_valid, l_arr_int_entry_not_indexed, l_arr_value = res # parse retrieved result
         self.unload_dict_change( ) # unload 'dict_change' after the conversion process
-        print( 'data retrieved at ' + TIME_GET_timestamp( True ) )
         
         # combine the arrays
         arr_int_entry_not_indexed = np.concatenate( l_arr_int_entry_not_indexed )
@@ -4853,7 +4852,6 @@ class RamData( ) :
                 MPL_Scatter_Align_Two_Series( df[ f'{name_layer}_sum_for_atac_mode' ], df[ f'{name_layer}_proportion_of_promoter_in_atac_mode' ], x_scale = 'log', alpha = 0.01 )
 
         self.ad[ name_adata ].obs = df # save the result        
-
     def _filter_cell_scarab_output_( self, path_folder_ramdata_output, name_layer = 'raw', name_adata = 'main', int_min_sum_for_atac_mode = 1500, float_min_proportion_of_promoter_in_atac_mode = 0.22, int_min_sum_for_gex_mode = 250 ) :
         ''' # 2022-06-03 15:25:02 
         filter cells from scarab output 
@@ -4869,35 +4867,23 @@ class RamData( ) :
         if self.verbose :
             print( f'cell filtering completed for {len( set_str_barcode )} cells. A filtered RamData was exported at {path_folder_ramdata_output}' )
 
-    def umap( self, name_adata, l_str_feature, name_adata_new = None, l_name_col_for_regression = [ ], float_scale_max_value = 10, int_pca_n_comps = 150, int_neighbors_n_neighbors = 10, int_neighbors_n_pcs = 50, dict_kw_umap = dict( ), dict_leiden = dict( ) ) :
-        ''' # 2022-06-06 02:32:29 
-        using the given AnnData 'name_adata', retrieve all count data of given list of features 'l_str_feature', perform dimension reduction process, and save the new AnnData with umap coordinate and leiden cluster information 'name_adata_new'
+# utility functions
+def umap( adata, l_name_col_for_regression = [ ], float_scale_max_value = 10, int_pca_n_comps = 150, int_neighbors_n_neighbors = 10, int_neighbors_n_pcs = 50, dict_kw_umap = dict( ), dict_leiden = dict( ) ) :
+    ''' # 2022-07-06 20:49:44 
+    retrieve all expression data of the RamData with current barcodes/feature filters', perform dimension reduction process, and return the new AnnData object with umap coordinate and leiden cluster information
 
-        'l_name_col_for_regression' : a list of column names for the regression step. a regression step is often the longest step for demension reduction and clustering process. By simply skipping this step, one can retrieve a brief cluster structures of the cells in a very short time. to skip the regression step, please set this argument to an empty list [ ].
-        '''
-        # retrieve all count data of 'l_str_feature'
-        X_temp = self.ad[ name_adata ].X
-        self.ad[ name_adata ].X = self[ l_str_feature ].X # retrieve all data of the features classified as 'highly variable', and start performing clustering
-        adata = self.ad[ name_adata ]
-        adata = adata[ :, np.array( adata.X.sum( axis = 0 ) ).ravel( ) > 0 ].copy( ) # reduce the number of features in the sparse matrix before converting an entire matrix to dense format
-        self.ad[ name_adata ].X = X_temp # restore the 'X' attribute values
+    'adata' : input adata object
+    'l_name_col_for_regression' : a list of column names for the regression step. a regression step is often the longest step for demension reduction and clustering process. By simply skipping this step, one can retrieve a brief cluster structures of the cells in a very short time. to skip the regression step, please set this argument to an empty list [ ].
+    '''
+    # perform dimension reduction and clustering processes
+    l_name_col_for_regression = list( set( adata.obs.columns.values ).intersection( l_name_col_for_regression ) ) # retrieve valid column names for regression
+    if len( l_name_col_for_regression ) > 1 :
+        sc.pp.regress_out( adata, l_name_col_for_regression )
+    sc.pp.scale( adata, max_value = float_scale_max_value )
+    sc.tl.pca( adata, svd_solver = 'arpack', n_comps = int_pca_n_comps )
+    sc.pl.pca_variance_ratio( adata, log = True )
+    sc.pp.neighbors( adata, n_neighbors = int_neighbors_n_neighbors, n_pcs = int_neighbors_n_pcs )
+    sc.tl.umap( adata, ** dict_kw_umap )
+    sc.tl.leiden( adata, ** dict_leiden )
 
-        # initialize the new AnnData 'name_adata_new'
-        if name_adata_new is None :
-            name_adata_new = name_adata
-        if name_adata != name_adata_new :
-            self.ad[ name_adata_new ] = self.ad[ name_adata ].copy( )
-
-        # perform dimension reduction and clustering processes
-        l_name_col_for_regression = list( set( adata.obs.columns.values ).intersection( l_name_col_for_regression ) ) # retrieve valid column names for regression
-        if len( l_name_col_for_regression ) > 1 :
-            sc.pp.regress_out( adata, l_name_col_for_regression )
-        sc.pp.scale( adata, max_value = float_scale_max_value )
-        sc.tl.pca( adata, svd_solver = 'arpack', n_comps = int_pca_n_comps )
-        sc.pl.pca_variance_ratio( adata, log = True )
-        sc.pp.neighbors( adata, n_neighbors = int_neighbors_n_neighbors, n_pcs = int_neighbors_n_pcs )
-        sc.tl.umap( adata, ** dict_kw_umap )
-        sc.tl.leiden( adata, ** dict_leiden )
-
-        # export results to the new AnnData object ('name_adata_new')
-        self.ad.retrieve_attributes( name_adata_new, adata, flag_ignore_var = True )
+    return adata
