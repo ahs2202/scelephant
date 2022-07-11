@@ -5,6 +5,7 @@ from biobookshelf import *
 import biobookshelf as bk
 
 from scelephant.core import *
+from scelephant.utils import *
 
 pd.options.mode.chained_assignment = None  # default='warn' # to disable worining
 import warnings

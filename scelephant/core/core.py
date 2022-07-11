@@ -9,9 +9,9 @@ import scanpy
 # import shelve # for persistent dictionary (key-value based database)
 
 # define version
-_version_ = '0.0.0'
+_version_ = '0.0.1'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-07-06 10:22:29' 
+_last_modified_time_ = '2022-07-07 20:27:47' 
 
 ''' previosuly written for biobookshelf '''
 def CB_Parse_list_of_id_cell( l_id_cell, dropna = True ) :
@@ -286,7 +286,7 @@ def __MTX_10X_Combine__renumber_feature_mtx_10x__( path_file_input, path_folder_
             with gzip.open( f'{path_folder_mtx_10x}matrix.mtx.gz', 'rb' ) as file : # retrieve a list of features
                 line = file.readline( ).decode( ) # read the first line
                 # if the first line of the file contains a comment line, read all comment lines and a description line following the comments.
-                if line[ 0 ] == '%' :
+                if len( line ) > 0 and line[ 0 ] == '%' :
                     # read comment and the description line
                     while True :
                         if line[ 0 ] != '%' :
@@ -385,7 +385,7 @@ def __MTX_10X_Combine__renumber_barcode_or_feature_index_mtx_10x__( path_file_in
             with gzip.open( f'{path_folder_mtx_10x}matrix.mtx.gz', 'rb' ) as file : # retrieve a list of features
                 line = file.readline( ).decode( ) # read the first line
                 # if the first line of the file contains a comment line, read all comment lines and a description line following the comments.
-                if line[ 0 ] == '%' :
+                if len( line ) > 0 and line[ 0 ] == '%' :
                     # read comment and the description line
                     while True :
                         if line[ 0 ] != '%' :
@@ -574,7 +574,7 @@ def __MTX_10X_Summarize_Counts__summarize_counts_for_each_mtx_10x__( path_file_i
             ''' read the first line '''
             line = file.readline( ).decode( ) 
             ''' if the first line of the file contains a comment line, read all comment lines and a description line following the comments. '''
-            if line[ 0 ] == '%' :
+            if len( line ) > 0 and line[ 0 ] == '%' :
                 # read comment and the description line
                 while True :
                     if line[ 0 ] != '%' :
@@ -759,7 +759,7 @@ def MTX_10X_Retrieve_number_of_rows_columns_and_records( path_folder_mtx_10x_inp
         ''' read the first line '''
         line = file.readline( ).decode( ).strip( )
         ''' if the first line of the file contains a comment line, read all comment lines and a description line following the comments. '''
-        if line[ 0 ] == '%' :
+        if len( line ) > 0 and line[ 0 ] == '%' :
             # read comment and the description line
             while True :
                 if line[ 0 ] != '%' :
@@ -788,7 +788,7 @@ def __MTX_10X_Calculate_Average_Log10_Transformed_Normalized_Expr__first_pass__(
             ''' read the first line '''
             line = file.readline( ).decode( ) 
             ''' if the first line of the file contains a comment line, read all comment lines and a description line following the comments. '''
-            if line[ 0 ] == '%' :
+            if len( line ) > 0 and line[ 0 ] == '%' :
                 # read comment and the description line
                 while True :
                     if line[ 0 ] != '%' :
@@ -848,7 +848,7 @@ def __MTX_10X_Calculate_Average_Log10_Transformed_Normalized_Expr__second_pass__
             ''' read the first line '''
             line = file.readline( ).decode( ) 
             ''' if the first line of the file contains a comment line, read all comment lines and a description line following the comments. '''
-            if line[ 0 ] == '%' :
+            if len( line ) > 0 and line[ 0 ] == '%' :
                 # read comment and the description line
                 while True :
                     if line[ 0 ] != '%' :
@@ -1002,7 +1002,7 @@ def __MTX_10X_Filter__filter_mtx_10x__( path_file_input, path_folder_mtx_10x_out
                 ''' read the first line '''
                 line = file.readline( ).decode( ) 
                 ''' if the first line of the file contains a comment line, read all comment lines and a description line following the comments. '''
-                if line[ 0 ] == '%' :
+                if len( line ) > 0 and line[ 0 ] == '%' :
                     # read comment and the description line
                     while True :
                         if line[ 0 ] != '%' :
@@ -1026,7 +1026,8 @@ def __MTX_10X_Filter__filter_mtx_10x__( path_file_input, path_folder_mtx_10x_out
                     line = file.readline( ).decode( ) # read the next line
     return int_n_entries # returns the total number of entries written by the current process
 def MTX_10X_Filter( path_folder_mtx_10x_input, path_folder_mtx_10x_output, min_counts = None, min_features = None, min_cells = None, l_features = None, l_cells = None, verbose = False, function_for_adjusting_thresholds = None, int_num_threads = 15, flag_split_mtx = True, int_max_num_entries_for_chunk = 10000000 ) :
-    ''' # 2022-02-22 01:39:45  hyunsu-an
+    ''' # 2022-07-07 21:01:59 
+    # hyunsu-an
     read 10x count matrix and filter matrix based on several thresholds
     'path_folder_mtx_10x_input' : a folder containing files for the input 10x count matrix
     'path_folder_mtx_10x_output' : a folder containing files for the input 10x count matrix
@@ -1134,6 +1135,7 @@ def MTX_10X_Filter( path_folder_mtx_10x_input, path_folder_mtx_10x_output, min_c
 
     ''' save feature file '''
     df_feature[ [ 'id_feature', 'feature', 'feature_type' ] ].to_csv( f"{path_folder_mtx_10x_output}features.tsv.gz", sep = '\t', index = False, header = False ) # save as a file
+    del df_feature
 
     """ write a filtered matrix.mtx.gz for each split mtx file using multiple processes and retrieve the total number of entries written by each process """
     # compose inputs for multiprocessing
@@ -1146,7 +1148,12 @@ def MTX_10X_Filter( path_folder_mtx_10x_input, path_folder_mtx_10x_output, min_c
     df_file = GLOB_Retrive_Strings_in_Wildcards( f"{path_folder_mtx_10x_output}matrix.mtx.gz.*.gz" )
     df_file.wildcard_0 = df_file.wildcard_0.astype( int )
     df_file.sort_values( 'wildcard_0', inplace = True )
-    OS_FILE_Combine_Files_in_order( df_file.path.values, f"{path_folder_mtx_10x_output}matrix.mtx.gz", delete_input_files = not flag_split_mtx, header = f"%%MatrixMarket matrix coordinate integer general\n%\n{len( dict_id_row_previous_to_id_row_current )} {len( dict_id_column_previous_to_id_column_current )} {int_total_n_entries}\n" ) # combine the output mtx files in the order # does not delete temporary files if 'flag_split_mtx' is True
+    
+    # write header 
+    path_file_header = f"{path_folder_mtx_10x_output}matrix.mtx.header.txt.gz"
+    with gzip.open( path_file_header, 'wb' ) as newfile :
+        newfile.write( f"%%MatrixMarket matrix coordinate integer general\n%\n{len( dict_id_row_previous_to_id_row_current )} {len( dict_id_column_previous_to_id_column_current )} {int_total_n_entries}\n".encode( ) )
+    OS_Run( [ 'cat', path_file_header ] + list( df_file.path.values ), path_file_stdout = f"{path_folder_mtx_10x_output}matrix.mtx.gz", stdout_binary = True, return_output = False ) # combine the output mtx files in the order # does not delete temporary files if 'flag_split_mtx' is True
     
     # write a flag indicating that the current output directory contains split mtx files
     with open( f"{path_folder_mtx_10x_output}matrix.mtx.gz.split.flag", 'w' ) as file :
@@ -2439,8 +2446,8 @@ def __Merge_Sort_MTX_10X_and_Write_and_Index_Zarr__( za_mtx, za_mtx_index, * l_p
     if flag_delete_input_file_upon_completion and isinstance( l_path_file_input[ 0 ], str ) : # if paths are given as input files
         for path_file in l_path_file_input :
             os.remove( path_file )
-def Convert_MTX_10X_to_RAMtx( path_folder_mtx_10x_input, path_folder_ramtx_output, flag_ramtx_sorted_by_id_feature = True, int_num_threads = 15, int_max_num_entries_for_chunk = 10000000, int_max_num_files_for_each_merge_sort = 5, dtype_mtx = np.float64, dtype_mtx_index = np.float64, int_num_of_records_in_a_chunk_zarr_matrix = 20000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, verbose = False, flag_debugging = False ) :
-    ''' # 2022-06-21 12:44:42 
+def Convert_MTX_10X_to_RAMtx( path_folder_mtx_10x_input, path_folder_ramtx_output, flag_ramtx_sorted_by_id_feature = True, int_num_threads = 15, int_num_threads_for_splitting = 3, int_max_num_entries_for_chunk = 10000000, int_max_num_files_for_each_merge_sort = 5, dtype_mtx = np.float64, dtype_mtx_index = np.float64, int_num_of_records_in_a_chunk_zarr_matrix = 20000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, verbose = False, flag_debugging = False ) :
+    ''' # 2022-07-08 01:56:32 
     sort and index a given 'path_folder_mtx_10x_input' containing a 10X matrix file, constructing a random read access matrix (RAMtx).
     'path_folder_mtx_10x_input' folder will be used as temporary folder
     During the operation, the input matrix will be unzipped in two different formats before indexing, which might require extradisk space (expected peak disk usage: 4~8 times of the gzipped mtx file size).
@@ -2465,6 +2472,7 @@ def Convert_MTX_10X_to_RAMtx( path_folder_mtx_10x_input, path_folder_ramtx_outpu
     'flag_debugging' : if True, does not delete temporary files
     'int_num_of_records_in_a_chunk_zarr_matrix' : chunk size for output zarr objects
     'int_num_of_entries_in_a_chunk_zarr_matrix_index' : chunk size for output zarr objects
+    'int_num_threads_for_splitting' : minimum number of threads for spliting and sorting of the input matrix.
     
     '''
 
@@ -2540,7 +2548,7 @@ def Convert_MTX_10X_to_RAMtx( path_folder_mtx_10x_input, path_folder_ramtx_outpu
             for pipe in l_pipe_to_mtx_record_receiver :
                 pipe.send( -1 )
         def __mtx_record_sorter__( pipe_from_mtx_record_parser, pipe_to_mtx_record_parser ) :
-            ''' # 2022-06-10 21:15:51 
+            ''' # 2022-07-08 01:56:26 
             receive matrix record from the mtx record parser and write a sorted matrix file for each chunk
 
             'pipe_from_mtx_record_parser' : if bytes is received, parse the bytes. if 0 is received, write the bytes to file. if -1 is received, write the bytes to file and exit
@@ -2554,17 +2562,19 @@ def Convert_MTX_10X_to_RAMtx( path_folder_mtx_10x_input, path_folder_ramtx_outpu
                     try :
                         with io.BytesIO( byte_content ) as file :
                             df = pd.read_csv( file, sep = ' ', header = None )
+                        del byte_content
                         df.columns = [ 'index_row', 'index_col', 'float_value' ]
                         for name_col, name_file in zip( [ 'index_row', 'index_col' ], [ 'features.tsv.gz', 'barcodes.tsv.gz' ] ) :
                             df[ name_col ] = df[ name_col ].apply( dict_name_file_to_mo_from_index_entry_to_index_entry_new_after_sorting[ name_file ] ) # retrieve ranks of the entries, or new indices after sorting
                         df.sort_values( 'index_row' if flag_ramtx_sorted_by_id_feature else 'index_col', inplace = True ) # sort by row if the matrix is sorted by features and sort by column if the matrix is sorted by barcodes
                         df.to_csv( f"{path_temp}0.{UUID( )}.mtx.gz", sep = ' ', header = None, index = False ) # save the sorted mtx records as a file
+                        del df
                     except :
                         print( byte_content.decode( ).split( '\n', 1 )[ 0 ] )
                         break
                 pipe_to_mtx_record_parser.send( 'flush completed' ) # send signal that flushing the received data has been completed, and now ready to export matrix again
 
-        int_n_workers_for_sorting = min( 3, max( int_num_threads - 1, 1 ) ) # one thread for distributing records. Minimum numbers of workers for sorting is 1 # the number of worker for sorting should not exceed 3
+        int_n_workers_for_sorting = min( int_num_threads_for_splitting, max( int_num_threads - 1, 1 ) ) # one thread for distributing records. Minimum numbers of workers for sorting is 1 # the number of worker for sorting should not exceed 3
         l_pipes_from_distributor_to_sorter = list( mp.Pipe( ) for _ in range( int_n_workers_for_sorting ) ) # create pipes for sending records from the distributor to the sorter
         l_pipes_from_sorter_to_distributor = list( mp.Pipe( ) for _ in range( int_n_workers_for_sorting ) ) # create pipes for sending records from the sorter to the distributor
 
@@ -2699,8 +2709,8 @@ def Convert_MTX_10X_to_RAMtx( path_folder_mtx_10x_input, path_folder_ramtx_outpu
         ''' write a flag indicating the export has been completed '''
         with open( path_file_flag, 'w' ) as file :
             file.write( TIME_GET_timestamp( True ) )
-def Convert_MTX_10X_to_RamData( path_folder_mtx_10x_input, path_folder_ramdata_output, name_layer = 'raw', int_num_threads = 15, int_max_num_entries_for_chunk = 10000000, int_max_num_files_for_each_merge_sort = 5, dtype_mtx = np.float64, dtype_mtx_index = np.float64, int_num_of_records_in_a_chunk_zarr_matrix = 10000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, flag_simultaneous_indexing_of_cell_and_barcode = True, verbose = False, flag_debugging = False ) :
-    """ # 2022-07-04 21:31:51 
+def Convert_MTX_10X_to_RamData( path_folder_mtx_10x_input, path_folder_ramdata_output, name_layer = 'raw', int_num_threads = 15, int_num_threads_for_splitting = 3, int_max_num_entries_for_chunk = 10000000, int_max_num_files_for_each_merge_sort = 5, dtype_mtx = np.float64, dtype_mtx_index = np.float64, int_num_of_records_in_a_chunk_zarr_matrix = 10000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, flag_simultaneous_indexing_of_cell_and_barcode = True, verbose = False, flag_debugging = False ) :
+    """ # 2022-07-08 02:00:14 
     convert 10X count matrix data to the two RAMtx object, one sorted by features and the other sorted by barcodes, and construct a RamData data object on disk, backed by Zarr persistant arrays
 
     inputs:
@@ -2716,12 +2726,12 @@ def Convert_MTX_10X_to_RamData( path_folder_mtx_10x_input, path_folder_ramdata_o
     # build barcode- and feature-sorted RAMtx objects
     path_folder_data = f"{path_folder_ramdata_output}{name_layer}/" # define directory of the output data
     if flag_simultaneous_indexing_of_cell_and_barcode :
-        l_process = list( mp.Process( target = Convert_MTX_10X_to_RAMtx, args = ( path_folder_mtx_10x_input, path_folder_ramtx_output, flag_ramtx_sorted_by_id_feature, int_num_threads_for_the_current_process, int_max_num_entries_for_chunk, int_max_num_files_for_each_merge_sort, dtype_mtx, dtype_mtx_index, int_num_of_records_in_a_chunk_zarr_matrix, int_num_of_entries_in_a_chunk_zarr_matrix_index, verbose, flag_debugging ) ) for path_folder_ramtx_output, flag_ramtx_sorted_by_id_feature, int_num_threads_for_the_current_process in zip( [ f"{path_folder_data}sorted_by_barcode/", f"{path_folder_data}sorted_by_feature/" ], [ False, True ], [ int( np.floor( int_num_threads / 2 ) ), int( np.ceil( int_num_threads / 2 ) ) ] ) )
+        l_process = list( mp.Process( target = Convert_MTX_10X_to_RAMtx, args = ( path_folder_mtx_10x_input, path_folder_ramtx_output, flag_ramtx_sorted_by_id_feature, int_num_threads_for_the_current_process, int_num_threads_for_splitting, int_max_num_entries_for_chunk, int_max_num_files_for_each_merge_sort, dtype_mtx, dtype_mtx_index, int_num_of_records_in_a_chunk_zarr_matrix, int_num_of_entries_in_a_chunk_zarr_matrix_index, verbose, flag_debugging ) ) for path_folder_ramtx_output, flag_ramtx_sorted_by_id_feature, int_num_threads_for_the_current_process in zip( [ f"{path_folder_data}sorted_by_barcode/", f"{path_folder_data}sorted_by_feature/" ], [ False, True ], [ int( np.floor( int_num_threads / 2 ) ), int( np.ceil( int_num_threads / 2 ) ) ] ) )
         for p in l_process : p.start( )
         for p in l_process : p.join( )
     else :
-        Convert_MTX_10X_to_RAMtx( path_folder_mtx_10x_input, path_folder_ramtx_output = f"{path_folder_data}sorted_by_barcode/", flag_ramtx_sorted_by_id_feature = False, int_num_threads = int_num_threads, int_max_num_entries_for_chunk = int_max_num_entries_for_chunk, int_max_num_files_for_each_merge_sort = int_max_num_files_for_each_merge_sort, dtype_mtx = dtype_mtx, dtype_mtx_index = dtype_mtx_index, int_num_of_records_in_a_chunk_zarr_matrix = int_num_of_records_in_a_chunk_zarr_matrix, int_num_of_entries_in_a_chunk_zarr_matrix_index = int_num_of_entries_in_a_chunk_zarr_matrix_index, verbose = verbose, flag_debugging = flag_debugging )
-        Convert_MTX_10X_to_RAMtx( path_folder_mtx_10x_input, path_folder_ramtx_output = f"{path_folder_data}sorted_by_feature/", flag_ramtx_sorted_by_id_feature = True, int_num_threads = int_num_threads, int_max_num_entries_for_chunk = int_max_num_entries_for_chunk, int_max_num_files_for_each_merge_sort = int_max_num_files_for_each_merge_sort, dtype_mtx = dtype_mtx, dtype_mtx_index = dtype_mtx_index, int_num_of_records_in_a_chunk_zarr_matrix = int_num_of_records_in_a_chunk_zarr_matrix, int_num_of_entries_in_a_chunk_zarr_matrix_index = int_num_of_entries_in_a_chunk_zarr_matrix_index, verbose = verbose, flag_debugging = flag_debugging )
+        Convert_MTX_10X_to_RAMtx( path_folder_mtx_10x_input, path_folder_ramtx_output = f"{path_folder_data}sorted_by_barcode/", flag_ramtx_sorted_by_id_feature = False, int_num_threads = int_num_threads, int_num_threads_for_splitting = int_num_threads_for_splitting, int_max_num_entries_for_chunk = int_max_num_entries_for_chunk, int_max_num_files_for_each_merge_sort = int_max_num_files_for_each_merge_sort, dtype_mtx = dtype_mtx, dtype_mtx_index = dtype_mtx_index, int_num_of_records_in_a_chunk_zarr_matrix = int_num_of_records_in_a_chunk_zarr_matrix, int_num_of_entries_in_a_chunk_zarr_matrix_index = int_num_of_entries_in_a_chunk_zarr_matrix_index, verbose = verbose, flag_debugging = flag_debugging )
+        Convert_MTX_10X_to_RAMtx( path_folder_mtx_10x_input, path_folder_ramtx_output = f"{path_folder_data}sorted_by_feature/", flag_ramtx_sorted_by_id_feature = True, int_num_threads = int_num_threads, int_num_threads_for_splitting = int_num_threads_for_splitting, int_max_num_entries_for_chunk = int_max_num_entries_for_chunk, int_max_num_files_for_each_merge_sort = int_max_num_files_for_each_merge_sort, dtype_mtx = dtype_mtx, dtype_mtx_index = dtype_mtx_index, int_num_of_records_in_a_chunk_zarr_matrix = int_num_of_records_in_a_chunk_zarr_matrix, int_num_of_entries_in_a_chunk_zarr_matrix_index = int_num_of_entries_in_a_chunk_zarr_matrix_index, verbose = verbose, flag_debugging = flag_debugging )
 
     # copy features/barcode.tsv.gz random access files for the web (stacked base64 encoded tsv.gz files)
     # copy features/barcode string representation zarr objects
@@ -4872,7 +4882,7 @@ class RamData( ) :
             print( f'cell filtering completed for {len( set_str_barcode )} cells. A filtered RamData was exported at {path_folder_ramdata_output}' )
 
 # utility functions
-def umap( adata, l_name_col_for_regression = [ ], float_scale_max_value = 10, int_pca_n_comps = 150, int_neighbors_n_neighbors = 10, int_neighbors_n_pcs = 50, dict_kw_umap = dict( ), dict_leiden = dict( ) ) :
+def umap( adata, l_name_col_for_regression = [ ], float_scale_max_value = 10, int_pca_n_comps = 50, int_neighbors_n_neighbors = 10, int_neighbors_n_pcs = 50, dict_kw_umap = dict( ), dict_leiden = dict( ) ) :
     ''' # 2022-07-06 20:49:44 
     retrieve all expression data of the RamData with current barcodes/feature filters', perform dimension reduction process, and return the new AnnData object with umap coordinate and leiden cluster information
 
