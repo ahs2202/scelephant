@@ -6,12 +6,13 @@ import zarr # SCElephant is currently implemented using Zarr
 import anndata
 import numcodecs
 import scanpy
+import sklearn as skl
 # import shelve # for persistent dictionary (key-value based database)
 
 # define version
 _version_ = '0.0.1'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-07-07 20:27:47' 
+_last_modified_time_ = '2022-07-14 10:04:45' 
 
 ''' previosuly written for biobookshelf '''
 def CB_Parse_list_of_id_cell( l_id_cell, dropna = True ) :
@@ -1858,10 +1859,11 @@ class AnnDataContainer( ) :
 
 ''' a class for Zarr-based DataFrame object '''
 class ZarrDataFrame( ) :
-    """ # 2022-07-06 01:30:23 
+    """ # 2022-07-12 23:59:37 
     on-demend persistant DataFrame backed by Zarr persistent arrays.
     each column can be separately loaded, updated, and unloaded.
     a filter can be set, which allows updating and reading ZarrDataFrame as if it only contains the rows indicated by the given filter.
+    currently supported dtypes are bool, float, int, strings (will be interpreted as categorical data).
     the one of the functionality of this class is to provide a Zarr-based dataframe object that is compatible with Zarr.js (javascript implementation of Zarr), with a categorical data type (the format used in zarr is currently not supported in zarr.js) compatible with zarr.js.
     
     Of note, secondary indexing (row indexing) is always applied to unfiltered columns, not to a subset of column containing filtered rows.
@@ -2052,7 +2054,7 @@ class ZarrDataFrame( ) :
                         values_decoded[ i ] = l_value_unique[ values[ i ] ] if values[ i ] >= 0 else np.nan # convert integer representations to its original string values # -1 (negative integers) encodes np.nan
                     return values_decoded
     def __setitem__( self, args, values ) :
-        ''' # 2022-07-03 19:55:10 
+        ''' # 2022-07-12 23:59:49 
         save/update a column at indexed positions.
         when a filter is active, only active entries will be saved/updated automatically.
         boolean mask/integer arrays/slice indexing is supported. However, indexing will be applied to the original column with unfiltered rows (i.e., when indexing is active, filter will be ignored)
@@ -2081,6 +2083,8 @@ class ZarrDataFrame( ) :
             
         # ❤️❤️❤️ implement 'broadcasting'; when a single value is given, the value will be copied to all rows.
         # retrieve data values from the 'values' 
+        if isinstance( values, bitarray ) :
+            values = bk.BA.to_array( values ) # retrieve boolean values from the input bitarray
         if isinstance( values, pd.Series ) :
             values = values.values
         # retrieve data type of values
@@ -2216,7 +2220,7 @@ class ZarrDataFrame( ) :
             self._dict_zdf_metadata[ 'columns' ].remove( name_col )
             self._save_metadata_( ) # update metadata
             # delete the column from the disk ZarrDataFrame object
-            OS_Run( [ 'rm', '-rf', f"{self._path_folder_zdf}{name_col}/" ] )
+            shutil.rmtree( f"{self._path_folder_zdf}{name_col}/" ) #             OS_Run( [ 'rm', '-rf', f"{self._path_folder_zdf}{name_col}/" ] )
     def __contains__( self, name_col ) :
         return name_col in self._dict_zdf_metadata[ 'columns' ]
     def __iter__( self ) :
@@ -2474,6 +2478,7 @@ def Convert_MTX_10X_to_RAMtx( path_folder_mtx_10x_input, path_folder_ramtx_outpu
     'int_num_of_entries_in_a_chunk_zarr_matrix_index' : chunk size for output zarr objects
     'int_num_threads_for_splitting' : minimum number of threads for spliting and sorting of the input matrix.
     
+    ❤️❤️❤️ # 2022-07-12 20:05:10  improve memory efficiency by using array for coordinate conversion and read chunking for 'Axis' generation
     '''
 
     path_file_flag = f"{path_folder_ramtx_output}ramtx.completed.flag"
@@ -2756,7 +2761,7 @@ def Convert_MTX_10X_to_RamData( path_folder_mtx_10x_input, path_folder_ramdata_o
     
 ''' a class for accessing Zarr-backed count matrix data (RAMtx, Random-access matrix) '''
 class RAMtx( ) :
-    """ # 2022-07-05 23:13:02 
+    """ # 2022-07-13 09:27:01 
     This class represent a random-access mtx format for memory-efficient exploration of extremely large single-cell transcriptomics/genomics data.
     This class use a count matrix data stored in a random read-access compatible format, called RAMtx, enabling exploration of a count matrix with hundreds of millions cells with hundreds of millions of features.
     Also, the RAMtx format is supports multi-processing, and provide convenient interface for parallel processing of single-cell data
@@ -2900,6 +2905,7 @@ class RAMtx( ) :
     def __getitem__( self, l_int_entry ) : 
         """ # 2022-07-05 23:13:11 
         Retrieve data from RAMtx as lists of values and arrays, each value and array contains data of a single 'int_entry' of the indexed axis
+        '__getitem__' can be used to retrieve minimal data required to build a sparse matrix
         
         Returns:
         l_int_entry_indexed_valid, l_arr_int_entry_not_indexed, l_arr_value 
@@ -3042,8 +3048,41 @@ class RAMtx( ) :
             l_int_entry_indexed_valid, l_arr_int_entry_not_indexed, l_arr_value = __retrieve_data_from_ramtx_as_a_worker__( l_int_entry, flag_as_a_worker = False )
         
         return l_int_entry_indexed_valid, l_arr_int_entry_not_indexed, l_arr_value
+    def get_sparse_matrix( self, l_int_entry ) :
+        """ # 2022-07-13 09:25:59 
+        
+        get sparse matrix for the given list of integer representations of the entries.
+        """
+        l_int_entry_indexed_valid, l_arr_int_entry_not_indexed, l_arr_value = self[ l_int_entry ] # parse retrieved result
+        
+        # combine the arrays
+        arr_int_entry_not_indexed = np.concatenate( l_arr_int_entry_not_indexed )
+        arr_value = np.concatenate( l_arr_value )
+        del l_arr_value # delete intermediate objects
+        
+        # compose 'arr_int_entry_indexed'
+        arr_int_entry_indexed = np.zeros( len( arr_int_entry_not_indexed ), dtype = self._dtype_of_feature_and_barcode_indices ) # create an empty array
+        int_pos = 0
+        for int_entry_indexed, a in zip( l_int_entry_indexed_valid, l_arr_int_entry_not_indexed ) :
+            n = len( a )
+            arr_int_entry_indexed[ int_pos : int_pos + n ] = int_entry_indexed # compose 'arr_int_entry_indexed'
+            int_pos += n # update the current position
+        del l_int_entry_indexed_valid, l_arr_int_entry_not_indexed # delete intermediate objects
+        
+        # get 'arr_int_barcode' and 'arr_int_feature' based on 'self.flag_ramtx_sorted_by_id_feature'
+        if self.flag_ramtx_sorted_by_id_feature :
+            arr_int_barcode = arr_int_entry_not_indexed
+            arr_int_feature = arr_int_entry_indexed
+        else :
+            arr_int_barcode = arr_int_entry_indexed
+            arr_int_feature = arr_int_entry_not_indexed
+        del arr_int_entry_indexed, arr_int_entry_not_indexed # delete intermediate objects
+        
+        n_bc, n_ft = ( self._int_num_barcodes, self._int_num_features ) if self._ramdata is None else ( self._ramdata.bc.meta.n_rows, self._ramdata.ft.meta.n_rows ) # detect whether the current RAMtx has been attached to a RamData and retrieve the number of barcodes and features accordingly
+        X = scipy.sparse.csr_matrix( scipy.sparse.coo_matrix( ( arr_value, ( arr_int_barcode, arr_int_feature ) ), shape = ( n_bc, n_ft ) ) ) # convert count data to a sparse matrix
+        return X # return the composed sparse matrix 
     def batch_generator( self, ba = None, int_num_entries_for_each_weight_calculation_batch = 1000, int_total_weight_for_each_batch = 1000000 ) :
-        ''' # 2022-07-04 00:45:48 
+        ''' # 2022-07-12 22:05:27 
         generate batches of list of integer indices of the active entries in the given bitarray 'ba'. 
         Each bach has the following characteristics:
             monotonous: active entries in a batch are in an increasing order
@@ -3053,7 +3092,9 @@ class RAMtx( ) :
         '''
         # set defaule arguments
         if ba is None :
-            ba = self.ba_active_entries #  if None is given, self.ba_active_entries bitarray will be used.
+            ba = self.ba_filter_indexed_axis # if None is given, ba_filter of the currently indexed axis will be used.
+            if ba is None : # if filter is not set or the current RAMtx has not been attached to a RamData object, use the active entries
+                ba = self.ba_active_entries # if None is given, self.ba_active_entries bitarray will be used.
         # initialize
         # a namespace that can safely shared between functions
         ns = { 'int_accumulated_weight_current_batch' : 0, 'l_int_entry_current_batch' : [ ], 'l_int_entry_for_weight_calculation_batch' : [ ] }
@@ -3093,7 +3134,7 @@ class RAMtx( ) :
             yield ns[ 'l_int_entry_current_batch' ]
 ''' a class for representing axis of RamData (barcodes/features) '''
 class Axis( ) :
-    """ # 2022-06-28 20:48:11 
+    """ # 2022-07-14 00:42:25 
     a memory-efficient container of features/barcodes and associated metadata for a given RamData object.
     
     'path_folder' : a folder containing the axis
@@ -3262,7 +3303,7 @@ class Axis( ) :
         """
         return self._dict_i_to_str
     def __getitem__( self, l ) :
-        """ # 2022-07-01 20:26:39 
+        """ # 2022-07-14 00:42:20 
         a main functionality of 'Axis' class
         translate a given list of entries / slice / mask (bitarray/boolean_array), and return a bitarray mask containing valid entries
         
@@ -3289,6 +3330,9 @@ class Axis( ) :
                     ba_filter_of_selected_entries[ i ] = True
             return ba_filter_of_selected_entries 
         
+        ''' handle 'None' '''
+        if l is None :
+            return ba_filter # if None is given, return all active entries in the filter (or all active entries in the layer if a filter has not been set).
         
         ''' handle a single value input '''
         if not hasattr( l, '__iter__' ) or isinstance( l, str ) : # if a given input is not iterable or a string, wrap the element in a list
@@ -3451,31 +3495,37 @@ class Axis( ) :
         perform XOR operation between 'filter_1' and 'filter_2'
         """
         return self._convert_to_bitarray( filter_1 ) ^ self._convert_to_bitarray( filter_2 )
-    def batch_generator( self, ba = None, int_num_entries_for_batch = 1000 ) :
-        ''' # 2022-07-04 00:45:48 
+    def batch_generator( self, ba = None, int_num_entries_for_batch = 1000, flag_return_the_number_of_previously_returned_entries = False ) :
+        ''' # 2022-07-13 22:14:13 
         generate batches of list of integer indices of the active entries in the given bitarray 'ba'. 
         Each bach has the following characteristics:
             monotonous: active entries in a batch are in an increasing order
             same size: except for the last batch, each batch has the same number of active entries 'int_num_entries_for_batch'.
         
         'ba' : (default None) if None is given, self.filter bitarray will be used.
+        'flag_return_the_number_of_previously_returned_entries' : yield the number of previously returned entries along side with the list of entries of the current batch.
         '''
         # set defaule arguments
+        # set default filter
         if ba is None :
             ba = self.filter #  if None is given, self.filter bitarray will be used.
+            if ba is None :
+                ba = self.all( flag_return_valid_entries_in_the_currently_active_layer = True ) # iterate through an active entries
         # initialize
         # a namespace that can safely shared between functions
         ns = { 'l_int_entry_current_batch' : [ ] }
 
+        int_num_of_previously_returned_entries = 0
         for int_entry in bk.BA.find( ba ) : # iterate through active entries of the given bitarray
             ns[ 'l_int_entry_current_batch' ].append( int_entry ) # collect int_entry for the current 'weight_calculation_batch'
             # once 'weight_calculation' batch is full, process the 'weight_calculation' batch
             if len( ns[ 'l_int_entry_current_batch' ] ) >= int_num_entries_for_batch :
-                yield ns[ 'l_int_entry_current_batch' ]
+                yield ( int_num_of_previously_returned_entries, ns[ 'l_int_entry_current_batch' ] ) if flag_return_the_number_of_previously_returned_entries else ns[ 'l_int_entry_current_batch' ] # return 'int_num_of_previously_returned_entries' if 'flag_return_the_number_of_previously_returned_entries' is True
+                int_num_of_previously_returned_entries += len( ns[ 'l_int_entry_current_batch' ] ) # update the number of returned entries
                 ns[ 'l_int_entry_current_batch' ] = [ ] # initialize the next batch
         # return the remaining int_entries as the last batch (if available)
         if len( ns[ 'l_int_entry_current_batch' ] ) > 0 :
-            yield ns[ 'l_int_entry_current_batch' ]
+            yield ( int_num_of_previously_returned_entries, ns[ 'l_int_entry_current_batch' ] ) if flag_return_the_number_of_previously_returned_entries else ns[ 'l_int_entry_current_batch' ] # return 'int_num_of_previously_returned_entries' if 'flag_return_the_number_of_previously_returned_entries' is True
 ''' a class for representing a layer of RamData '''
 class Layer( ) :
     """ # 2022-06-25 16:32:19 
@@ -4024,7 +4074,7 @@ def Convert_df_count_to_RAMtx( path_file_df_count, path_folder_ramtx_output, fla
         json.dump( dict_metadata, file )
 
 class RamData( ) :
-    """ # 2022-07-06 01:53:26 
+    """ # 2022-07-14 00:44:56 
     This class provides frameworks for single-cell transcriptomic/genomic data analysis, utilizing RAMtx data structures, which is backed by Zarr persistant arrays.
     Extreme lazy loading strategies used by this class allows efficient parallelization of analysis of single cell data with minimal memory footprint, loading only essential data required for analysis. 
     
@@ -4133,33 +4183,14 @@ class RamData( ) :
         """
         self.ft.unload_dict_change( )
         self.bc.unload_dict_change( )
-    def __getitem__( self, args ) :
-        ''' # 2022-07-02 18:14:17 
-        please include 'str' in 'barcode_column' and 'feature_column' in order to use string representations in the output AnnData object
-    
+    def initialize_view( self, l_entry_bc = [ ], l_entry_ft = [ ], flag_use_str_repr_bc = False, flag_use_str_repr_ft = False ) :
+        """ # 2022-07-13 08:58:16 
         
-        possible usages:
+        initialize view of a RamData using the current filter settings
         
-        [ name_layer, barcode_index, barcode_column, feature_index, feature_column ]
-        [ barcode_index, barcode_column, feature_index, feature_column ]
-        '''
-        assert isinstance( args, tuple ) # more than one arguments should be given
-        # if the first argument appears to be 'name_layer', load the layer and drop the argument
-        if isinstance( args[ 0 ], str ) and args[ 0 ] in self.layers :
-            self.layer = args[ 0 ]
-            args = args[ 1 : ] 
-        assert len( args ) <= 4 # assumes layer has been loaded, and only arguments are for barcode/feature indexing
-        
-        args = list( args ) + list( [ ] for i in range( 4 - len( args ) ) ) # make the number of arguments to 4
-        l_entry_bc, l_col_bc, l_entry_ft, l_col_ft = args # parse arguments
-        
-        # backup the filters
-        ba_filter_bc_backup = self.bc.filter
-        ba_filter_ft_backup = self.ft.filter
-        
-        # retrieve flags for using string representations in the output
-        flag_use_str_repr_bc = 'str' in l_col_bc
-        flag_use_str_repr_ft = 'str' in l_col_ft
+        === return ===
+        'int_num_entries_queried_bc', 'int_num_entries_queried_ft' : return the number of currently active barcodes and features
+        """
         # retrieve flags indicating that the string representations are not loaded
         flag_str_not_loaded_bc = self.bc.map_int is None
         flag_str_not_loaded_ft = self.ft.map_int is None
@@ -4200,48 +4231,59 @@ class RamData( ) :
         # detect and handle the cases when one of the axes is empty
         if int_num_entries_queried_bc == 0 or int_num_entries_queried_ft == 0 :
             if self.verbose :
-                print( f"Error: currently queried data is (barcode x features) {int_num_entries_queried_bc} x {int_num_entries_queried_ft}. please change the filter or queries in order to retrieve a valid count data." )
+                print( f"Error: currently queried view is (barcode x features) {int_num_entries_queried_bc} x {int_num_entries_queried_ft}. please change the filter or queries in order to retrieve a valid view" )
             return None
         
         # set barcode/feature filters for the queried entries
         self.bc.filter = ba_entry_bc
         self.ft.filter = ba_entry_ft
         
+        # retrieve count data
+        self.load_dict_change( ) # load 'dict_change' for coordinate conversion according to the given filter
+        
+        # return the number of currently active barcodes and features
+        return int_num_entries_queried_bc, int_num_entries_queried_ft
+    def __getitem__( self, args ) :
+        ''' # 2022-07-14 00:44:52 
+        please include 'str' in 'barcode_column' and 'feature_column' in order to use string representations in the output AnnData object
+        
+        possible usages:
+        
+        [ name_layer, barcode_index, barcode_column, feature_index, feature_column ]
+        [ barcode_index, barcode_column, feature_index, feature_column ]
+        '''
+        assert isinstance( args, tuple ) # more than one arguments should be given
+        # if the first argument appears to be 'name_layer', load the layer and drop the argument
+        if isinstance( args[ 0 ], str ) and args[ 0 ] in self.layers :
+            self.layer = args[ 0 ]
+            args = args[ 1 : ] 
+        assert len( args ) <= 4 # assumes layer has been loaded, and only arguments are for barcode/feature indexing
+        
+        args = list( args ) + list( [ ] for i in range( 4 - len( args ) ) ) # make the number of arguments to 4
+        l_entry_bc, l_col_bc, l_entry_ft, l_col_ft = args # parse arguments
+        
+        # backup the filters
+        ba_filter_bc_backup = self.bc.filter
+        ba_filter_ft_backup = self.ft.filter
+        
+        # retrieve flags for using string representations in the output
+        flag_use_str_repr_bc = 'str' in l_col_bc
+        flag_use_str_repr_ft = 'str' in l_col_ft
+        
+        # initialize view (which changes filters)
+        int_num_entries_queried_bc, int_num_entries_queried_ft = self.initialize_view( l_entry_bc = l_entry_bc, l_entry_ft = l_entry_ft, flag_use_str_repr_bc = flag_use_str_repr_bc, flag_use_str_repr_ft = flag_use_str_repr_ft )
+        
         # retrieve ramtx
         flag_use_ramtx_indexed_by_features = int_num_entries_queried_bc >= int_num_entries_queried_ft # select which axis to use. if there is more number of barcodes than features, use ramtx indexed with 'feature' axis
         rtx = self._layer._ramtx_features if flag_use_ramtx_indexed_by_features else self._layer._ramtx_barcodes
         
         # retrieve count data
-        self.load_dict_change( ) # load 'dict_change' for coordinate conversion according to the given filter
-        res = rtx[ [ ] ]
-        l_int_entry_indexed_valid, l_arr_int_entry_not_indexed, l_arr_value = res # parse retrieved result
-        self.unload_dict_change( ) # unload 'dict_change' after the conversion process
+        X = rtx.get_sparse_matrix( [ ] ) # retrieve count data for all entries currently active in the filter
         
-        # combine the arrays
-        arr_int_entry_not_indexed = np.concatenate( l_arr_int_entry_not_indexed )
-        arr_value = np.concatenate( l_arr_value )
-        del l_arr_value, res # delete intermediate objects
+        # unload 'dict_change' after retrieving the count matrix (destroy the view)
+        self.unload_dict_change( ) 
         
-        # compose 'arr_int_entry_indexed'
-        arr_int_entry_indexed = np.zeros( len( arr_int_entry_not_indexed ), dtype = self._dtype_of_feature_and_barcode_indices ) # create an empty array
-        int_pos = 0
-        for int_entry_indexed, a in zip( l_int_entry_indexed_valid, l_arr_int_entry_not_indexed ) :
-            n = len( a )
-            arr_int_entry_indexed[ int_pos : int_pos + n ] = int_entry_indexed # compose 'arr_int_entry_indexed'
-            int_pos += n # update the current position
-        del l_int_entry_indexed_valid, l_arr_int_entry_not_indexed # delete intermediate objects
-        
-        # get 'arr_int_barcode' and 'arr_int_feature'
-        if flag_use_ramtx_indexed_by_features :
-            arr_int_barcode = arr_int_entry_not_indexed
-            arr_int_feature = arr_int_entry_indexed
-        else :
-            arr_int_barcode = arr_int_entry_indexed
-            arr_int_feature = arr_int_entry_not_indexed
-        del arr_int_entry_indexed, arr_int_entry_not_indexed # delete intermediate objects
-
-        
-        # retrieve meta data
+        # retrieve meta data as dataframes
         df_obs = self.bc.meta.get_df( * l_col_bc )
         if flag_use_str_repr_bc : # add string representations
             df_obs.index = l_str_bc
@@ -4253,7 +4295,8 @@ class RamData( ) :
         
         # build output AnnData object
         adata = anndata.AnnData( obs = df_obs, var = df_var ) # in anndata.X, row = barcode, column = feature # set obs and var with integer index values
-        adata.X = scipy.sparse.csr_matrix( scipy.sparse.coo_matrix( ( arr_value, ( arr_int_barcode, arr_int_feature ) ), shape = ( len( adata.obs ), len( adata.var ) ) ) ) # add count data
+        adata.X = X # add count data
+        del X
 
         # restore the filters once the data retrieval has been completed
         self.bc.filter = ba_filter_bc_backup
@@ -4264,7 +4307,7 @@ class RamData( ) :
         ''' wrapper of AnnDataContainer.save '''
         self.ad.update( * l_name_adata )
     def summarize( self, name_layer, axis, summarizing_func, int_num_threads = None, flag_overwrite_columns = True, int_num_entries_for_each_weight_calculation_batch = 1000, int_total_weight_for_each_batch = 1000000 ) :
-        ''' # 2022-07-06 03:21:56 
+        ''' # 2022-07-12 22:12:42 
         this function summarize entries of the given axis (0 = barcode, 1 = feature) using the given function
         
         example usage: calculate total sum, standard deviation, pathway enrichment score calculation, etc.
@@ -4389,16 +4432,12 @@ class RamData( ) :
             newfile = gzip.open( path_file_output, 'wb' )
             
             # iterate through the data of each entry
-            f = False
             for int_entry_indexed_valid, arr_int_entry_not_indexed, arr_value in zip( * rtx[ l_int_entry_current_batch ] ) : # retrieve data for the current batch
-                f = True
                 # retrieve summary for the entry
                 dict_res = summarizing_func( self, int_entry_indexed_valid, arr_int_entry_not_indexed, arr_value ) # summarize the data for the entry
                 # write the result to an output file
                 newfile.write( ( '\t'.join( map( str, [ int_entry_indexed_valid ] + list( dict_res[ name_col ] if name_col in dict_res else np.nan for name_col in l_name_col_summarized ) ) ) + '\n' ).encode( ) ) # write an index for the current entry # 0>1 coordinate conversion for 'int_entry'
             newfile.close( ) # close file
-            if not f :
-                print( 'error batch is ', l_int_entry_current_batch )
             pipe_to_main_process.send( path_file_output ) # send information about the output file
         def post_process_batch( path_file_result ) :
             """ # 2022-07-06 03:21:49 
@@ -4714,21 +4753,29 @@ class RamData( ) :
     
         if not flag_name_col_total_count_already_loaded : # unload count data of barcodes from memory if the count data was not loaded before calling this method
             del self.bc.meta.dict[ name_col_total_count ]
-    def identify_highly_variable_features( self, name_layer = 'normalized_log1p', flag_show_graph = True, coords_for_sampling = range( 0, 1000000 ) ) :
+    def identify_highly_variable_features( self, name_layer = 'normalized_log1p', int_num_highly_variable_features = 2000, float_min_mean = 0.01, float_min_variance = 0.01, suffix_name_col_for_filter = '_filter', flag_show_graph = True, coords_for_sampling = range( 0, 1000000 ) ) :
         """ # 2022-06-07 22:53:55 
         identify highly variable features
         learns mean-variable relationship from the given data, and calculate residual variance to identify highly variable features.
+        **Warning** : filters of the current RamData will be reset, and filters based on the identified highly variable features will be set.
 
+        
+        'int_num_highly_variable_features' : number of highly variable features to select. if None is given. a threshold for the selection of highly variable features will be set automatically to '0'.
+        'float_min_mean' : minimum mean expression for selecting highly variable features
+        'float_min_variance' : minimum variance of expression for selecting highly variable features
+        'suffix_name_col_for_filter' : suffix for the name of column that will contain a feature filter containing selected highly variable features (and barcode filter for cells that have non-zero expression values for the selected list of highly-variable features)
         'flag_show_graph' : show graphs
-
         ==========
         returns
         ==========
 
         new columns will be added to self.ft.meta metadata
         """
+        """
+        (1) Calculate metrics for identification of highly variable features
+        """
         # set the name of the columns that will be used in the current method
-        name_col_for_mean, name_col_for_variance = f'{name_layer}_mean', f'{name_layer}_variance'
+        name_col_for_mean, name_col_for_variance, name_col_for_filter = f'{name_layer}_mean', f'{name_layer}_variance', f'{name_layer}{suffix_name_col_for_filter}'
         
         # check if required metadata (mean and variance data of features) is not available, and if not, calculate and save the data
         if name_col_for_mean not in self.ft.meta or name_col_for_variance not in self.ft.meta :
@@ -4770,6 +4817,150 @@ class RamData( ) :
         self.ft.meta[ f'{name_layer}__float_ratio_of_variance_to_expected_variance_from_mean' ] = arr_ratio_of_variance_to_expected_variance_from_mean
         self.ft.meta[ f'{name_layer}__float_diff_of_variance_to_expected_variance_from_mean' ] = arr_diff_of_variance_to_expected_variance_from_mean
         self.ft.meta[ f'{name_layer}__float_score_highly_variable_feature_from_mean' ] = arr_ratio_of_variance_to_expected_variance_from_mean * arr_diff_of_variance_to_expected_variance_from_mean # calculate the product of the ratio and difference of variance to expected variance for scoring and sorting highly variable features
+
+        """
+        (2) identify of highly variable features
+        """
+        # reset the feature filter prior to retrieve the metadata of all features
+        self.ft.filter = None
+        
+        # retrieve a filter of features that satisfy the conditions
+        ba = self.ft.AND( self.ft.meta[ 'normalized_log1p_variance' ] > float_min_variance, self.ft.meta[ 'normalized_log1p_mean' ] > float_min_mean )
+
+        # set default threshold for highly_variable_feature_score
+        float_min_score_highly_variable = 0
+        # select the specified number of features if 'int_num_highly_variable_features' is given
+        if int_num_highly_variable_features is None :
+            self.ft.filter = ba # set feature filter for retrieving highly_variable_feature_score for only the genes satisfying the thresholds.
+
+            # retrieve highly variable scores and set the threshold based on the 'int_num_highly_variable_features'
+            arr = self.ft.meta[ 'normalized_log1p__float_score_highly_variable_feature_from_mean' ]
+            arr.sort( )
+            float_min_score_highly_variable = arr[ - int_num_highly_variable_features ] if len( arr ) >= int_num_highly_variable_features else arr[ 0 ] # retrieve threshold (if the number of available features are less than 'int_num_highly_variable_features', use all genes.
+
+            # reset feature filter prior to the identification of highly variable features.
+            self.ft.filter = None
+        
+        # identify highly variable features satisfying all conditions    
+        ba = self.ft.AND( ba, self.ft.meta[ 'normalized_log1p__float_score_highly_variable_feature_from_mean' ] > float_min_score_highly_variable ) 
+        self.ft.meta[ name_col_for_filter ] = ba # save the feature filter as a metadata
+        self.ft.filter = ba
+
+        # discard cells that does not contain data for the identified highly variable features
+        self.summarize( 'normalized_log1p', 'barcode', 'sum' ) # calculate the total expression values for the selected highly variable genes for each barcode
+        self.bc.filter = None # reset barcode filter prior to the identification of valid barcodes (that contains valid expression data for the selected set of highly variable features).
+        ba = self.bc.meta[ 'normalized_log1p_sum' ] > 0 # filter out barcodes with no expression for the selected highly variable genes, since these will not be clustered properly and consumes extra memory and running time.
+        self.bc.meta[ name_col_for_filter ] = ba # save the barcode filter as a metadata
+        self.bc.filter = ba
+    def pca( self, name_layer = 'normalized_log1p', prefix_name_col = 'pca_', name_col_ft_filter = None, int_num_components = 50, int_num_barcodes_in_ipca_batch = 1000, flag_ipca_whiten = False, int_num_threads = 5 ) :
+        """ # 2022-07-14 00:48:13 
+
+        Perform incremental PCA in a very memory-efficient manner.
+
+        arguments:
+        'name_layer' : name of the data source layer
+        'prefix_name_col' : a prefix for the 'name_col' of the columns that will be added to Axis.meta ZDF.
+        'name_col_ft_filter' : the name of 'feature' Axis metadata column to retrieve selection filter for highly-variable-features. (default: None) if None is given, current feature filter (if it has been set) will be used as-is
+        'int_num_components' : number of PCA components.
+        'int_num_barcodes_in_ipca_batch' : number of barcodes in an Incremental PCA computation
+        'flag_ipca_whiten' : a flag for an incremental PCA computation (Setting this flag to 'True' will reduce the efficiency of model learning, but might make the model more generalizable)
+        'int_num_threads' : number of threads for parallel data retrieval/iPCA transformation/ZarrDataFrame update. 3~5 would be ideal.
+        """
+        """
+        1) Prepare
+        """
+        # check the validility of the input arguments
+        if name_layer not in self.layers :
+            if self.verbose :
+                print( f"[ERROR] [RamData.summarize] invalid argument 'name_layer' : '{name_layer}' does not exist." )
+            return -1 
+        # set layer
+        self.layer = name_layer
+
+        # retrieve RAMtx object (sorted by barcodes) to summarize # retrieve 'Barcode' Axis object t
+        rtx, ax = self._layer._ramtx_barcodes, self.bc
+
+        # set appropriate filter
+        if name_col_ft_filter is not None :
+            if name_col_ft_filter in self.ft.meta :
+                self.ft.filter = self.ft.meta[ name_col_ft_filter, : ] # retrieve filter and apply the filter to the axis
+            if name_col_ft_filter in self.bc.meta :
+                self.bc.filter = self.bc.meta[ name_col_ft_filter, : ] # retrieve filter and apply the filter to the axis
+
+        self.initialize_view( l_entry_bc = None, l_entry_ft = None, flag_use_str_repr_bc = False, flag_use_str_repr_ft = False ) # initialize view
+        """
+        2) Fit PCA
+        """
+        # initialize iPCA object
+        ipca = skl.decomposition.IncrementalPCA( n_components = int_num_components, batch_size = int_num_barcodes_in_ipca_batch, copy = False, whiten = flag_ipca_whiten ) # copy = False to increase memory-efficiency
+
+        # define functions for multiprocessing step
+        def process_batch( batch, pipe_to_main_process ) :
+            ''' # 2022-07-13 22:18:15 
+            prepare data as a sparse matrix for the batch
+            '''
+            # parse the received batch
+            int_num_of_previously_returned_entries, l_int_entry_current_batch = batch 
+            int_num_retrieved_entries = len( l_int_entry_current_batch )
+
+            pipe_to_main_process.send( ( int_num_of_previously_returned_entries, int_num_retrieved_entries, rtx.get_sparse_matrix( l_int_entry_current_batch )[ int_num_of_previously_returned_entries : int_num_of_previously_returned_entries + int_num_retrieved_entries ] ) ) # retrieve and send sparse matrix as an input to the incremental PCA # resize sparse matrix
+        def post_process_batch( res ) :
+            """ # 2022-07-13 22:18:18 
+            perform partial fit for batch
+            """
+            int_num_of_previously_returned_entries, int_num_retrieved_entries, X = res # parse the result
+            
+            ipca.partial_fit( X.toarray( ) ) # perform partial fit using the retrieved data # partial_fit only supports dense array
+            
+            if self.verbose : # report
+                print( f'fit completed for {int_num_of_previously_returned_entries + 1}-{int_num_of_previously_returned_entries + int_num_retrieved_entries}' )
+        # fit iPCA using multiple processes
+        bk.Multiprocessing_Batch( ax.batch_generator( int_num_entries_for_batch = int_num_barcodes_in_ipca_batch, flag_return_the_number_of_previously_returned_entries = True ), process_batch, post_process_batch = post_process_batch, int_num_threads = max( min( int_num_threads, 5 ), 2 ), int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) # number of threads for multi-processing is 2 ~ 5 # generate batch with fixed number of barcodes
+        # report
+        if self.verbose :
+            print( 'fit completed for all batches' )
+        # fix error of ipca object
+        if not hasattr( ipca, 'batch_size_' ) :
+            ipca.batch_size_ = ipca.batch_size
+
+        """
+        2) Transform Data
+        """
+        # initialize metadata columns 
+        l_name_col_pca = list( f"{prefix_name_col}{i}" for i in range( int_num_components ) ) # retrieve name_col for the transformed PCA data
+        print( l_name_col_pca )
+
+        # define functions for multiprocessing step
+        def process_batch( batch, pipe_to_main_process ) :
+            ''' # 2022-07-13 22:18:22 
+            retrieve data and retrieve transformed PCA values for the batch
+            '''
+            # parse the received batch
+            int_num_of_previously_returned_entries, l_int_entry_current_batch = batch 
+            int_num_retrieved_entries = len( l_int_entry_current_batch )
+
+            pipe_to_main_process.send( ( l_int_entry_current_batch, rtx.get_sparse_matrix( l_int_entry_current_batch )[ int_num_of_previously_returned_entries : int_num_of_previously_returned_entries + int_num_retrieved_entries ] ) ) # retrieve data as a sparse matrix and send the result of PCA transformation # send the integer representations of the barcodes for PCA value update
+        def post_process_batch( res ) :
+            """ # 2022-07-13 22:18:26 
+            perform partial fit for batch
+            """
+            # parse result 
+            l_int_entry_current_batch, X = res
+            
+            X_transformed = ipca.transform( X ) # perform PCA transformation
+            del X
+
+            # iterate through PCA components
+            for i, arr_pca_component in enumerate( X_transformed.T ) :
+                # update PCA components
+                ax.meta[ l_name_col_pca[ i ], l_int_entry_current_batch ] = arr_pca_component
+
+        # transform values using iPCA using multiple processes
+        bk.Multiprocessing_Batch( ax.batch_generator( int_num_entries_for_batch = int_num_barcodes_in_ipca_batch, flag_return_the_number_of_previously_returned_entries = True ), process_batch, post_process_batch = post_process_batch, int_num_threads = max( min( int_num_threads, 5 ), 2 ), int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) # number of threads for multi-processing is 2 ~ 5 # generate batch with fixed number of barcodes
+
+        # destroy the view
+        self.unload_dict_change( )
+        
     ''' satellite methods for analyzing RamData '''
     def _classify_feature_of_scarab_output_( self, int_min_num_occurrence_to_identify_valid_feature_category = 1000 ) :
         """ # 2022-05-30 12:39:01 
