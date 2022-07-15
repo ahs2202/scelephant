@@ -40,14 +40,12 @@ def SemiSimulate_scData( path_folder_mtx_10x_input, path_folder_mtx_10x_output, 
             if line[ 0 ] == '%' :
                 # read comment and the description line
                 while True :
-                    if line[ 0 ] != '%' 
+                    if line[ 0 ] != '%' :
                         break
                     line = file.readline( ).decode( ) # read the next line
                 line = file.readline( ).decode( ) # discard the description line and read the next line
             # process entries
-            while True :
-                if len( line ) == 0 :
-                    break
+            while len( line ) > 0 :
                 index_row, index_col, val = tuple( map( int, line.strip( ).split( ) ) ) # parse each entry of the current matrix 
                 if np.random.random( ) < float_prop_blur : # create random variation using the given probability
                     val = max( int( val * ( 1 + np.random.normal( ) * float_ratio_of_standard_deviation_to_expression_count ) ), 1 ) # min count is 1 (creating random variation should not delete/create feature/cells)
@@ -93,3 +91,6 @@ def SemiSimulate_scData( path_folder_mtx_10x_input, path_folder_mtx_10x_output, 
     os.rename( f"{path_folder_temp}barcodes.tsv.gz", f"{path_folder_mtx_10x_output}barcodes.tsv.gz" )
     os.rename( f"{path_folder_temp}matrix.mtx.gz", f"{path_folder_mtx_10x_output}matrix.mtx.gz" )
     shutil.copyfile( path_file_feature, f"{path_folder_mtx_10x_output}features.tsv.gz" )
+    
+    # remove temp folder
+    shutil.rmtree( path_folder_temp ) 
