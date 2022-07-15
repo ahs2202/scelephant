@@ -3,16 +3,22 @@ from biobookshelf import *
 import biobookshelf as bk
 pd.options.mode.chained_assignment = None  # default='warn' # to disable worining
 import zarr # SCElephant is currently implemented using Zarr
+import hdbscan # for clustering
 import anndata
 import numcodecs
 import scanpy
 import sklearn as skl
-# import shelve # for persistent dictionary (key-value based database)
+import shelve # for persistent database (key-value based database)
+
+
+# might not be used
+import scipy.spatial.distance as dist # for distance metrics calculation
+import sklearn.cluster as skc # K-means
 
 # define version
 _version_ = '0.0.1'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-07-14 10:04:45' 
+_last_modified_time_ = '2022-07-16 00:12:20' 
 
 ''' previosuly written for biobookshelf '''
 def CB_Parse_list_of_id_cell( l_id_cell, dropna = True ) :
@@ -1857,6 +1863,62 @@ class AnnDataContainer( ) :
                 if hasattr( adata, name_attr ) :
                     setattr( adata_current, name_attr, getattr( adata, name_attr ) )
 
+''' a class for wrapping shelve-backed persistent dictionary '''
+class ShelveContainer( ) :
+    """ # 2022-07-14 20:29:42 
+    a convenient wrapper of 'shelve' module-backed persistant dictionary to increase the memory-efficiency of a shelve-based persistent dicitonary, enabling the use of shelve dictionary without calling close( ) function to remove the added elements from the memory.
+    
+    'path_prefix_shelve' : a prefix of the persisent dictionary
+    """
+    def __init__( self, path_prefix_shelve ) :
+        self.path_prefix_shelve = path_prefix_shelve
+    @property
+    def keys( self ) :
+        """ # 2022-07-14 20:43:24 
+        return keys
+        """
+        # if keys has not been loaded
+        if not hasattr( self, '_set_keys' ) :
+            self.update_keys( ) # update keys
+        return self._set_keys
+    def update_keys( self ) :
+        """ # 2022-07-14 20:41:20 
+        update keys of 'shelve'
+        """
+        with shelve.open( self.path_prefix_shelve ) as ns :
+            self._set_keys = set( ns.keys( ) )
+    def __contains__( self, x ) -> bool :
+        """ # 2022-07-14 21:14:47 
+        """
+        return x in self.keys
+    def __iter__( self ) :
+        """ # 2022-07-14 21:15:18 
+        """
+        return iter( self.keys )
+    def __getitem__( self, x ) :
+        """ # 2022-07-14 21:18:50 
+        """
+        if x in self :
+            with shelve.open( self.path_prefix_shelve, 'r' ) as ns :
+                item = ns[ str( x ) ] # only string is avaiable as a key
+            return item
+    def __setitem__( self, x, val ) :
+        """ # 2022-07-14 21:22:54 
+        """
+        with shelve.open( self.path_prefix_shelve ) as ns :
+            ns[ str( x ) ] = val # only string is avaiable as a key
+            self._set_keys = set( ns.keys( ) ) # update keys
+    def __delitem__( self, x ) :
+        """ # 2022-07-14 21:37:25 
+        """
+        with shelve.open( self.path_prefix_shelve ) as ns :
+            del ns[ str( x ) ] # only string is avaiable as a key
+            self._set_keys = set( ns.keys( ) ) # update keys
+    def __repr__( self ) :
+        """ # 2022-07-14 21:37:28 
+        """
+        return f"<shelve-backed namespace: {self.keys}>"
+    
 ''' a class for Zarr-based DataFrame object '''
 class ZarrDataFrame( ) :
     """ # 2022-07-12 23:59:37 
@@ -2360,6 +2422,7 @@ class ZarrDataFrame( ) :
                 dict_data[ int_index_row ] = val
             del values
             self.dict[ name_col ] = dict_data # add column loaded as a dictionary to the cache    
+            
 ''' methods for creating RAMtx objects '''
 def __Merge_Sort_MTX_10X_and_Write_and_Index_Zarr__( za_mtx, za_mtx_index, * l_path_file_input, flag_ramtx_sorted_by_id_feature = True, flag_delete_input_file_upon_completion = False, dtype_mtx = np.float64, dtype_mtx_index = np.float64, int_size_buffer_for_mtx_index = 1000 ) :
     """ # 2022-07-02 11:37:05 
@@ -4073,6 +4136,7 @@ def Convert_df_count_to_RAMtx( path_file_df_count, path_folder_ramtx_output, fla
     with open( f"{path_folder_ramtx_output}ramtx.metadata.json", 'w' ) as file :
         json.dump( dict_metadata, file )
 
+
 class RamData( ) :
     """ # 2022-07-14 00:44:56 
     This class provides frameworks for single-cell transcriptomic/genomic data analysis, utilizing RAMtx data structures, which is backed by Zarr persistant arrays.
@@ -4106,6 +4170,9 @@ class RamData( ) :
         
         # set AnnDataContainer attribute for containing various AnnData objects associated with the current RamData
         self.ad = AnnDataContainer( path_prefix_default = self._path_folder_ramdata, flag_enforce_name_adata_with_only_valid_characters = flag_enforce_name_adata_with_only_valid_characters, ** GLOB_Retrive_Strings_in_Wildcards( f'{self._path_folder_ramdata}*.h5ad' ).set_index( 'wildcard_0' ).path.to_dict( ) ) # load locations of AnnData objects stored in the RamData directory
+        
+        # open a shelve-based persistent dictionary to save/retrieve arbitrary picklable python objects associated with the current RamData in a memory-efficient manner
+        self.ns = ShelveContainer( f"{self._path_folder_ramdata}ns" )
     @property
     def metadata( self ) :
         # implement lazy-loading of metadata
@@ -4753,7 +4820,7 @@ class RamData( ) :
     
         if not flag_name_col_total_count_already_loaded : # unload count data of barcodes from memory if the count data was not loaded before calling this method
             del self.bc.meta.dict[ name_col_total_count ]
-    def identify_highly_variable_features( self, name_layer = 'normalized_log1p', int_num_highly_variable_features = 2000, float_min_mean = 0.01, float_min_variance = 0.01, suffix_name_col_for_filter = '_filter', flag_show_graph = True, coords_for_sampling = range( 0, 1000000 ) ) :
+    def identify_highly_variable_features( self, name_layer = 'normalized_log1p', int_num_highly_variable_features = 2000, float_min_mean = 0.01, float_min_variance = 0.01, name_col_filter = 'normalized_log1p_filter', flag_show_graph = True, coords_for_sampling = range( 0, 1000000 ) ) :
         """ # 2022-06-07 22:53:55 
         identify highly variable features
         learns mean-variable relationship from the given data, and calculate residual variance to identify highly variable features.
@@ -4763,7 +4830,7 @@ class RamData( ) :
         'int_num_highly_variable_features' : number of highly variable features to select. if None is given. a threshold for the selection of highly variable features will be set automatically to '0'.
         'float_min_mean' : minimum mean expression for selecting highly variable features
         'float_min_variance' : minimum variance of expression for selecting highly variable features
-        'suffix_name_col_for_filter' : suffix for the name of column that will contain a feature filter containing selected highly variable features (and barcode filter for cells that have non-zero expression values for the selected list of highly-variable features)
+        'name_col_filter' : the name of column that will contain a feature/barcode filter containing selected highly variable features (and barcode filter for cells that have non-zero expression values for the selected list of highly-variable features)
         'flag_show_graph' : show graphs
         ==========
         returns
@@ -4775,7 +4842,7 @@ class RamData( ) :
         (1) Calculate metrics for identification of highly variable features
         """
         # set the name of the columns that will be used in the current method
-        name_col_for_mean, name_col_for_variance, name_col_for_filter = f'{name_layer}_mean', f'{name_layer}_variance', f'{name_layer}{suffix_name_col_for_filter}'
+        name_col_for_mean, name_col_for_variance = f'{name_layer}_mean', f'{name_layer}_variance'
         
         # check if required metadata (mean and variance data of features) is not available, and if not, calculate and save the data
         if name_col_for_mean not in self.ft.meta or name_col_for_variance not in self.ft.meta :
@@ -4843,24 +4910,71 @@ class RamData( ) :
         
         # identify highly variable features satisfying all conditions    
         ba = self.ft.AND( ba, self.ft.meta[ 'normalized_log1p__float_score_highly_variable_feature_from_mean' ] > float_min_score_highly_variable ) 
-        self.ft.meta[ name_col_for_filter ] = ba # save the feature filter as a metadata
+        self.ft.meta[ name_col_filter ] = ba # save the feature filter as a metadata
         self.ft.filter = ba
 
         # discard cells that does not contain data for the identified highly variable features
         self.summarize( 'normalized_log1p', 'barcode', 'sum' ) # calculate the total expression values for the selected highly variable genes for each barcode
         self.bc.filter = None # reset barcode filter prior to the identification of valid barcodes (that contains valid expression data for the selected set of highly variable features).
         ba = self.bc.meta[ 'normalized_log1p_sum' ] > 0 # filter out barcodes with no expression for the selected highly variable genes, since these will not be clustered properly and consumes extra memory and running time.
-        self.bc.meta[ name_col_for_filter ] = ba # save the barcode filter as a metadata
+        self.bc.meta[ name_col_filter, : ] = ba # save the barcode filter as a metadata
         self.bc.filter = ba
-    def pca( self, name_layer = 'normalized_log1p', prefix_name_col = 'pca_', name_col_ft_filter = None, int_num_components = 50, int_num_barcodes_in_ipca_batch = 1000, flag_ipca_whiten = False, int_num_threads = 5 ) :
+    ''' utility functions for filter '''
+    def change_filter( self, name_col_filter = None, name_col_filter_bc = None, name_col_filter_ft = None ) :
+        """ # 2022-07-15 12:10:32 
+        retrieve and apply filters for 'barcode' and 'feature' Axes
+        
+        'name_col_filter_bc', 'name_col_filter_ft' will override 'name_col_filter' when applying filters.
+        if all name_cols are invalid, no filters will be retrieved and applied
+        """
+        # check validity of name_cols for filter
+        # bc
+        if name_col_filter_bc not in self.bc.meta :
+            name_col_filter_bc = name_col_filter if name_col_filter in self.bc.meta else None # use 'name_col_filter' instead if 'name_col_filter_bc' is invalid
+        # ft
+        if name_col_filter_ft not in self.ft.meta :
+            name_col_filter_ft = name_col_filter if name_col_filter in self.ft.meta else None # use 'name_col_filter' instead if 'name_col_filter_ft' is invalid
+        
+        # apply filters
+        # bc
+        if name_col_filter_bc is not None :
+            self.bc.filter = self.bc.meta[ name_col_filter_bc, : ] # retrieve filter from the storage and apply the filter to the axis
+        # ft
+        if name_col_filter_ft is not None :
+            self.ft.filter = self.ft.meta[ name_col_filter_ft, : ] # retrieve filter from the storage and apply the filter to the axis
+    def save_filter( self, name_col_filter = None, name_col_filter_bc = None, name_col_filter_ft = None  ) :
+        """ # 2022-07-15 12:10:32 
+        save filters for 'barcode' and 'feature' Axes
+        
+        'name_col_filter_bc', 'name_col_filter_ft' will override 'name_col_filter' when saving filters
+        if filter has not been set, filter containing all active entries (containing valid count data) will be saved instead for consistency
+        
+        if all name_cols are invalid, no filters will be saved
+        """
+        # check validity of name_cols for filter
+        # bc
+        if name_col_filter_bc not in self.bc.meta :
+            name_col_filter_bc = name_col_filter if name_col_filter in self.bc.meta else None # use 'name_col_filter' instead if 'name_col_filter_bc' is invalid
+        # ft
+        if name_col_filter_ft not in self.ft.meta :
+            name_col_filter_ft = name_col_filter if name_col_filter in self.ft.meta else None # use 'name_col_filter' instead if 'name_col_filter_ft' is invalid
+        
+        # save filters
+        # bc
+        if name_col_filter_bc is not None :
+            self.bc.meta[ name_col_filter_bc, : ] = self.bc.filter # save filter to the storage
+        # ft
+        if name_col_filter_ft is not None :
+            self.ft.meta[ name_col_filter_ft, : ] = self.ft.filter # save filter to the storage
+    ''' memory-efficient demension reduction/clustering functions '''
+    def pca( self, name_layer = 'normalized_log1p', prefix_name_col = 'pca_', name_col_filter = None, int_num_components = 50, int_num_barcodes_in_ipca_batch = 1000, flag_ipca_whiten = False, int_num_threads = 5 ) :
         """ # 2022-07-14 00:48:13 
-
         Perform incremental PCA in a very memory-efficient manner.
 
         arguments:
         'name_layer' : name of the data source layer
         'prefix_name_col' : a prefix for the 'name_col' of the columns that will be added to Axis.meta ZDF.
-        'name_col_ft_filter' : the name of 'feature' Axis metadata column to retrieve selection filter for highly-variable-features. (default: None) if None is given, current feature filter (if it has been set) will be used as-is
+        'name_col_filter' : the name of 'feature'/'barcode' Axis metadata column to retrieve selection filter for highly-variable-features. (default: None) if None is given, current feature filter (if it has been set) will be used as-is. if a valid filter is given, filter WILL BE CHANGED.
         'int_num_components' : number of PCA components.
         'int_num_barcodes_in_ipca_batch' : number of barcodes in an Incremental PCA computation
         'flag_ipca_whiten' : a flag for an incremental PCA computation (Setting this flag to 'True' will reduce the efficiency of model learning, but might make the model more generalizable)
@@ -4880,13 +4994,10 @@ class RamData( ) :
         # retrieve RAMtx object (sorted by barcodes) to summarize # retrieve 'Barcode' Axis object t
         rtx, ax = self._layer._ramtx_barcodes, self.bc
 
-        # set appropriate filter
-        if name_col_ft_filter is not None :
-            if name_col_ft_filter in self.ft.meta :
-                self.ft.filter = self.ft.meta[ name_col_ft_filter, : ] # retrieve filter and apply the filter to the axis
-            if name_col_ft_filter in self.bc.meta :
-                self.bc.filter = self.bc.meta[ name_col_ft_filter, : ] # retrieve filter and apply the filter to the axis
+        # set appropriate filters
+        self.change_filter( name_col_filter )
 
+        # create view for changing coordinates of the retrieved data
         self.initialize_view( l_entry_bc = None, l_entry_ft = None, flag_use_str_repr_bc = False, flag_use_str_repr_ft = False ) # initialize view
         """
         2) Fit PCA
@@ -4928,7 +5039,6 @@ class RamData( ) :
         """
         # initialize metadata columns 
         l_name_col_pca = list( f"{prefix_name_col}{i}" for i in range( int_num_components ) ) # retrieve name_col for the transformed PCA data
-        print( l_name_col_pca )
 
         # define functions for multiprocessing step
         def process_batch( batch, pipe_to_main_process ) :
@@ -4961,6 +5071,71 @@ class RamData( ) :
         # destroy the view
         self.unload_dict_change( )
         
+        # save iPCA metrics in the shelve
+        self.ns[ 'ipca' ] = ipca
+        return ipca
+    def get_array( self, axis = 'barcode', prefix_name_col = 'pca_', int_num_components = 50, name_col_filter = None, l_int_entries = None ) :
+        """ # 2022-07-15 19:59:11 
+        Retrieve array data for the 'int_num_components' number of components with 'prefix_name_col' prefix for the currently active filters (if filters have been set).
+        if 'l_int_entries' is given, the entries specified by 'l_int_entries' will be retrieved
+        
+        'axis' : axis to retrieve array data { 'barcode', 0 } for 'barcode' axis and { 'feature', 1 } for 'feature' axis
+        'prefix_name_col' : name of columns in the 'barcode' Axis metadata containing PCA components. please refer to RamData.pca function
+        'name_col_filter' : the name of 'feature'/'barcode' Axis metadata column to retrieve selection filter for highly-variable-features. (default: None) if None is given, current feature filter (if it has been set) will be used as-is. if a valid filter is given, filter WILL BE CHANGED.
+        'l_int_entries' : to retrieve data of a specific entries, use this argument to pass the list of integer representations of the entries. filter (if it is active) will not be applied
+        """
+        # retrieve Axis object based on the 'axis' argument.
+        ax = self.bc if axis in { 'barcode', 0 } else self.ft
+
+        # set appropriate filters
+        self.change_filter( name_col_filter )
+        
+        # survey the maximum number of available PCA components
+        int_num_available_components = 0
+        for i in range( int_num_components ) :
+            name_col = f"{prefix_name_col}{i}"
+            if name_col in ax.meta :
+                int_num_available_components = i + 1
+
+        # correct the 'int_num_components' to use based on the maximum number of available PCA dimensions
+        int_num_components = min( int_num_components, int_num_available_components )
+
+        # initialize the array 
+        arr_data = np.zeros( ( ax.meta.n_rows if l_int_entries is None else len( l_int_entries ), int_num_components ) )
+
+        # retrieve PCA transformed data
+        for i in range( int_num_components ) :
+            name_col = f"{prefix_name_col}{i}"
+            if self.verbose :
+                print( f"retrieving {name_col}" )
+            arr_data[ :, i ] = ax.meta[ name_col ] if l_int_entries is None else ax.meta[ name_col, l_int_entries ] # retrieve data of specific entries if 'l_int_entries' is given
+
+        # return retrieved PCA components
+        return arr_data
+    def get_pca( self, prefix_name_col = 'pca_', int_num_components = 50, name_col_filter = None, l_int_entries = None ) :
+        """ # 2022-07-14 10:01:59 
+        a convenient wrapper of 'RamData.get_array' function
+        Retrieve PCA data for the 'int_num_components' number of components with 'prefix_name_col' prefix for the currently active filters (if filters have been set).
+        if 'l_int_entries' is given, the entries specified by 'l_int_entries' will be retrieved
+        
+        'prefix_name_col' : name of columns in the 'barcode' Axis metadata containing PCA components. please refer to RamData.pca function
+        'name_col_filter' : the name of 'feature'/'barcode' Axis metadata column to retrieve selection filter for highly-variable-features. (default: None) if None is given, current feature filter (if it has been set) will be used as-is. if a valid filter is given, filter WILL BE CHANGED.
+        'l_int_entries' : to retrieve data of a specific entries, use this argument to pass the list of integer representations of the entries. filter (if it is active) will not be applied
+        """
+        return self.get_array( axis = 'barcode', prefix_name_col = prefix_name_col, int_num_components = int_num_components, name_col_filter = name_col_filter, l_int_entries = l_int_entries )
+    def get_umap( self, prefix_name_col = 'umap_', int_num_components = 2, name_col_filter = None, l_int_entries = None ) :
+        """ # 2022-07-14 10:01:59 
+        a convenient wrapper of 'RamData.get_array' function
+        Retrieve PCA data for the 'int_num_components' number of components with 'prefix_name_col' prefix for the currently active filters (if filters have been set).
+        if 'l_int_entries' is given, the entries specified by 'l_int_entries' will be retrieved
+        
+        'prefix_name_col' : name of columns in the 'barcode' Axis metadata containing PCA components. please refer to RamData.pca function
+        'name_col_filter' : the name of 'feature'/'barcode' Axis metadata column to retrieve selection filter for highly-variable-features. (default: None) if None is given, current feature filter (if it has been set) will be used as-is. if a valid filter is given, filter WILL BE CHANGED.
+        'l_int_entries' : to retrieve data of a specific entries, use this argument to pass the list of integer representations of the entries. filter (if it is active) will not be applied
+        """
+        return self.get_array( axis = 'barcode', prefix_name_col = prefix_name_col, int_num_components = int_num_components, name_col_filter = name_col_filter, l_int_entries = l_int_entries )
+    
+
     ''' satellite methods for analyzing RamData '''
     def _classify_feature_of_scarab_output_( self, int_min_num_occurrence_to_identify_valid_feature_category = 1000 ) :
         """ # 2022-05-30 12:39:01 

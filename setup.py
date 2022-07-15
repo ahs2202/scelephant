@@ -26,6 +26,7 @@ setup(
         'biobookshelf>=0.1.36',
         'zarr>=2.11.3',
         'numcodecs>=0.9.1',
+        'hdbscan>=0.8.28',
 #         'pyopa>=0.8.2',
 #         'numpy>=1.22.4',
 #         'numba>=0.55.2',
