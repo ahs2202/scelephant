@@ -9,7 +9,7 @@ def SemiSimulate_scData( path_folder_mtx_10x_input, path_folder_mtx_10x_output, 
     float_prop_blur = 0.5 : a proportion of reads that will be 'perturbed' to generate semi-simulated single-cell count data
     float_ratio_of_standard_deviation_to_expression_count = 0.3 : the larger this ratio is, the more variable from the simulated count data from the original count data
     int_num_copies : number of simulated copies of the original dataset in the output simulated single-cell dataset
-    int_num_threads : number of threads
+    int_num_threads : number of threads, including the main process distributing and collecting results
     """
     # define temp folder 
     path_folder_temp = f'{path_folder_mtx_10x_output}temp_{UUID( )}/'
