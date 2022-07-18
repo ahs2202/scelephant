@@ -12,7 +12,7 @@ with open(os.path.join(HERE, "README.md")) as fid:
 
 setup(
     name='scelephant',
-    version='0.0.0',
+    version='0.0.2',
     author="Hyunsu An",
     author_email="ahs2202@gm.gist.ac.kr",
     description="SCelephant (Single-Cell Extremely Large Data Analysis Platform)",
@@ -27,9 +27,11 @@ setup(
         'zarr>=2.11.3',
         'numcodecs>=0.9.1',
         'hdbscan>=0.8.28',
+        'pgzip>=0.3.1',
+        'numba>=0.55.2',
 #         'pyopa>=0.8.2',
 #         'numpy>=1.22.4',
-#         'numba>=0.55.2',
+
     ],
 #    entry_points={
 #        "console_scripts": [
