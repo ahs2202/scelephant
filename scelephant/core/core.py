@@ -1746,21 +1746,29 @@ def zarr_exists( path_folder_zarr ) :
         flag_zarr_exists = False
     return flag_zarr_exists
 def zarr_copy( path_folder_zarr_source, path_folder_zarr_sink, int_num_chunks_per_batch = 1000 ) :
-    """ # 2022-07-20 16:48:27  
-    copy zarr object of the soruce chunks by chunks along the primary axis (axis 0)
+    """ # 2022-07-22 01:45:17 
+    copy a soruce zarr object to a sink zarr object chunks by chunks along the primary axis (axis 0)
+    also copy associated attributes, too.
     
     'path_folder_zarr_source' : source zarr object path
     'path_folder_zarr_sink' : sink zarr object path
     'int_num_chunks_per_batch' : number of chunks along the primary axis (axis 0) to be copied for each loop. for example, when the size of an array is (100, 100), chunk size is (10, 10), and 'int_num_chunks_per_batch' = 1, 10 chunks along the secondary axis (axis = 1) will be saved for each batch.
     """
+    # open zarr objects
     za = zarr.open( path_folder_zarr_source )
     za_sink = zarr.open( path_folder_zarr_sink, mode = 'w', shape = za.shape, chunks = za.chunks, dtype = za.dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # open the output zarr
     
+    # copy count data
     int_total_num_rows = za.shape[ 0 ]
     int_num_rows_in_batch = za.chunks[ 0 ] * int( int_num_chunks_per_batch )
     for index_batch in range( int( np.ceil( int_total_num_rows / int_num_rows_in_batch ) ) ) :
         sl = slice( index_batch * int_num_rows_in_batch, ( index_batch + 1 ) * int_num_rows_in_batch )
         za_sink[ sl ] = za[ sl ] # copy batch by batch
+    
+    # copy metadata
+    dict_attrs = dict( za.attrs ) # retrieve metadata from the source
+    for key in dict_attrs : # write metadata to sink Zarr object
+        za_sink.attrs[ key ] = dict_attrs[ key ]
 
 ''' a class for containing disk-backed AnnData objects '''
 class AnnDataContainer( ) :
@@ -1989,7 +1997,7 @@ class ShelveContainer( ) :
     
 ''' a class for Zarr-based DataFrame object '''
 class ZarrDataFrame( ) :
-    """ # 2022-07-20 23:05:55 
+    """ # 2022-07-22 02:05:09 
     storage-based persistant DataFrame backed by Zarr persistent arrays.
     each column can be separately loaded, updated, and unloaded.
     a filter can be set, which allows updating and reading ZarrDataFrame as if it only contains the rows indicated by the given filter.
@@ -2026,8 +2034,9 @@ class ZarrDataFrame( ) :
     'mode' : file mode. 'r' for read-only mode and 'a' for mode allowing modifications
     'path_folder_mask' : a local (local file system) path to the mask of the current ZarrDataFrame that allows modifications to be written without modifying the source. if a valid local path to a mask is given, all modifications will be written to the mask
     'flag_is_read_only' : read-only status of the storage
+    'flag_use_mask_for_caching' : use mask for not only storing modifications, but also save retrieved data from (remote) sources for faster access. this behavior can be turned on/off at any time
     """
-    def __init__( self, path_folder_zdf, df = None, int_num_rows = None, int_num_rows_in_a_chunk = 10000, ba_filter = None, flag_enforce_name_col_with_only_valid_characters = False, flag_store_string_as_categorical = True, flag_retrieve_categorical_data_as_integers = False, flag_load_data_after_adding_new_column = True, mode = 'a', path_folder_mask = None, flag_is_read_only = False ) :
+    def __init__( self, path_folder_zdf, df = None, int_num_rows = None, int_num_rows_in_a_chunk = 10000, ba_filter = None, flag_enforce_name_col_with_only_valid_characters = False, flag_store_string_as_categorical = True, flag_retrieve_categorical_data_as_integers = False, flag_load_data_after_adding_new_column = True, mode = 'a', path_folder_mask = None, flag_is_read_only = False, flag_use_mask_for_caching = True ) :
         """ # 2022-07-20 10:50:23 
         """
         # handle path
@@ -2040,6 +2049,7 @@ class ZarrDataFrame( ) :
         self._mode = mode
         self._flag_is_read_only = flag_is_read_only
         self._path_folder_mask = path_folder_mask
+        self.flag_use_mask_for_caching = flag_use_mask_for_caching
         self._flag_retrieve_categorical_data_as_integers = flag_retrieve_categorical_data_as_integers
         self._flag_load_data_after_adding_new_column = flag_load_data_after_adding_new_column
         self._ba_filter = None # initialize the '_ba_filter' attribute
@@ -2163,11 +2173,12 @@ class ZarrDataFrame( ) :
         if hasattr( self, '_mask' ) and self._mask is not None : # propagate filter change to the mask ZDF
             self._mask.filter = ba_filter
     def __getitem__( self, args ) :
-        ''' # 2022-07-21 09:22:36 
+        ''' # 2022-07-22 02:03:32 
         retrieve data of a column.
         partial read is allowed through indexing (slice/integer index/boolean mask/bitarray is supported)
         when a filter is active, the filtered data will be cached in the temporary directory as a Zarr object and will be retrieved in subsequent accesses
-        if mask is set, retrieve data from the mask if the column is available in the mask
+        if mask is set, retrieve data from the mask if the column is available in the mask. 
+        also, when the 'flag_use_mask_for_caching' setting is active, use mask for caching data from source data (possibly remote source).
         '''
         """
         1) parse arguments
@@ -2191,9 +2202,14 @@ class ZarrDataFrame( ) :
         """
         2) retrieve data
         """
-        if self._mask is not None and name_col in self._mask : # if mask is available and the column is available in the mask, return the data in the mask
-            return self._mask[ args ]
-        elif name_col in self : # if name_col is valid
+        if name_col not in self : # if name_col is not valid (name_col does not exists in current ZDF, including the mask), exit by returning None
+            return None
+        if self._mask is not None : # if mask is available
+            if self.flag_use_mask_for_caching and name_col not in self._mask : # if 'flag_use_mask_for_caching' option is active and the column is not available in the mask, copy the column from the source to the mask
+                zarr_copy( f"{self._path_folder_zdf}{name_col}/", f"{self._mask._path_folder_zdf}{name_col}/" ) # copy zarr object from the source to the mask
+            if name_col in self._mask : # if 'name_col' is available in the mask, retrieve data from the mask.
+                return self._mask[ args ]
+        if name_col in self : # if name_col is valid
             if name_col in self._loaded_data and not flag_indexing : # if a loaded data is available and indexing is not active, return the cached data
                 return self._loaded_data[ name_col ]
             else : # in other cases, read the data from Zarr object
@@ -2261,7 +2277,7 @@ class ZarrDataFrame( ) :
         """
         2) set data
         """
-        # if mask is available, save new data to the mask
+        # if mask is available, save new data/modify existing data to the mask
         if self._mask is not None : # if mask is available, save new data to the mask
             if name_col in self and name_col not in self._mask : # if the 'name_col' exists in the current ZarrDataFrame and not in mask, copy the column to the mask
                 zarr_copy( f"{self._path_folder_zdf}{name_col}/", f"{self._mask._path_folder_zdf}{name_col}/" ) # copy zarr object from the source to the mask
@@ -3877,6 +3893,7 @@ class Layer( ) :
         self._name_layer = name_layer
         self._ramdata = ramdata
         self._mode = mode
+        self._int_num_cpus = int_num_cpus
         self._path_folder_ramdata_mask = path_folder_ramdata_mask
         self._flag_is_read_only = flag_is_read_only
         
@@ -3891,6 +3908,18 @@ class Layer( ) :
         # set filters of the current layer
         self.ba_filter_features = ba_filter_features
         self.ba_filter_barcodes = ba_filter_barcodes
+    @property
+    def int_num_cpus( self ) :
+        """ # 2022-07-21 23:22:24 
+        """
+        return self._int_num_cpus
+    @int_num_cpus.setter
+    def int_num_cpus( self, val ) :
+        """ # 2022-07-21 23:22:24 
+        """
+        self._int_num_cpus = max( 1, int( val ) ) # set integer values
+        self._ramtx_features.int_num_cpus = self._int_num_cpus # update 'int_num_cpus' attributes of RAMtxs
+        self._ramtx_barcodes.int_num_cpus = self._int_num_cpus
     @property
     def int_num_features( self ) :
         """ # 2022-06-28 21:39:20 
@@ -4416,12 +4445,13 @@ def Convert_df_count_to_RAMtx( path_file_df_count, path_folder_ramtx_output, fla
         json.dump( dict_metadata, file )
 
 class RamData( ) :
-    """ # 2022-07-21 01:33:35 
+    """ # 2022-07-21 23:32:59 
     This class provides frameworks for single-cell transcriptomic/genomic data analysis, utilizing RAMtx data structures, which is backed by Zarr persistant arrays.
     Extreme lazy loading strategies used by this class allows efficient parallelization of analysis of single cell data with minimal memory footprint, loading only essential data required for analysis. 
     
     'path_folder_ramdata' : a local folder directory or a remote location (https://, s3://, etc.) containing RamData object
     'int_num_cpus' : number of CPUs (processes) to use to distribute works.
+    'int_num_cpus_for_fetching_data' : number of CPUs (processes) for individual RAMtx object for retrieving data from the data source. 
     'int_index_str_rep_for_barcodes', 'int_index_str_rep_for_features' : a integer index for the column for the string representation of 'barcodes'/'features' in the string Zarr object (the object storing strings) of 'barcodes'/'features'
     'dict_kw_zdf' : settings for 'Axis' metadata ZarrDataFrame
     'dict_kw_view' : settings for 'Axis' object for creating a view based on the active filter.
@@ -4431,8 +4461,8 @@ class RamData( ) :
     ==== AnnDataContainer ====
     'flag_enforce_name_adata_with_only_valid_characters' : enforce valid characters in the name of AnnData
     """
-    def __init__( self, path_folder_ramdata, name_layer = 'raw', int_num_cpus = 64, dtype_of_feature_and_barcode_indices = np.int32, dtype_of_values = np.float64, int_index_str_rep_for_barcodes = 0, int_index_str_rep_for_features = 1, mode = 'a', path_folder_ramdata_mask = None, dict_kw_zdf = { 'flag_retrieve_categorical_data_as_integers' : False, 'flag_load_data_after_adding_new_column' : True, 'flag_enforce_name_col_with_only_valid_characters' : True }, dict_kw_view = { 'float_min_proportion_of_active_entries_in_an_axis_for_using_array' : 0.1, 'dtype' : np.int32 }, flag_enforce_name_adata_with_only_valid_characters = True, verbose = True, flag_debugging = False ) :
-        """ # 2022-07-21 02:12:46 
+    def __init__( self, path_folder_ramdata, name_layer = 'raw', int_num_cpus = 64, int_num_cpus_for_fetching_data = 5, dtype_of_feature_and_barcode_indices = np.int32, dtype_of_values = np.float64, int_index_str_rep_for_barcodes = 0, int_index_str_rep_for_features = 1, mode = 'a', path_folder_ramdata_mask = None, dict_kw_zdf = { 'flag_retrieve_categorical_data_as_integers' : False, 'flag_load_data_after_adding_new_column' : True, 'flag_enforce_name_col_with_only_valid_characters' : True }, dict_kw_view = { 'float_min_proportion_of_active_entries_in_an_axis_for_using_array' : 0.1, 'dtype' : np.int32 }, flag_enforce_name_adata_with_only_valid_characters = True, verbose = True, flag_debugging = False ) :
+        """ # 2022-07-21 23:32:54 
         """
         # handle input object paths
         if path_folder_ramdata[ - 1 ] != '/' : # add '/' at the end of path to indicate it is a directory
@@ -4449,6 +4479,7 @@ class RamData( ) :
         self.verbose = verbose
         self.flag_debugging = flag_debugging
         self.int_num_cpus = int_num_cpus
+        self._int_num_cpus_for_fetching_data = int_num_cpus_for_fetching_data
         self._dtype_of_feature_and_barcode_indices = dtype_of_feature_and_barcode_indices
         self._dtype_of_values = dtype_of_values
         
@@ -4528,6 +4559,18 @@ class RamData( ) :
         yield each 'name_layer' upon iteration '''
         return iter( self.layers )
     @property
+    def int_num_cpus_for_fetching_data( self ) :
+        """ # 2022-07-21 23:32:24 
+        """
+        return self._int_num_cpus_for_fetching_data
+    @int_num_cpus_for_fetching_data.setter
+    def int_num_cpus_for_fetching_data( self, val ) :
+        """ # 2022-07-21 23:32:35 
+        """
+        self._int_num_cpus_for_fetching_data = max( 1, int( val ) ) # set an integer value
+        if self._layer is not None :
+            self._layer.int_num_cpus = self._int_num_cpus_for_fetching_data # update 'int_num_cpus' attributes of RAMtxs
+    @property
     def layer( self ) :
         """ # 2022-06-24 00:16:56 
         retrieve the name of layer from the layer object if it has been loaded.
@@ -4549,7 +4592,7 @@ class RamData( ) :
                 raise KeyError( f"'{name_layer}' data does not exists in the current RamData" )
 
             if name_layer != self.layer : # load new layer
-                self._layer = Layer( self._path_folder_ramdata, name_layer, ramdata = self, dtype_of_feature_and_barcode_indices = self._dtype_of_feature_and_barcode_indices, dtype_of_values = self._dtype_of_values, int_num_cpus = 1, verbose = self.verbose, mode = self._mode, path_folder_ramdata_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only )
+                self._layer = Layer( self._path_folder_ramdata, name_layer, ramdata = self, dtype_of_feature_and_barcode_indices = self._dtype_of_feature_and_barcode_indices, dtype_of_values = self._dtype_of_values, int_num_cpus = self._int_num_cpus_for_fetching_data, verbose = self.verbose, mode = self._mode, path_folder_ramdata_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only )
 
                 if self.verbose :
                     print( f"'{name_layer}' layer has been loaded" )
