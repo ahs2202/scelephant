@@ -9,6 +9,7 @@ import anndata
 import scanpy
 import shelve # for persistent database (key-value based database)
 import sklearn as skl
+from pynndescent import NNDescent # for fast approximate kNN search
 
 from numba import jit # for speed up
 
@@ -26,7 +27,20 @@ import sklearn.cluster as skc # K-means
 # define version
 _version_ = '0.0.2'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-07-18 10:34:10' 
+_last_modified_time_ = '2022-07-21 10:35:32'
+
+""" # 2022-07-21 10:35:42  realease note
+
+HTTP hosted RamData subclustering tested and verified.
+identified problems: Zarr HTTP Store is not thread-safe (crashes the program on run time) nor process-safe (dead lock... why?).
+Therefore, serializing access to Zarr HTTP Store is required 
+
+TODO: do not use fork when store is Zarr HTTP Store
+TODO: use Pynndescent for efficient HDBSCAN cluster label assignment, even when program is single-threaded (when Zarr HTTP store is used)
+TODO: use Pynndescent for better subsampling of cells before UMAP embedding
+
+if these implementations are in place, subclustering on HTTP-hosted RamData will be efficient and accurate.
+"""
 
 ''' previosuly written for biobookshelf '''
 def CB_Parse_list_of_id_cell( l_id_cell, dropna = True ) :
@@ -1720,6 +1734,34 @@ def _get_func_processed_bytes_to_arrays_mtx_and_other_settings_based_on_file_for
             return _pickle_bytes_to_obj( _gunzip_bytes( bytes_content ) )
     return str_ext, str_ext_index, func_processed_bytes_to_arrays_mtx
 
+''' utility functions for handling zarr '''
+def zarr_exists( path_folder_zarr ) :
+    """ # 2022-07-20 01:06:09 
+    check whether the given zarr object path exists
+    """
+    try : 
+        zarr.open( path_folder_zarr, 'r' )
+        flag_zarr_exists = True
+    except :
+        flag_zarr_exists = False
+    return flag_zarr_exists
+def zarr_copy( path_folder_zarr_source, path_folder_zarr_sink, int_num_chunks_per_batch = 1000 ) :
+    """ # 2022-07-20 16:48:27  
+    copy zarr object of the soruce chunks by chunks along the primary axis (axis 0)
+    
+    'path_folder_zarr_source' : source zarr object path
+    'path_folder_zarr_sink' : sink zarr object path
+    'int_num_chunks_per_batch' : number of chunks along the primary axis (axis 0) to be copied for each loop. for example, when the size of an array is (100, 100), chunk size is (10, 10), and 'int_num_chunks_per_batch' = 1, 10 chunks along the secondary axis (axis = 1) will be saved for each batch.
+    """
+    za = zarr.open( path_folder_zarr_source )
+    za_sink = zarr.open( path_folder_zarr_sink, mode = 'w', shape = za.shape, chunks = za.chunks, dtype = za.dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # open the output zarr
+    
+    int_total_num_rows = za.shape[ 0 ]
+    int_num_rows_in_batch = za.chunks[ 0 ] * int( int_num_chunks_per_batch )
+    for index_batch in range( int( np.ceil( int_total_num_rows / int_num_rows_in_batch ) ) ) :
+        sl = slice( index_batch * int_num_rows_in_batch, ( index_batch + 1 ) * int_num_rows_in_batch )
+        za_sink[ sl ] = za[ sl ] # copy batch by batch
+
 ''' a class for containing disk-backed AnnData objects '''
 class AnnDataContainer( ) :
     """ # 2022-06-09 18:35:04 
@@ -1730,6 +1772,10 @@ class AnnDataContainer( ) :
     
     'flag_enforce_name_adata_with_only_valid_characters' : (Default : True). does not allow the use of 'name_adata' containing the following characters { ' ', '/', '-', '"', "'" ";", and other special characters... }
     'path_prefix_default' : a default path of AnnData on disk. f'{path_prefix_default}{name_adata}.h5ad' will be used.
+    'mode' : file mode. 'r' for read-only mode and 'a' for mode allowing modifications
+    'path_prefix_default_mask' : the LOCAL file system path of 'MASK' where the modifications of the current object will be saved and retrieved. If this attribute has been set, the given RamData in the the given 'path_folder_ramdata' will be used as READ-ONLY. For example, when RamData resides in the HTTP server, data is often read-only (data can be only fetched from the server, and not the other way around). However, by giving a local path through this argument, the read-only RamData object can be analyzed as if the RamData object can be modified. This is possible since all the modifications made on the input RamData will be instead written to the local RamData object 'mask' and data will be fetced from the local copy before checking the availability in the remote RamData object.
+    'flag_is_read_only' : read-only status of the storage
+    
     '** args' : a keyworded argument containing name of the AnnData and the path to h5ad file of an AnnData object and an AnnData object (optional) :
             args = {
                     name_adata_1 = { 'adata' : AnnDataObject }, # when AnnDataObject is given and file path is not given, the path composed from 'path_prefix_default' and 'name_adata' will be used.
@@ -1742,10 +1788,14 @@ class AnnDataContainer( ) :
             }
                 in summary, (1) when AnnData is given, the validity of the path will not be checked, (2) when path is not given, the default path will be used.
     """
-    def __init__( self, flag_enforce_name_adata_with_only_valid_characters = True, path_prefix_default = None, ** args ) :
+    def __init__( self, flag_enforce_name_adata_with_only_valid_characters = True, path_prefix_default = None, mode = 'a', path_prefix_default_mask = None, flag_is_read_only = False, ** args ) :
         self.__str_invalid_char = '! @#$%^&*()-=+`~:;[]{}\|,<.>/?' + '"' + "'" if flag_enforce_name_adata_with_only_valid_characters else ''
         self.path_prefix_default = path_prefix_default
+        self._mode = mode
+        self._path_prefix_default_mask = path_prefix_default_mask
+        self._flag_is_read_only = flag_is_read_only
         self._dict_name_adata_to_namespace = dict( )
+
         # add items
         for name_adata in args :
             self.__setitem__( name_adata, args[ name_adata ] )
@@ -1877,9 +1927,19 @@ class ShelveContainer( ) :
     a convenient wrapper of 'shelve' module-backed persistant dictionary to increase the memory-efficiency of a shelve-based persistent dicitonary, enabling the use of shelve dictionary without calling close( ) function to remove the added elements from the memory.
     
     'path_prefix_shelve' : a prefix of the persisent dictionary
+    'mode' : file mode. 'r' for read-only mode and 'a' for mode allowing modifications
+    'path_prefix_shelve_mask' : the LOCAL file system path of 'MASK' where the modifications of the current object will be saved and retrieved. If this attribute has been set, the given RamData in the the given 'path_folder_ramdata' will be used as READ-ONLY. For example, when RamData resides in the HTTP server, data is often read-only (data can be only fetched from the server, and not the other way around). However, by giving a local path through this argument, the read-only RamData object can be analyzed as if the RamData object can be modified. This is possible since all the modifications made on the input RamData will be instead written to the local RamData object 'mask' and data will be fetced from the local copy before checking the availability in the remote RamData object.
+    'flag_is_read_only' : read-only status of the storage
+    
     """
-    def __init__( self, path_prefix_shelve ) :
+    def __init__( self, path_prefix_shelve, mode = 'a', path_prefix_shelve_mask = None, flag_is_read_only = False ) :
+        """ # 2022-07-20 22:06:15 
+        """
+        # set attributes
         self.path_prefix_shelve = path_prefix_shelve
+        self._mode = mode
+        self._path_prefix_shelve_mask = path_prefix_shelve_mask
+        self._flag_is_read_only = flag_is_read_only
     @property
     def keys( self ) :
         """ # 2022-07-14 20:43:24 
@@ -1929,19 +1989,19 @@ class ShelveContainer( ) :
     
 ''' a class for Zarr-based DataFrame object '''
 class ZarrDataFrame( ) :
-    """ # 2022-07-12 23:59:37 
-    on-demend persistant DataFrame backed by Zarr persistent arrays.
+    """ # 2022-07-20 23:05:55 
+    storage-based persistant DataFrame backed by Zarr persistent arrays.
     each column can be separately loaded, updated, and unloaded.
     a filter can be set, which allows updating and reading ZarrDataFrame as if it only contains the rows indicated by the given filter.
     currently supported dtypes are bool, float, int, strings (will be interpreted as categorical data).
     the one of the functionality of this class is to provide a Zarr-based dataframe object that is compatible with Zarr.js (javascript implementation of Zarr), with a categorical data type (the format used in zarr is currently not supported in zarr.js) compatible with zarr.js.
     
     Of note, secondary indexing (row indexing) is always applied to unfiltered columns, not to a subset of column containing filtered rows.
-    
-    # ❤️❤️❤️ # 2022-07-04 10:40:14 implement handling of categorical series inputs/categorical series output. Therefore, convertion of ZarrDataFrame categorical data to pandas categorical data should occurs only when dataframe was given as input/output is in dataframe format.
-    # ❤️❤️❤️ # 2022-07-04 10:40:20  also, implement a flag-based switch for returning series-based outputs
-    
     '__getitem__' function is thread and process-safe, while '__setitem__' is not thread nor prosess-safe. 
+    
+    # 2022-07-04 10:40:14 implement handling of categorical series inputs/categorical series output. Therefore, convertion of ZarrDataFrame categorical data to pandas categorical data should occurs only when dataframe was given as input/output is in dataframe format.
+    # 2022-07-04 10:40:20 also, implement a flag-based switch for returning series-based outputs
+    # 2022-07-20 22:29:41 : mask functionality was added
     
     === arguments ===
     'path_folder_zdf' : a folder to store persistant zarr dataframe.
@@ -1963,22 +2023,30 @@ class ZarrDataFrame( ) :
                       - when a filter is active, slicing will load an entire column (after applying filter) (when filter is inactive, slicing will only load the data corresponding to the sliced region)
     'flag_retrieve_categorical_data_as_integers' : if True, accessing categorical data will return integer representations of the categorical values. 
     'flag_load_data_after_adding_new_column' : if True, automatically load the newly added data to the object cache. if False, the newly added data will not be added to the object cache, and accessing the newly added column will cause reading the newly written data from the disk. It is recommended to set this to False if Zdf is used as a data sink
+    'mode' : file mode. 'r' for read-only mode and 'a' for mode allowing modifications
+    'path_folder_mask' : a local (local file system) path to the mask of the current ZarrDataFrame that allows modifications to be written without modifying the source. if a valid local path to a mask is given, all modifications will be written to the mask
+    'flag_is_read_only' : read-only status of the storage
     """
-    def __init__( self, path_folder_zdf, df = None, int_num_rows = None, int_num_rows_in_a_chunk = 10000, ba_filter = None, flag_enforce_name_col_with_only_valid_characters = False, flag_store_string_as_categorical = True, flag_retrieve_categorical_data_as_integers = False, flag_load_data_after_adding_new_column = True ) :
-        """ # 2022-06-22 16:31:07 
+    def __init__( self, path_folder_zdf, df = None, int_num_rows = None, int_num_rows_in_a_chunk = 10000, ba_filter = None, flag_enforce_name_col_with_only_valid_characters = False, flag_store_string_as_categorical = True, flag_retrieve_categorical_data_as_integers = False, flag_load_data_after_adding_new_column = True, mode = 'a', path_folder_mask = None, flag_is_read_only = False ) :
+        """ # 2022-07-20 10:50:23 
         """
         # handle path
-        path_folder_zdf = os.path.abspath( path_folder_zdf ) # retrieve absolute path
+        if '://' not in path_folder_zdf : # does not retrieve abspath if the given path is remote path
+            path_folder_zdf = os.path.abspath( path_folder_zdf ) # retrieve absolute path
         if path_folder_zdf[ -1 ] != '/' : # add '/' to the end of path to mark that this is a folder directory
             path_folder_zdf += '/'
+            
         self._path_folder_zdf = path_folder_zdf
+        self._mode = mode
+        self._flag_is_read_only = flag_is_read_only
+        self._path_folder_mask = path_folder_mask
         self._flag_retrieve_categorical_data_as_integers = flag_retrieve_categorical_data_as_integers
         self._flag_load_data_after_adding_new_column = flag_load_data_after_adding_new_column
         self._ba_filter = None # initialize the '_ba_filter' attribute
         self.filter = ba_filter
-            
+        
         # open or initialize zdf and retrieve associated metadata
-        if not os.path.exists( path_folder_zdf ) : # if the object does not exist, initialize ZarrDataFrame
+        if not zarr_exists( path_folder_zdf ) : # if the object does not exist, initialize ZarrDataFrame
             # create the output folder
             os.makedirs( path_folder_zdf, exist_ok = True )
             
@@ -1997,7 +2065,12 @@ class ZarrDataFrame( ) :
             # convert 'columns' list to set
             if 'columns' in self._dict_zdf_metadata :
                 self._dict_zdf_metadata[ 'columns' ] = set( self._dict_zdf_metadata[ 'columns' ] )
-           
+        
+        # if a mask is given, open the mask zdf
+        self._mask = None # initialize 'mask'
+        if path_folder_mask is not None : # if a mask is given
+            self._mask = ZarrDataFrame( path_folder_mask, df = df, int_num_rows = self.n_rows, int_num_rows_in_a_chunk = self.metadata[ 'int_num_rows_in_a_chunk' ], ba_filter = ba_filter, flag_enforce_name_col_with_only_valid_characters = self.metadata[ 'flag_enforce_name_col_with_only_valid_characters' ], flag_store_string_as_categorical = self.metadata[ 'flag_store_string_as_categorical' ], flag_retrieve_categorical_data_as_integers = flag_retrieve_categorical_data_as_integers, flag_load_data_after_adding_new_column = flag_load_data_after_adding_new_column, mode = 'a', path_folder_mask = None, flag_is_read_only = False ) # the mask ZarrDataFrame shoud not have mask, should be modifiable, and not mode == 'r'.
+        
         # handle input arguments
         self._str_invalid_char = '! @#$%^&*()-=+`~:;[]{}\|,<.>/?' + '"' + "'" if self._dict_zdf_metadata[ 'flag_enforce_name_col_with_only_valid_characters' ] else '/' # linux file system does not allow the use of linux'/' character in the folder/file name
         
@@ -2013,10 +2086,18 @@ class ZarrDataFrame( ) :
             
         # initialize attribute storing columns as dictionaries
         self.dict = dict( )
+    @property
+    def metadata( self ) :
+        ''' # 2022-07-21 02:38:31 
+        '''
+        return self._dict_zdf_metadata
     def _initialize_temp_folder_( self ) :
-        """ # 2022-06-22 21:49:38
+        """ # 2022-07-20 10:50:19 
         empty the temp folder
         """
+        if self._flag_is_read_only : # ignore the operation if the current object is read-only
+            self._path_folder_temp = None # initialize the temp folder
+            return
         # initialize temporary data folder directory
         self._path_folder_temp = f"{self._path_folder_zdf}.__temp__/" # set temporary folder
         if os.path.exists( self._path_folder_temp ) : # if temporary folder already exists
@@ -2047,7 +2128,7 @@ class ZarrDataFrame( ) :
         return self._ba_filter
     @filter.setter
     def filter( self, ba_filter ) :
-        """ # 2022-07-05 23:49:10 
+        """ # 2022-07-21 08:58:16 
         change filter, and empty the cache
         """
         if ba_filter is None : # if filter is removed, 
@@ -2078,12 +2159,19 @@ class ZarrDataFrame( ) :
             self._n_rows_after_applying_filter = ba_filter.count( ) # retrieve the number of rows after applying the filter
 
             self._ba_filter = ba_filter # set bitarray filter
+        # set filter of mask
+        if hasattr( self, '_mask' ) and self._mask is not None : # propagate filter change to the mask ZDF
+            self._mask.filter = ba_filter
     def __getitem__( self, args ) :
-        ''' # 2022-07-03 02:51:00 
+        ''' # 2022-07-21 09:22:36 
         retrieve data of a column.
         partial read is allowed through indexing (slice/integer index/boolean mask/bitarray is supported)
         when a filter is active, the filtered data will be cached in the temporary directory as a Zarr object and will be retrieved in subsequent accesses
+        if mask is set, retrieve data from the mask if the column is available in the mask
         '''
+        """
+        1) parse arguments
+        """
         # initialize indexing
         flag_indexing = False # a boolean flag indicating whether an indexing is active
         flag_coords_in_bool_mask = False
@@ -2097,24 +2185,34 @@ class ZarrDataFrame( ) :
             if flag_coords_in_bool_mask :
                 coords = bk.BA.convert_mask_to_array( coords )
         else :
+            # when indexing is not active
             name_col, coords = args, slice( None, None, None ) # retrieve all data if only 'name_col' is given
-            
-        if name_col in self : # if name_col is valid
+
+        """
+        2) retrieve data
+        """
+        if self._mask is not None and name_col in self._mask : # if mask is available and the column is available in the mask, return the data in the mask
+            return self._mask[ args ]
+        elif name_col in self : # if name_col is valid
             if name_col in self._loaded_data and not flag_indexing : # if a loaded data is available and indexing is not active, return the cached data
                 return self._loaded_data[ name_col ]
             else : # in other cases, read the data from Zarr object
                 if self.filter is None or flag_indexing : # if filter is not active or indexing is active, open a Zarr object containing all data
                     za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'r' ) # read data from the Zarr object
                 else : # if filter is active and indexing is not active
-                    path_folder_temp_zarr = f"{self._path_folder_temp}{name_col}/" # retrieve path of cached zarr object containing filtered data
-                    if os.path.exists( path_folder_temp_zarr ) : # if a cache is available
-                        za = zarr.open( path_folder_temp_zarr, mode = 'r' ) # open the cached Zarr object containing filtered data
-                    else : # if a cache is not available, retrieve filtered data and write a cache to disk
+                    flag_is_cache_available = False # initialize a flag
+                    if self._path_folder_temp is not None : # when mode is not read-only
+                        path_folder_temp_zarr = f"{self._path_folder_temp}{name_col}/" # retrieve path of cached zarr object containing filtered data
+                        if zarr_exists( path_folder_temp_zarr ) : # if a cache is available
+                            za = zarr.open( path_folder_temp_zarr, mode = 'r' ) # open the cached Zarr object containing filtered data
+                            flag_is_cache_available = True # update the flag
+                    if not flag_is_cache_available : # if a cache is not available, retrieve filtered data and write a cache to disk
                         za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'r' ) # read data from the Zarr object
-                        za_cached = zarr.open( path_folder_temp_zarr, 'w', shape = ( self._n_rows_after_applying_filter, ), chunks = ( self._dict_zdf_metadata[ 'int_num_rows_in_a_chunk' ], ), dtype = za.dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # open a new Zarr object for caching # overwriting existing data # use the same dtype as the parent dtype
                         za = za.get_mask_selection( bk.BA.to_array( self.filter ) ) # retrieve filtered data as np.ndarray
-                        za_cached[ : ] = za # save the filtered data for caching
-                values = za[ coords ] if not flag_coords_in_bool_mask or isinstance( za, np.ndarray ) else za.get_mask_selection( coords ) # retrieve data using the 'get_mask_selection' method if 'flag_coords_in_bool_mask' is True and 'za' is not np.ndarray
+                        if self._path_folder_temp is not None :
+                            za_cached = zarr.open( path_folder_temp_zarr, 'w', shape = ( self._n_rows_after_applying_filter, ), chunks = ( self._dict_zdf_metadata[ 'int_num_rows_in_a_chunk' ], ), dtype = za.dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # open a new Zarr object for caching # overwriting existing data # use the same dtype as the parent dtype
+                            za_cached[ : ] = za # save the filtered data for caching
+                values = za[ coords ] if not flag_coords_in_bool_mask or isinstance( za, np.ndarray ) else za.get_mask_selection( coords ) # retrieve data using the 'get_mask_selection' method if 'flag_coords_in_bool_mask' is True and 'za' is not np.ndarray # when indexing is not active, coords = slice( None, None, None )
                 
                 # check whether the current column contains categorical data
                 l_value_unique = self.get_categories( name_col )
@@ -2126,13 +2224,20 @@ class ZarrDataFrame( ) :
                         values_decoded[ i ] = l_value_unique[ values[ i ] ] if values[ i ] >= 0 else np.nan # convert integer representations to its original string values # -1 (negative integers) encodes np.nan
                     return values_decoded
     def __setitem__( self, args, values ) :
-        ''' # 2022-07-12 23:59:49 
+        ''' # 2022-07-20 23:23:47 
         save/update a column at indexed positions.
         when a filter is active, only active entries will be saved/updated automatically.
         boolean mask/integer arrays/slice indexing is supported. However, indexing will be applied to the original column with unfiltered rows (i.e., when indexing is active, filter will be ignored)
+        if mask is set, save data to the mask
         
         automatically detect dtype of the input array/list, including that of categorical data (all string data will be interpreted as categorical data). when the original dtype and dtype inferred from the updated values are different, an error will occur.
         '''
+        """
+        1) parse arguments
+        """
+        if self._mode == 'r' : # if mode == 'r', ignore __setitem__ method calls
+            return 
+        
         # initialize indexing
         flag_indexing = False # a boolean flag indicating whether an indexing is active
         flag_coords_in_bool_mask = False
@@ -2152,7 +2257,20 @@ class ZarrDataFrame( ) :
         for char_invalid in self._str_invalid_char :
             if char_invalid in name_col :
                 raise TypeError( f"the character '{char_invalid}' cannot be used in 'name_col'. Also, the 'name_col' cannot contains the following characters: {self._str_invalid_char}" )
-            
+        
+        """
+        2) set data
+        """
+        # if mask is available, save new data to the mask
+        if self._mask is not None : # if mask is available, save new data to the mask
+            if name_col in self and name_col not in self._mask : # if the 'name_col' exists in the current ZarrDataFrame and not in mask, copy the column to the mask
+                zarr_copy( f"{self._path_folder_zdf}{name_col}/", f"{self._mask._path_folder_zdf}{name_col}/" ) # copy zarr object from the source to the mask
+            self._mask[ args ] = values # set values to the mask
+            return # exit
+    
+        if self._flag_is_read_only : # if current store is read-only (and mask is not set), exit
+            return # exit
+        
         # ❤️❤️❤️ implement 'broadcasting'; when a single value is given, the value will be copied to all rows.
         # retrieve data values from the 'values' 
         if isinstance( values, bitarray ) :
@@ -2284,7 +2402,20 @@ class ZarrDataFrame( ) :
     def __delitem__( self, name_col ) :
         ''' # 2022-06-20 21:57:38 
         remove the column from the memory and the object on disk
+        if mask is set, delete the column of the mask, and does not delete columns of the original ZarrDataFrame
         '''
+        if self._mode == 'r' : # if mode == 'r', ignore __delitem__ method calls
+            return # exit
+        
+        # if mask is available, delete the column from the mask
+        if self._mask is not None : # if mask is available
+            if name_col in self._mask : # if the 'name_col' exists in the mask ZarrDataFrame
+                del self._mask[ name_col ] # delete the column from the mask
+            return # exit
+    
+        if self._flag_is_read_only : # if current store is read-only (and mask is not set), exit
+            return # exit
+        
         if name_col in self : # if the given name_col is valid
             # remove column from the memory
             self.unload( name_col ) 
@@ -2293,18 +2424,35 @@ class ZarrDataFrame( ) :
             self._save_metadata_( ) # update metadata
             # delete the column from the disk ZarrDataFrame object
             shutil.rmtree( f"{self._path_folder_zdf}{name_col}/" ) #             OS_Run( [ 'rm', '-rf', f"{self._path_folder_zdf}{name_col}/" ] )
-    def __contains__( self, name_col ) :
-        return name_col in self._dict_zdf_metadata[ 'columns' ]
-    def __iter__( self ) :
-        return iter( self._dict_zdf_metadata[ 'columns' ] )
     def __repr__( self ) :
-        return f"<ZarrDataFrame object stored at {self._path_folder_zdf}\n\twith the following metadata: {self._dict_zdf_metadata}>"
+        """ # 2022-07-20 23:00:15 
+        """
+        return f"<ZarrDataFrame object stored at {self._path_folder_zdf}\n\twith the following columns: {sorted( self._dict_zdf_metadata[ 'columns' ] )}>"
     @property
     def columns( self ) :
-        ''' # 2022-06-21 15:58:41 
-        return available column names
+        ''' # 2022-07-20 23:01:48 
+        return available column names as a set
         '''
-        return self._dict_zdf_metadata[ 'columns' ]
+        if self._mask is not None : # if mask is available :
+            return self._dict_zdf_metadata[ 'columns' ].union( self._mask._dict_zdf_metadata[ 'columns' ] ) # return the column names of the current ZDF and the mask ZDF
+        else :
+            return self._dict_zdf_metadata[ 'columns' ]
+    def __contains__( self, name_col ) :
+        """ # 2022-07-20 22:56:19 
+        check whether a column name exists in the given ZarrDataFrame
+        """
+        if self._mask is not None : # if mask is available :
+            return name_col in self.columns or name_col in self._mask # search columns in the current ZDF and the mask ZDF
+        else :
+            return name_col in self.columns
+    def __iter__( self ) :
+        """ # 2022-07-20 22:57:19 
+        iterate name of columns in the current ZarrDataFrame
+        """
+        if self._mask is not None : # if mask is available :
+            return iter( self.columns.union( self._mask.columns ) ) # iterate over the column names of the current ZDF and the mask ZDF
+        else :
+            return iter( self.columns )
     @property
     def df( self ) :
         ''' # 2022-07-01 22:32:00 
@@ -2318,14 +2466,15 @@ class ZarrDataFrame( ) :
             df = pd.DataFrame( index = arr_index ) # build an empty dataframe using the integer indices
         return df
     def _save_metadata_( self ) :
-        ''' # 2022-06-20 21:44:42 
+        ''' # 2022-07-20 10:31:39 
         save metadata of the current ZarrDataFrame
         '''
-        # convert 'columns' to list before saving attributes
-        temp = self._dict_zdf_metadata[ 'columns' ]
-        self._dict_zdf_metadata[ 'columns' ] = list( temp )
-        self._root.attrs[ 'dict_zdf_metadata' ] = self._dict_zdf_metadata # update metadata
-        self._dict_zdf_metadata[ 'columns' ] = temp # revert 'columns' to set
+        if not self._flag_is_read_only : # save metadata only when it is not in the read-only mode
+            # convert 'columns' to list before saving attributes
+            temp = self._dict_zdf_metadata[ 'columns' ]
+            self._dict_zdf_metadata[ 'columns' ] = list( temp )
+            self._root.attrs[ 'dict_zdf_metadata' ] = self._dict_zdf_metadata # update metadata
+            self._dict_zdf_metadata[ 'columns' ] = temp # revert 'columns' to set
     def get_categories( self, name_col ) :
         """ # 2022-06-21 00:57:37 
         for columns with categorical data, return categories. if the column contains non-categorical data, return an empty list
@@ -2834,7 +2983,7 @@ def Convert_MTX_10X_to_RamData( path_folder_mtx_10x_input, path_folder_ramdata_o
     
 ''' a class for accessing Zarr-backed count matrix data (RAMtx, Random-access matrix) '''
 class RAMtx( ) :
-    """ # 2022-07-13 09:27:01 
+    """ # 2022-07-21 00:03:40 
     This class represent a random-access mtx format for memory-efficient exploration of extremely large single-cell transcriptomics/genomics data.
     This class use a count matrix data stored in a random read-access compatible format, called RAMtx, enabling exploration of a count matrix with hundreds of millions cells with hundreds of millions of features.
     Also, the RAMtx format is supports multi-processing, and provide convenient interface for parallel processing of single-cell data
@@ -2847,10 +2996,13 @@ class RAMtx( ) :
     'dtype_of_feature_and_barcode_indices' : dtype of feature/barcode indices 
     'dtype_of_values' : dtype of values. 
     'int_num_cpus' : the number of processes that will be used for random accessing of the data
+    'mode' : file mode. 'r' for read-only mode and 'a' for a mode allowing modifications
+    'flag_is_read_only' : read-only status of RamData
+    'path_folder_ramtx_mask' : a local (local file system) path to the mask of the RAMtx object that allows modifications to be written without modifying the source. if a valid local path to a mask is given, all modifications will be written to the mask
     
     """
-    def __init__( self, path_folder_ramtx, ramdata = None, dtype_of_feature_and_barcode_indices = np.int32, dtype_of_values = np.float64, int_num_cpus = 1, verbose = False, flag_debugging = False ) :
-        """ # 2022-06-29 10:39:05 
+    def __init__( self, path_folder_ramtx, ramdata = None, dtype_of_feature_and_barcode_indices = np.int32, dtype_of_values = np.float64, int_num_cpus = 1, verbose = False, flag_debugging = False, mode = 'a', flag_is_read_only = False, path_folder_ramtx_mask = None ) :
+        """ # 2022-07-21 00:03:35 
         """
         # read metadata
         self._root = zarr.open( path_folder_ramtx, 'a' )
@@ -2868,6 +3020,9 @@ class RAMtx( ) :
         self.flag_debugging = flag_debugging
         self.int_num_cpus = int_num_cpus
         self._ramdata = ramdata
+        self._mode = mode
+        self._flag_is_read_only = flag_is_read_only
+        self._path_folder_ramtx_mask = path_folder_ramtx_mask
         
         # set filters using RamData
         self.ba_filter_features = ramdata.ft.filter if ramdata is not None else None
@@ -2877,26 +3032,37 @@ class RAMtx( ) :
         self._za_mtx_index = zarr.open( f'{self._path_folder_ramtx}matrix.index.zarr', 'r' )
         self._za_mtx = zarr.open( f'{self._path_folder_ramtx}matrix.zarr', 'r' )
     @property
+    def _path_folder_ramtx_modifiable( self ) :
+        """ # 2022-07-21 09:04:28 
+        return the path to the modifiable RAMtx object
+        """
+        return ( None if self._flag_is_read_only else self._path_folder_ramtx ) if self._path_folder_ramtx_mask is None else self._path_folder_ramtx_mask
+    @property
     def ba_active_entries( self ) :
-        """ # 2022-06-28 19:51:26 
+        """ # 2022-07-21 09:17:14 
         return a bitarray filter of the indexed axis where all the entries with valid count data is marked '1'
         """
         # internal settings
         int_num_chunks_in_a_batch = 100 # 'int_num_chunks_in_a_batch' : the number of chunks in a batch. increasing this number will increase the memory consumption
         
-        path_folder_zarr = f'{self._path_folder_ramtx}matrix.index.active_entries.zarr'
-        if not os.path.exists( path_folder_zarr ) : # if the boolean array of the active entries is not available, compose the array chunks by chunks
-            int_size_chunk = self._za_mtx_index.chunks[ 0 ] # retrieve the size of the chunk
-            za = zarr.open( path_folder_zarr, mode = 'w', shape = ( self.len_indexed_axis, ), chunks = ( int_size_chunk * int_num_chunks_in_a_batch, ), dtype = bool, synchronizer = zarr.ThreadSynchronizer( ) ) # the size of the chunk will be 100 times of the chunk used for matrix index, since the dtype is boolean
-            len_indexed_axis = self.len_indexed_axis
-            int_pos_start = 0
-            int_num_entries_to_retrieve = int( int_size_chunk * int_num_chunks_in_a_batch )
-            while int_pos_start < len_indexed_axis :
-                sl = slice( int_pos_start, int_pos_start + int_num_entries_to_retrieve )
-                za[ sl ] = ( self._za_mtx_index[ sl ][ :, 1 ] - self._za_mtx_index[ sl ][ :, 0 ] ) > 0 # active entry is defined by finding entries with at least one count record
-                int_pos_start += int_num_entries_to_retrieve # update the position
-        else :
-            za = zarr.open( path_folder_zarr, mode = 'r', synchronizer = zarr.ThreadSynchronizer( ) ) # open zarr object
+        try :
+            za = zarr.open( f'{self._path_folder_ramtx}matrix.index.active_entries.zarr/', mode = 'r', synchronizer = zarr.ThreadSynchronizer( ) ) # open zarr object of the current RAMtx object
+        except : # if the zarr object (cache) is not available
+            # if the boolean array of the active entries is not available
+            if self._path_folder_ramtx_modifiable is None : # if modifiable RAMtx object does not exist
+                za = ( self._za_mtx_index[ :, 1 ] - self._za_mtx_index[ :, 0 ] ) > 0 # retrieve mask without chunking
+            else :
+                # if modifiable RAMtx object is available, using zarr object, retrieve mask chunk by chunk
+                int_size_chunk = self._za_mtx_index.chunks[ 0 ] # retrieve the size of the chunk
+                za = zarr.open( f"{self._path_folder_ramtx_modifiable}matrix.index.active_entries.zarr/", mode = 'w', shape = ( self.len_indexed_axis, ), chunks = ( int_size_chunk * int_num_chunks_in_a_batch, ), dtype = bool, synchronizer = zarr.ThreadSynchronizer( ) ) # the size of the chunk will be 100 times of the chunk used for matrix index, since the dtype is boolean
+                len_indexed_axis = self.len_indexed_axis
+                int_pos_start = 0
+                int_num_entries_to_retrieve = int( int_size_chunk * int_num_chunks_in_a_batch )
+                while int_pos_start < len_indexed_axis :
+                    sl = slice( int_pos_start, int_pos_start + int_num_entries_to_retrieve )
+                    za[ sl ] = ( self._za_mtx_index[ sl ][ :, 1 ] - self._za_mtx_index[ sl ][ :, 0 ] ) > 0 # active entry is defined by finding entries with at least one count record
+                    int_pos_start += int_num_entries_to_retrieve # update the position
+            
         ba = bk.BA.to_bitarray( za[ : ] ) # return the boolean array of active entries as a bitarray object
         self._n_active_entries = ba.count( ) # calculate the number of active entries
         return ba
@@ -3213,14 +3379,21 @@ class Axis( ) :
     'path_folder' : a folder containing the axis
     'name_axis' : ['barcodes', 'features'] 
     'int_index_str_rep' : a integer index for the column for the string representation of the axis in the string Zarr object (the object storing strings) of the axis
+    'mode' : file mode. 'r' for read-only mode and 'a' for mode allowing modifications
+    'path_folder_mask' : a local (local file system) path to the mask of the current Axis that allows modifications to be written without modifying the source. if a valid local path to a mask is given, all modifications will be written to the mask
+    'flag_is_read_only' : read-only status of RamData
     """
-    def __init__( self, path_folder, name_axis, ba_filter = None, ramdata = None, int_index_str_rep = 0, dict_kw_zdf = { 'flag_retrieve_categorical_data_as_integers' : False, 'flag_load_data_after_adding_new_column' : True, 'flag_enforce_name_col_with_only_valid_characters' : True }, dict_kw_view = { 'float_min_proportion_of_active_entries_in_an_axis_for_using_array' : 0.1, 'dtype' : np.int32 }, verbose = True ) :
+    def __init__( self, path_folder, name_axis, ba_filter = None, ramdata = None, int_index_str_rep = 0, mode = 'a', path_folder_mask = None, flag_is_read_only = False, dict_kw_zdf = { 'flag_retrieve_categorical_data_as_integers' : False, 'flag_load_data_after_adding_new_column' : True, 'flag_enforce_name_col_with_only_valid_characters' : True }, dict_kw_view = { 'float_min_proportion_of_active_entries_in_an_axis_for_using_array' : 0.1, 'dtype' : np.int32 }, verbose = True ) :
         """ # 2022-07-16 17:10:26 
         """
+        # set attributes
+        self._mode = mode
+        self._flag_is_read_only = flag_is_read_only
+        self._path_folder_mask = path_folder_mask
         self.verbose = verbose
         self._name_axis = name_axis
         self._path_folder = path_folder
-        self.meta = ZarrDataFrame( f"{path_folder}{name_axis}.num_and_cat.zdf", ba_filter = ba_filter, ** dict_kw_zdf ) # open a ZarrDataFrame with a given filter
+        self.meta = ZarrDataFrame( f"{path_folder}{name_axis}.num_and_cat.zdf", ba_filter = ba_filter, mode = mode, path_folder_mask = None if path_folder_mask is None else f"{path_folder_mask}{name_axis}.num_and_cat.zdf", flag_is_read_only = self._flag_is_read_only, ** dict_kw_zdf ) # open a ZarrDataFrame with a given filter
         self.int_num_entries = self.meta._n_rows_unfiltered # retrieve number of entries
         self.int_index_str_rep = int_index_str_rep # it can be changed later
         # initialize the mapping dictionaries
@@ -3250,7 +3423,7 @@ class Axis( ) :
         return ba_filter
     def __iter__( self ) :
         """ # 2022-07-02 22:16:56 
-        iterate through valid entries in the axis, according to the filter and whether the string representations are loaded or not
+        iterate through valid entries in the axis, according to the filter and whether the string representations are loaded or not. if string representations were loaded, iterate over string representations.
         """
         return ( ( bk.BA.to_integer_indices( self.filter ) if self.filter is not None else np.arange( len( self ) ) ) if self._dict_str_to_i is None else self._dict_str_to_i ).__iter__( )
     def __len__( self ) :
@@ -3343,7 +3516,7 @@ class Axis( ) :
             int_index_col = self.int_index_str_rep
         # check whether string representation of the entries of the given axis is available 
         path_folder_str_zarr = f"{self._path_folder}{self._name_axis}.str.zarr"
-        if not os.path.exists( path_folder_str_zarr ) : 
+        if not zarr_exists( path_folder_str_zarr ) :  # if the zarr object containing string representations are not available, exits
             return None
         
         # open a zarr object containing the string representation of the entries
@@ -3537,9 +3710,9 @@ class Axis( ) :
             with open( f'{path_folder}{self._name_axis}s.str.index.tsv.gz.base64.txt', 'w' ) as newfile :
                 newfile.write( _base64_encode( _gzip_bytes( file.read( ) ) ) )
     def __repr__( self ) :
-        """ # 2022-06-24 22:41:12 
+        """ # 2022-07-20 23:12:47 
         """
-        return f"<Axis'{self._name_axis}'\n\tdisk location: {self._path_folder}>"
+        return f"<Axis'{self._name_axis}' available at {self._path_folder}\n\tavailable metadata columns are {sorted( self.meta.columns )}>"
     def all( self, flag_return_valid_entries_in_the_currently_active_layer = True ) :
         """ # 2022-06-27 21:41:38  
         return bitarray filter with all entries marked 'active'
@@ -3689,21 +3862,31 @@ class Axis( ) :
 class Layer( ) :
     """ # 2022-06-25 16:32:19 
     A class for interactions with a pair of RAMtx objects of a count matrix. 
+    
+    'path_folder_ramdata' : location of RamData
+    'int_num_cpus' : number of CPUs for RAMtx objects
+    'mode' : file mode. 'r' for read-only mode and 'a' for mode allowing modifications
+    'flag_is_read_only' : read-only status of RamData
+    'path_folder_ramdata_mask' : a local (local file system) path to the mask of the RamData object that allows modifications to be written without modifying the source. if a valid local path to a mask is given, all modifications will be written to the mask
     """
-    def __init__( self, path_folder_ramdata, name_layer, ramdata = None, dtype_of_feature_and_barcode_indices = np.int32, dtype_of_values = np.float64, int_num_cpus = 1, verbose = False ) :
+    def __init__( self, path_folder_ramdata, name_layer, ramdata = None, dtype_of_feature_and_barcode_indices = np.int32, dtype_of_values = np.float64, int_num_cpus = 1, verbose = False, mode = 'a', path_folder_ramdata_mask = None, flag_is_read_only = False ) :
         """ # 2022-06-25 16:40:44 
         """
         # set attributes
         self._path_folder_ramdata = path_folder_ramdata
         self._name_layer = name_layer
         self._ramdata = ramdata
+        self._mode = mode
+        self._path_folder_ramdata_mask = path_folder_ramdata_mask
+        self._flag_is_read_only = flag_is_read_only
+        
         # retrieve filters from the axes
         ba_filter_features = ramdata.ft.filter if ramdata is not None else None
         ba_filter_barcodes = ramdata.bc.filter if ramdata is not None else None
         
         # open RAMtx objects without filters
-        self._ramtx_features = RAMtx( f'{self._path_folder_ramdata}{name_layer}/sorted_by_feature/', ramdata = ramdata, dtype_of_feature_and_barcode_indices = dtype_of_feature_and_barcode_indices, dtype_of_values = dtype_of_values, int_num_cpus = int_num_cpus, verbose = verbose, flag_debugging = False )
-        self._ramtx_barcodes = RAMtx( f'{self._path_folder_ramdata}{name_layer}/sorted_by_barcode/', ramdata = ramdata, dtype_of_feature_and_barcode_indices = dtype_of_feature_and_barcode_indices, dtype_of_values = dtype_of_values, int_num_cpus = int_num_cpus, verbose = verbose, flag_debugging = False )
+        self._ramtx_features = RAMtx( f'{self._path_folder_ramdata}{name_layer}/sorted_by_feature/', ramdata = ramdata, dtype_of_feature_and_barcode_indices = dtype_of_feature_and_barcode_indices, dtype_of_values = dtype_of_values, int_num_cpus = int_num_cpus, verbose = verbose, flag_debugging = False, mode = self._mode, path_folder_ramtx_mask = None if self._path_folder_ramdata_mask is None else f'{self._path_folder_ramdata_mask}{name_layer}/sorted_by_feature/', flag_is_read_only = self._flag_is_read_only )
+        self._ramtx_barcodes = RAMtx( f'{self._path_folder_ramdata}{name_layer}/sorted_by_barcode/', ramdata = ramdata, dtype_of_feature_and_barcode_indices = dtype_of_feature_and_barcode_indices, dtype_of_values = dtype_of_values, int_num_cpus = int_num_cpus, verbose = verbose, flag_debugging = False, mode = self._mode, path_folder_ramtx_mask = None if self._path_folder_ramdata_mask is None else f'{self._path_folder_ramdata_mask}{name_layer}/sorted_by_barcode/', flag_is_read_only = self._flag_is_read_only )
         
         # set filters of the current layer
         self.ba_filter_features = ba_filter_features
@@ -4233,63 +4416,103 @@ def Convert_df_count_to_RAMtx( path_file_df_count, path_folder_ramtx_output, fla
         json.dump( dict_metadata, file )
 
 class RamData( ) :
-    """ # 2022-07-16 23:00:04 
+    """ # 2022-07-21 01:33:35 
     This class provides frameworks for single-cell transcriptomic/genomic data analysis, utilizing RAMtx data structures, which is backed by Zarr persistant arrays.
     Extreme lazy loading strategies used by this class allows efficient parallelization of analysis of single cell data with minimal memory footprint, loading only essential data required for analysis. 
     
-    'path_folder_ramdata' : a folder containing RamData object
+    'path_folder_ramdata' : a local folder directory or a remote location (https://, s3://, etc.) containing RamData object
     'int_num_cpus' : number of CPUs (processes) to use to distribute works.
     'int_index_str_rep_for_barcodes', 'int_index_str_rep_for_features' : a integer index for the column for the string representation of 'barcodes'/'features' in the string Zarr object (the object storing strings) of 'barcodes'/'features'
     'dict_kw_zdf' : settings for 'Axis' metadata ZarrDataFrame
     'dict_kw_view' : settings for 'Axis' object for creating a view based on the active filter.
+    'mode' : file mode. 'r' for read-only mode and 'a' for mode allowing modifications
+    'path_folder_ramdata_mask' : the LOCAL file system path where the modifications of the RamData ('MASK') object will be saved and retrieved. If this attribute has been set, the given RamData in the the given 'path_folder_ramdata' will be used as READ-ONLY. For example, when RamData resides in the HTTP server, data is often read-only (data can be only fetched from the server, and not the other way around). However, by giving a local path through this argument, the read-only RamData object can be analyzed as if the RamData object can be modified. This is possible since all the modifications made on the input RamData will be instead written to the local RamData object 'mask' and data will be fetced from the local copy before checking the availability in the remote RamData object.
     
     ==== AnnDataContainer ====
     'flag_enforce_name_adata_with_only_valid_characters' : enforce valid characters in the name of AnnData
     """
-    def __init__( self, path_folder_ramdata, name_layer = 'raw', int_num_cpus = 64, dtype_of_feature_and_barcode_indices = np.int32, dtype_of_values = np.float64, int_index_str_rep_for_barcodes = 0, int_index_str_rep_for_features = 1, dict_kw_zdf = { 'flag_retrieve_categorical_data_as_integers' : False, 'flag_load_data_after_adding_new_column' : True, 'flag_enforce_name_col_with_only_valid_characters' : True }, dict_kw_view = { 'float_min_proportion_of_active_entries_in_an_axis_for_using_array' : 0.1, 'dtype' : np.int32 }, flag_enforce_name_adata_with_only_valid_characters = True, verbose = True, flag_debugging = False ) :
-        """ # 2022-06-28 20:57:37 
+    def __init__( self, path_folder_ramdata, name_layer = 'raw', int_num_cpus = 64, dtype_of_feature_and_barcode_indices = np.int32, dtype_of_values = np.float64, int_index_str_rep_for_barcodes = 0, int_index_str_rep_for_features = 1, mode = 'a', path_folder_ramdata_mask = None, dict_kw_zdf = { 'flag_retrieve_categorical_data_as_integers' : False, 'flag_load_data_after_adding_new_column' : True, 'flag_enforce_name_col_with_only_valid_characters' : True }, dict_kw_view = { 'float_min_proportion_of_active_entries_in_an_axis_for_using_array' : 0.1, 'dtype' : np.int32 }, flag_enforce_name_adata_with_only_valid_characters = True, verbose = True, flag_debugging = False ) :
+        """ # 2022-07-21 02:12:46 
         """
-        # handle input arguments
-        path_folder_ramdata = os.path.abspath( path_folder_ramdata ) + '/' # retrieve abs path
+        # handle input object paths
+        if path_folder_ramdata[ - 1 ] != '/' : # add '/' at the end of path to indicate it is a directory
+            path_folder_ramdata += '/'
+        if '://' not in path_folder_ramdata : # do not call 'os.path.abspath' on remote path
+            path_folder_ramdata = os.path.abspath( path_folder_ramdata ) + '/' # retrieve abs path
+        if path_folder_ramdata_mask is not None : # if 'path_folder_ramdata_mask' is given, assumes it is a local path
+            path_folder_ramdata_mask = os.path.abspath( path_folder_ramdata_mask ) + '/' # retrieve abs path
+            
+        # set attributes
+        self._mode = mode
         self._path_folder_ramdata = path_folder_ramdata
+        self._path_folder_ramdata_mask = path_folder_ramdata_mask
         self.verbose = verbose
         self.flag_debugging = flag_debugging
         self.int_num_cpus = int_num_cpus
         self._dtype_of_feature_and_barcode_indices = dtype_of_feature_and_barcode_indices
         self._dtype_of_values = dtype_of_values
         
+        ''' check read-only status of the given RamData '''
+        try :
+            zarr.open( f'{self._path_folder_ramdata}modification.test.zarr/', 'w' )
+            self._flag_is_read_only = False
+        except :
+            # if test zarr data cannot be written to the source, consider the given RamData object as read-only
+            self._flag_is_read_only = True
+            if self._path_folder_ramdata_mask is None : # if mask is not given, automatically change the mode to 'r'
+                self._mode = 'r'
+                if self.verbose :
+                    print( 'The current RamData object cannot be modified yet no mask location is given. Therefore, the current RamData object will be "read-only"' )
+        
         # initialize axis objects
-        self.bc = Axis( path_folder_ramdata, 'barcodes', ba_filter = None, ramdata = self, dict_kw_zdf = dict_kw_zdf, dict_kw_view = dict_kw_view, int_index_str_rep = int_index_str_rep_for_barcodes, verbose = verbose )
-        self.ft = Axis( path_folder_ramdata, 'features', ba_filter = None, ramdata = self, dict_kw_zdf = dict_kw_zdf, dict_kw_view = dict_kw_view, int_index_str_rep = int_index_str_rep_for_features, verbose = verbose )
+        self.bc = Axis( path_folder_ramdata, 'barcodes', ba_filter = None, ramdata = self, dict_kw_zdf = dict_kw_zdf, dict_kw_view = dict_kw_view, int_index_str_rep = int_index_str_rep_for_barcodes, verbose = verbose, mode = self._mode, path_folder_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only )
+        self.ft = Axis( path_folder_ramdata, 'features', ba_filter = None, ramdata = self, dict_kw_zdf = dict_kw_zdf, dict_kw_view = dict_kw_view, int_index_str_rep = int_index_str_rep_for_features, verbose = verbose, mode = self._mode, path_folder_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only )
         
         # initialize layor object
         self.layer = name_layer
         
-        # set AnnDataContainer attribute for containing various AnnData objects associated with the current RamData
-        self.ad = AnnDataContainer( path_prefix_default = self._path_folder_ramdata, flag_enforce_name_adata_with_only_valid_characters = flag_enforce_name_adata_with_only_valid_characters, ** GLOB_Retrive_Strings_in_Wildcards( f'{self._path_folder_ramdata}*.h5ad' ).set_index( 'wildcard_0' ).path.to_dict( ) ) # load locations of AnnData objects stored in the RamData directory
-        
-        # open a shelve-based persistent dictionary to save/retrieve arbitrary picklable python objects associated with the current RamData in a memory-efficient manner
-        self.ns = ShelveContainer( f"{self._path_folder_ramdata}ns" )
+        # initialize databases
+        if self._path_folder_ramdata_local is not None : # retrieve ramdata object in the local file system, and if the object is available, load/initialize anndatacontainer and shelvecontainer in the local file system
+            # set AnnDataContainer attribute for containing various AnnData objects associated with the current RamData
+            self.ad = AnnDataContainer( path_prefix_default = self._path_folder_ramdata_local, flag_enforce_name_adata_with_only_valid_characters = flag_enforce_name_adata_with_only_valid_characters, ** GLOB_Retrive_Strings_in_Wildcards( f'{self._path_folder_ramdata_local}*.h5ad' ).set_index( 'wildcard_0' ).path.to_dict( ), mode = self._mode, path_prefix_default_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only ) # load locations of AnnData objects stored in the RamData directory
+
+            # open a shelve-based persistent dictionary to save/retrieve arbitrary picklable python objects associated with the current RamData in a memory-efficient manner
+            self.ns = ShelveContainer( f"{self._path_folder_ramdata_local}ns", mode = self._mode, path_prefix_shelve_mask = f"{self._path_folder_ramdata_mask}ns", flag_is_read_only = self._flag_is_read_only )
+        else : # initialize anndatacontainer and shelvecontainer in the memory using a dicitonary (a fallback)
+            self.ad = dict( )
+            self.ns = dict( )
     @property
     def metadata( self ) :
+        """ # 2022-07-21 00:45:12 
+        implement lazy-loading of metadata
+        """
         # implement lazy-loading of metadata
         if not hasattr( self, '_root' ) :
-            # open RamData as a Zarr object 
-            self._root = zarr.open( self._path_folder_ramdata )
+            # open RamData as a Zarr object (group)
+            self._root = zarr.open( self._path_folder_ramdata ) 
+            
+            if self._path_folder_ramdata_mask is not None : # if mask is given, open the mask object as a zarr group to save/retrieve metadata
+                root_mask = zarr.open( self._path_folder_ramdata_mask ) # open the mask object as a zarr group
+                if len( list( root_mask.attrs ) ) == 0 : # if mask object does not have a ramdata attribute
+                    root_mask.attrs[ 'dict_ramdata_metadata' ] = self._root.attrs[ 'dict_ramdata_metadata' ] # copy the ramdata attribute of the current RamData to the mask object
+                self._root = root_mask # use the mask object zarr group to save/retrieve ramdata metadata
+                
             # retrieve metadata 
             self._dict_ramdata_metadata = self._root.attrs[ 'dict_ramdata_metadata' ]
             self._dict_ramdata_metadata[ 'layers' ] = set( self._dict_ramdata_metadata[ 'layers' ] )
         # return metadata
         return self._dict_ramdata_metadata
     def _save_metadata_( self ) :
-        ''' # 2022-06-22 10:55:06 
+        ''' # 2022-07-21 00:45:03 
         a semi-private method for saving metadata to the disk 
         '''
-        # convert 'columns' to list before saving attributes
-        temp = self._dict_ramdata_metadata[ 'layers' ] # save the set as a temporary variable 
-        self._dict_ramdata_metadata[ 'layers' ] = list( temp ) # convert to list
-        self._root.attrs[ 'dict_ramdata_metadata' ] = self._dict_ramdata_metadata # update metadata
-        self._dict_ramdata_metadata[ 'layers' ] = temp # revert to set
+        if not self._flag_is_read_only : # update metadata only when the current RamData object is not read-only
+            if hasattr( self, '_dict_ramdata_metadata' ) : # if metadata has been loaded
+                # convert 'columns' to list before saving attributes
+                temp = self._dict_ramdata_metadata[ 'layers' ] # save the set as a temporary variable 
+                self._dict_ramdata_metadata[ 'layers' ] = list( temp ) # convert to list
+                self._root.attrs[ 'dict_ramdata_metadata' ] = self._dict_ramdata_metadata # update metadata
+                self._dict_ramdata_metadata[ 'layers' ] = temp # revert to set
     @property
     def layers( self ) :
         ''' # 2022-06-24 00:14:45 
@@ -4312,7 +4535,7 @@ class RamData( ) :
         return self._layer._name_layer if hasattr( self, '_layer' ) else None # if no layer is set, return None
     @layer.setter
     def layer( self, name_layer ) :
-        """ # 2022-05-22 22:27:55 
+        """ # 2022-07-20 23:29:23 
         change layer to the layer 'name_layer'
         """
         # if None is given as name_layer, remove the current layer from the memory
@@ -4326,15 +4549,15 @@ class RamData( ) :
                 raise KeyError( f"'{name_layer}' data does not exists in the current RamData" )
 
             if name_layer != self.layer : # load new layer
-                self._layer = Layer( self._path_folder_ramdata, name_layer, ramdata = self, dtype_of_feature_and_barcode_indices = self._dtype_of_feature_and_barcode_indices, dtype_of_values = self._dtype_of_values, int_num_cpus = 1, verbose = self.verbose )
+                self._layer = Layer( self._path_folder_ramdata, name_layer, ramdata = self, dtype_of_feature_and_barcode_indices = self._dtype_of_feature_and_barcode_indices, dtype_of_values = self._dtype_of_values, int_num_cpus = 1, verbose = self.verbose, mode = self._mode, path_folder_ramdata_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only )
 
                 if self.verbose :
                     print( f"'{name_layer}' layer has been loaded" )
     def __repr__( self ) :
-        """ # 2022-06-27 17:25:44 
+        """ # 2022-07-20 00:38:24 
         display RamData
         """
-        return f"<RamData object ({'' if self.bc.filter is None else f'{self.bc.meta.n_rows}/'}{self.metadata[ 'int_num_barcodes' ]} barcodes X {'' if self.ft.filter is None else f'{self.ft.meta.n_rows}/'}{self.metadata[ 'int_num_features' ]} features" + ( '' if self.layer is None else f", {self._layer._ramtx_barcodes._int_num_records} records in the currently active layer '{self.layer}'" ) + f") stored at {self._path_folder_ramdata}\n\twith the following layers : {self.layers}\n\tcurrent layer is '{self.layer}'>" # show the number of records of the current layer if available.
+        return f"<{'' if not self._flag_is_read_only else '(read-only) '}RamData object ({'' if self.bc.filter is None else f'{self.bc.meta.n_rows}/'}{self.metadata[ 'int_num_barcodes' ]} barcodes X {'' if self.ft.filter is None else f'{self.ft.meta.n_rows}/'}{self.metadata[ 'int_num_features' ]} features" + ( '' if self.layer is None else f", {self._layer._ramtx_barcodes._int_num_records} records in the currently active layer '{self.layer}'" ) + f") stored at {self._path_folder_ramdata}{'' if self._path_folder_ramdata_mask is None else f' with local mask available at {self._path_folder_ramdata_mask}'}\n\twith the following layers : {self.layers}\n\t\tcurrent layer is '{self.layer}'>" # show the number of records of the current layer if available.
     def create_view( self ) :
         """  # 2022-07-06 21:17:56 
         create view of the RamData using the current filter settings (load dictionaries for coordinate conversion for filtered barcodes/features)
@@ -4480,8 +4703,42 @@ class RamData( ) :
     def save( self, * l_name_adata ) :
         ''' wrapper of AnnDataContainer.save '''
         self.ad.update( * l_name_adata )
+    @property
+    def _path_folder_ramdata_modifiable( self ) :
+        """ # 2022-07-21 00:07:23 
+        return path of the ramdata that is modifiable based on the current RamData settings.
+        if mask is given, path to the mask will be returned.
+        if current ramdata location is read-only, None will be returned.
+        """
+        if self._path_folder_ramdata_mask is not None : # if mask is given, use the mask
+            return self._path_folder_ramdata_mask
+        elif not self._flag_is_read_only : # if current object can be modified, create temp folder inside the current object
+            return self._path_folder_ramdata
+        else :
+            return None
+    @property
+    def _path_folder_ramdata_local( self ) :
+        """ # 2022-07-21 02:08:55 
+        return path of the ramdata that is in the local file system based on the current RamData settings.
+        if mask is given, path to the mask will be returned, since mask is assumed to be present in the local file system.
+        """
+        if self._path_folder_ramdata_mask is not None : # if mask is given, use the mask, since mask is assumed to be present in the local file system.
+            return self._path_folder_ramdata_mask
+        elif '://' not in self._path_folder_ramdata : # if current object appears to be in the local file system, use the current object
+            return self._path_folder_ramdata
+        else :
+            return None
+    def create_temp_folder( self ) :
+        """ # 2022-07-20 23:36:34 
+        create temporary folder and return the path to the temporary folder
+        """
+        path_folder = self._path_folder_ramdata_modifiable # retrieve path to the modifiable ramdata object
+        if path_folder is not None : # if valid location is available (assumes it is a local directory)
+            path_folder_temp = f"{path_folder}temp_{UUID( )}/"
+            os.makedirs( path_folder_temp, exist_ok = True ) # create the temporary folder
+            return path_folder_temp # return the path to the temporary folder
     def summarize( self, name_layer, axis, summarizing_func, int_num_threads = None, flag_overwrite_columns = True, int_num_entries_for_each_weight_calculation_batch = 1000, int_total_weight_for_each_batch = 1000000 ) :
-        ''' # 2022-07-12 22:12:42 
+        ''' # 2022-07-20 23:40:02 
         this function summarize entries of the given axis (0 = barcode, 1 = feature) using the given function
         
         example usage: calculate total sum, standard deviation, pathway enrichment score calculation, etc.
@@ -4541,34 +4798,36 @@ class RamData( ) :
         self.layer = name_layer
         # handle inputs
         flag_summarizing_barcode = axis in { 0, 'barcode' } # retrieve a flag indicating whether the data is summarized for each barcode or not
+        
+        # retrieve the total number of entries in the axis that was not indexed (if calculating average expression of feature across barcodes, divide expression with # of barcodes, and vice versa.)
+        int_total_num_entries_not_indexed = self.ft.meta.n_rows if flag_summarizing_barcode else self.bc.meta.n_rows 
+
         if int_num_threads is None : # use default number of threads
             int_num_threads = self.int_num_cpus
         if summarizing_func == 'sum' :
             def summarizing_func( self, int_entry_indexed, arr_int_entries_not_indexed, arr_value ) :
-                ''' # 2022-05-23 12:11:55 
+                ''' # 2022-07-19 12:19:49 
                 calculate sum of the values of the current entry
                 
                 assumes 'int_num_records' > 0
                 '''
                 int_num_records = len( arr_value ) # retrieve the number of records of the current entry
                 dict_summary = { 'sum' : np.sum( arr_value ) if int_num_records > 30 else sum( arr_value ) } # if an input array has more than 30 elements, use np.sum to calculate the sum
-                int_num_entries = self.bc.meta.n_rows if flag_summarizing_barcode else self.ft.meta.n_rows # retrieve the number of entries based on the axis
-                dict_summary[ 'mean' ] = dict_summary[ 'sum' ] / int_num_entries # calculate the mean
+                dict_summary[ 'mean' ] = dict_summary[ 'sum' ] / int_total_num_entries_not_indexed # calculate the mean
                 return dict_summary
         elif summarizing_func == 'sum_and_dev' :
             def summarizing_func( self, int_entry_indexed, arr_int_entries_not_indexed, arr_value ) :
-                ''' # 2022-05-23 12:11:55 
+                ''' # 2022-07-19 12:19:53 
                 calculate sum and deviation of the values of the current entry
                 
                 assumes 'int_num_records' > 0
                 '''
                 int_num_records = len( arr_value ) # retrieve the number of records of the current entry
                 dict_summary = { 'sum' : np.sum( arr_value ) if int_num_records > 30 else sum( arr_value ) } # if an input array has more than 30 elements, use np.sum to calculate the sum
-                int_num_entries = self.bc.meta.n_rows if flag_summarizing_barcode else self.ft.meta.n_rows # retrieve the number of entries based on the axis
-                dict_summary[ 'mean' ] = dict_summary[ 'sum' ] / int_num_entries # calculate the mean
+                dict_summary[ 'mean' ] = dict_summary[ 'sum' ] / int_total_num_entries_not_indexed # calculate the mean
                 arr_dev = ( arr_value - dict_summary[ 'mean' ] ) ** 2 # calculate the deviation
                 dict_summary[ 'deviation' ] = np.sum( arr_dev ) if int_num_records > 30 else sum( arr_dev )
-                dict_summary[ 'variance' ] = dict_summary[ 'deviation' ] / ( int_num_entries - 1 ) if int_num_entries > 1 else np.nan
+                dict_summary[ 'variance' ] = dict_summary[ 'deviation' ] / ( int_total_num_entries_not_indexed - 1 ) if int_total_num_entries_not_indexed > 1 else np.nan
                 return dict_summary
         elif not hasattr( summarizing_func, '__call__' ) : # if 'summarizing_func' is not a function, report error message and exit
             if self.verbose :
@@ -4587,8 +4846,12 @@ class RamData( ) :
         ax = self.bc if flag_summarizing_barcode else self.ft
         
         # create a temporary folder
-        path_folder_temp = f"{rtx._path_folder_ramtx}temp_{UUID( )}/" 
-        os.makedirs( path_folder_temp, exist_ok = True )
+        path_folder_temp = self.create_temp_folder( )
+        # handle the case when the temporary folder is not available
+        if path_folder_temp is None :
+            if self.verbose :
+                print( 'failed to create a temporary folder, exiting' )
+            return - 1
         
         # define functions for multiprocessing step
         def process_batch( l_int_entry_current_batch, pipe_to_main_process ) :
@@ -4596,9 +4859,9 @@ class RamData( ) :
             summarize a given list of entries, and write summarized result as a tsv file, and return the path to the output file
             '''
             # retrieve the number of index_entries
-            int_num_entries = len( l_int_entry_current_batch )
+            int_num_entries_in_a_batch = len( l_int_entry_current_batch )
             
-            if int_num_entries == 0 :
+            if int_num_entries_in_a_batch == 0 :
                 print( 'empty batch detected' )
             
             # open an output file
@@ -4673,8 +4936,14 @@ class RamData( ) :
             int_num_threads = self.int_num_cpus
         if name_layer_new is None :
             name_layer_new = name_layer
+        flag_new_layer_added_to_the_current_ramdata = False
         if path_folder_ramdata_output is None :
-            path_folder_ramdata_output = self._path_folder_ramdata
+            flag_new_layer_added_to_the_current_ramdata = True # set flag indicating that the new layer will be added to the current ramdata object (or the mask of the current ramdata object)
+            path_folder_ramdata_output = self._path_folder_ramdata_modifiable # retrieve path to the modifiable ramdata object
+            if path_folder_ramdata_output is None :
+                if self.verbose :
+                    print( 'current RamData object is not modifiable, exiting' )
+                return
         
         # parse 'func' or set default functions, retrieving 'func_bc' and 'func_ft'.
         if isinstance( func, dict ) : # if 'func' is dictionary, parse functions for each axes
@@ -4831,8 +5100,8 @@ class RamData( ) :
         if self.verbose :
             print( f'new layer {name_layer_new} has been successfully created' )
             
-        # update 'layers' if the layer has been saved in the current RamData
-        if path_folder_ramdata_output == self._path_folder_ramdata :
+        # update 'layers' if the layer has been saved in the current RamData object (or the mask of the current RamData object)
+        if flag_new_layer_added_to_the_current_ramdata :
             self.layers.add( name_layer_new )
             self._save_metadata_( )
     def subset( self, path_folder_ramdata_output, l_name_layer = [ ], int_num_threads = None, flag_simultaneous_processing_of_paired_ramtx = True, int_num_entries_for_each_weight_calculation_batch = 1000, int_total_weight_for_each_batch = 1000000 ) :
@@ -5067,7 +5336,7 @@ class RamData( ) :
         self.ft.save_filter( name_col_filter_ft ) # ft
     ''' memory-efficient demension reduction/clustering functions '''
     def pca( self, name_layer = 'normalized_log1p', prefix_name_col = 'pca_', int_num_components = 50, int_num_barcodes_in_ipca_batch = 1000, name_col_filter = 'filter_normalized_log1p_highly_variable', float_prop_subsampling = 1, name_col_filter_subsampled = 'filter_subsampling_for_pca', flag_ipca_whiten = False, name_model = 'ipca', int_num_threads = 3, flag_show_graph = True ) :
-        """ # 2022-07-17 20:22:26 
+        """ # 2022-07-18 15:09:57 
         Perform incremental PCA in a very memory-efficient manner.
         the resulting incremental PCA model will be saved in the RamData.ns database.
         
@@ -5144,7 +5413,11 @@ class RamData( ) :
             """
             int_num_of_previously_returned_entries, int_num_retrieved_entries, X = res # parse the result
             
-            ipca.partial_fit( X.toarray( ) ) # perform partial fit using the retrieved data # partial_fit only supports dense array
+            try :
+                ipca.partial_fit( X.toarray( ) ) # perform partial fit using the retrieved data # partial_fit only supports dense array
+            except ValueError : # handles 'ValueError: n_components=50 must be less or equal to the batch number of samples 14.' error # 2022-07-18 15:09:52 
+                if self.verbose :
+                    print( f'current batch contains less than {int_num_components} number of barcodes, which is incompatible with iPCA model. therefore, current batch will be skipped.' )
             
             if self.verbose : # report
                 print( f'fit completed for {int_num_of_previously_returned_entries + 1}-{int_num_of_previously_returned_entries + int_num_retrieved_entries} barcodes' )
@@ -5312,15 +5585,16 @@ class RamData( ) :
         2) Train Parametric UMAP with/without subsampling of barcodes
         """
         # initialize Parametric UMAP object
-        if name_pumap_model is not None : # if 'name_pumap_model' has been given
+        if name_pumap_model is not None and self._path_folder_ramdata_local is not None : # if 'name_pumap_model' has been given # if local RamDatat path is available, check the availability of the model and load the model if the saved model is available
             assert '/' not in name_pumap_model # check validity of 'name_pumap_model'
-            path_model = f'{self._path_folder_ramdata}{name_pumap_model}.pumap'
+            path_model = f'{self._path_folder_ramdata_local}{name_pumap_model}.pumap' # model should be loaded/saved in local file system (others are not implemented yet)
             pumap_embedder = pumap.load_ParametricUMAP( path_model ) if os.path.exists( path_model ) else pumap.ParametricUMAP( low_memory = True ) # load model if model exists
+                
             # fix 'load_ParametricUMAP' error ('decoder' attribute does not exist)
             if os.path.exists( path_model ) and not hasattr( pumap_embedder, 'decoder' ) : 
                 pumap_embedder.decoder = None
         else :
-            pumap_embedder = pumap.ParametricUMAP( low_memory = True )
+            pumap_embedder = pumap.ParametricUMAP( low_memory = True ) # load an empty model if a saved model is not available
 
         # iterate through batches
         for int_num_of_previously_returned_entries, l_int_entry_current_batch in ax.batch_generator( int_num_entries_for_batch = int_num_barcodes_in_pumap_batch, flag_return_the_number_of_previously_returned_entries = True, flag_mix_randomly = True ) : # mix barcodes randomly for efficient learning for each batch
@@ -5359,9 +5633,9 @@ class RamData( ) :
                 ax.meta[ l_name_col_component[ i ], l_int_entry_current_batch ] = arr_component
 
         # save Parametric UMAP object after training 
-        if name_pumap_model_new is not None : # if 'name_pumap_model_new' has been given
+        if name_pumap_model_new is not None and self._mode != 'r' and self._path_folder_ramdata_local is not None : # if 'name_pumap_model_new' has been given, 'mode' is not 'r', and local RamData path is available
             assert '/' not in name_pumap_model_new # check validity of 'name_pumap_model_new'
-            path_model = f'{self._path_folder_ramdata}{name_pumap_model_new}.pumap'
+            path_model = f'{self._path_folder_ramdata_local}{name_pumap_model_new}.pumap'
             if self.verbose :
                 if os.path.exists( path_model ) :
                     print( f'existing model {name_pumap_model_new} will be overwritten' )
@@ -5379,8 +5653,8 @@ class RamData( ) :
         'l_int_entries' : to retrieve data of a specific entries, use this argument to pass the list of integer representations of the entries. filter (if it is active) will not be applied
         """
         return self.get_array( axis = 'barcode', prefix_name_col = prefix_name_col, int_num_components = int_num_components, name_col_filter = name_col_filter, l_int_entries = l_int_entries )
-    def hdbscan( self, name_model = 'hdbscan', min_cluster_size = 30, min_samples = 30, prefix_name_col_umap = 'umap_', int_num_components_umap = 2, name_col_hdbscan = 'hdbscan', flag_reanalysis_of_previous_clustering_result = False, cut_distance = 0.15, int_num_threads = 10, int_num_barcodes_in_cluster_label_prediction_batch = 10000, name_col_filter = 'filter_normalized_log1p_highly_variable', float_prop_subsampling_for_clustering = 0.2, name_col_filter_subsampled_for_clustering = 'filter_hdbscan_subsampling_for_clustering', float_prop_subsampling_for_cluster_label_prediction = 0.2, flag_draw_graph = True, dict_kw_scatter = { 's' : 10, 'linewidth' : 0, 'alpha' : 0.05 }, flag_no_prediction = True ) :
-        """ # 2022-07-18 10:33:36 
+    def hdbscan( self, name_model = 'hdbscan', min_cluster_size = 30, min_samples = 30, prefix_name_col_umap = 'umap_', int_num_components_umap = 2, name_col_hdbscan = 'hdbscan', flag_reanalysis_of_previous_clustering_result = False, cut_distance = 0.15, flag_use_pynndescent = True, int_num_threads = 10, int_num_barcodes_in_cluster_label_prediction_batch = 10000, name_col_filter = 'filter_normalized_log1p_highly_variable', float_prop_subsampling_for_clustering = 0.2, name_col_filter_subsampled_for_clustering = 'filter_hdbscan_subsampling_for_clustering', float_prop_subsampling_for_cluster_label_prediction = 0.2, flag_draw_graph = True, dict_kw_scatter = { 's' : 10, 'linewidth' : 0, 'alpha' : 0.05 }, flag_no_prediction = True ) :
+        """ # 2022-07-21 10:34:43 
         Perform HDBSCAN with subsampling for a scalable analysis of single-cell data
 
 
@@ -5389,10 +5663,11 @@ class RamData( ) :
         'min_cluster_size', 'min_samples' : arguments for HDBSCAN method. please refer to the documentation of HDBSCAN (https://hdbscan.readthedocs.io/)
         'prefix_name_col_umap' : a prefix for the 'name_col' of the columns containing UMAP transformed values.
         'int_num_components_umap' : number of output UMAP components to use for clustering (default: 2)
-        'flag_reanalysis_of_previous_clustering_result' : if 'flag_reanalysis_of_previous_clustering_result' is True and 'name_model' exists in the RamData.ns database, use the hdbscan model saved in the database to re-analyze the previous hierarchical DBSCAN clustering result. 'cut_distance' and 'min_cluster_size' arguments can be used to re-analyze the clustering result and retrieve more fine-grained/coarse-grained cluster labels (for more info., please refer to hdbscan.HDBSCAN.single_linkage_tree_.get_clusters docstring). 
+        'flag_reanalysis_of_previous_clustering_result' : if 'flag_reanalysis_of_previous_clustering_result' is True and 'name_model' exists in the RamData.ns database, use the hdbscan model saved in the database to re-analyze the previous hierarchical DBSCAN clustering result. 'cut_distance' and 'min_cluster_size' arguments can be used to re-analyze the clustering result and retrieve more fine-grained/coarse-grained cluster labels (for more info., please refer to hdbscan.HDBSCAN.single_linkage_tree_.get_clusters docstring). To perform hdbscan from the start, change name_model to a new name or delete the model from RamData.ns database
         'cut_distance' and 'min_cluster_size' : arguments for the re-analysis of the clustering result for retrieving more fine-grained/coarse-grained cluster labels (for more info., please refer to hdbscan.HDBSCAN.single_linkage_tree_.get_clusters docstring). 
         'name_col_hdbscan' : the name of the RamData.ft.meta ZarrDataFrame column to which estimated/predicted cluster labels will be written (if the column already exists, it will be (partially, depending on the filter) overwritten).
 
+        'flag_use_pynndescent' : set this flag to True to use pynndescent for kNN search (k=1) for efficient cluster label identification
         'int_num_threads' : the number of threads for the cluster label prediction jobs
         'int_num_barcodes_in_cluster_label_prediction_batch' : when predicting the cluster labels using the clustering results from subsampled cells, using this number of barcodes for each batch
         'name_col_filter' : the name of 'feature'/'barcode' Axis metadata column to retrieve selection filter for running the current method. if None is given, current barcode/feature filters (if it has been set) will be used as-is.
@@ -5437,7 +5712,7 @@ class RamData( ) :
         2) Train Model with/without subsampling of barcodes, and retrieve cluster labels
         """
         # initialize
-        embedded_for_training = ram.get_umap( prefix_name_col = prefix_name_col_umap, int_num_components = int_num_components_umap ) # retrieve embedded barcodes (with/without subsampling)
+        embedded_for_training = self.get_umap( prefix_name_col = prefix_name_col_umap, int_num_components = int_num_components_umap ) # retrieve embedded barcodes (with/without subsampling)
 
         if name_model in self.ns : # if 'name_model' exists in the database, use the previously computed clustering results
             clusterer = self.ns[ name_model ] # retrieve previously saved model
@@ -5452,7 +5727,7 @@ class RamData( ) :
             # save trained model
             if name_model is not None : # check validity of 'name_model' 
                 self.ns[ name_model ] = clusterer
-
+        
         # report
         if self.verbose :
             print( 'clustering completed' )
@@ -5475,21 +5750,33 @@ class RamData( ) :
         2) Transform Data (prediction of cluster labels)
         """
         if flag_is_subsampling_active : # when subsampling was used
-            # jit compile a function for finding cluster labels of nearest neighbors
-            @jit( nopython = True )
-            def find_cluster_labels_of_nearest_neighbors( embedded_for_training : np.ndarray, arr_cluster_label : np.ndarray, embedded_for_prediction : np.ndarray, arr_cluster_label_predicted : np.ndarray ) :
-                ''' # 2022-07-17 19:12:56 
-                find cluster labels of nearest neighbors
-                '''
-                for i in range( len( embedded_for_prediction ) ) : # for each embedded point
-                    arr_cluster_label_predicted[ i ] = arr_cluster_label[ ( ( embedded_for_training - embedded_for_prediction[ i ] ) ** 2 ).sum( axis = 1 ).argmin( ) ] # identify cluster label of the nearest neighbor of the current embedded point
-                return arr_cluster_label_predicted
-
+            # subsample the training dataset if 'float_prop_subsampling_for_cluster_label_prediction' < 1
             if float_prop_subsampling_for_cluster_label_prediction < 1 : # if subsampling of traning data is active, subsamples training data for more efficient (but possibly less accurate) prediction of cluster labels
                 arr_mask = np.random.random( len( arr_cluster_label ) ) < float_prop_subsampling_for_cluster_label_prediction # retrieve arr_mask for subsampling of data used for training
                 embedded_for_training = embedded_for_training[ arr_mask ]
                 arr_cluster_label = arr_cluster_label[ arr_mask ]
                 del arr_mask
+
+            if flag_use_pynndescent : # use pynndescent for fast approximate kNN search for k=1
+                pass
+#                                     index = NNDescent( data )
+#                     index pynndescent.NNDescent(  )
+#                     index = NNDescent(data)
+#                     You can then use the index for searching (and can pickle it to disk if you wish). To search a pynndescent index for the 15 nearest neighbors of a test data set query_data you can do something like
+
+#                     index.query(query_data, k=15)
+                
+            else : # if no other external algorithms are used, fallback to a jit-compiled kNN search algorithm
+                # jit compile a function for finding cluster labels of nearest neighbors
+                @jit( nopython = True )
+                def find_cluster_labels_of_nearest_neighbors( embedded_for_training : np.ndarray, arr_cluster_label : np.ndarray, embedded_for_prediction : np.ndarray, arr_cluster_label_predicted : np.ndarray ) :
+                    ''' # 2022-07-17 19:12:56 
+                    find cluster labels of nearest neighbors
+                    '''
+                    for i in range( len( embedded_for_prediction ) ) : # for each embedded point
+                        arr_cluster_label_predicted[ i ] = arr_cluster_label[ ( ( embedded_for_training - embedded_for_prediction[ i ] ) ** 2 ).sum( axis = 1 ).argmin( ) ] # identify cluster label of the nearest neighbor of the current embedded point
+                    return arr_cluster_label_predicted
+
 
             # define functions for multiprocessing step
             def process_batch( batch, pipe_to_main_process ) :
@@ -5634,6 +5921,26 @@ class RamData( ) :
             print( f'cell filtering completed for {len( set_str_barcode )} cells. A filtered RamData was exported at {path_folder_ramdata_output}' )
 
 # utility functions
+# for benchmarking
+def draw_result( self, path_folder_graph, dict_kw_scatter = { 's' : 2, 'linewidth' : 0, 'alpha' : 0.1 } ) :
+    """ # 2022-07-19 13:24:22 
+    draw resulting UMAP graph
+    """
+    arr_cluster_label = self.bc.meta[ 'hdbscan' ]
+    embedded_for_training = self.get_umap( )
+    
+    # adjust graph settings based on the number of cells to plot
+    int_num_bc = embedded_for_training.shape[ 0 ]
+    size_factor = max( 1, np.log( int_num_bc ) - np.log( 5000 ) )
+    dict_kw_scatter = { 's' : 20 / size_factor, 'linewidth' : 0, 'alpha' : 0.5 / size_factor }
+    
+    color_palette = sns.color_palette( 'Paired', len( set( arr_cluster_label ) ) )
+    cluster_colors = [ color_palette[ x ] if x >= 0 else ( 0.5, 0.5, 0.5 ) for x in arr_cluster_label ]
+    fig, plt_ax = plt.subplots( 1, 1, figsize = ( 7, 7 ) )
+    plt_ax.scatter( * embedded_for_training.T, c = cluster_colors, ** dict_kw_scatter )
+    MPL_basic_configuration( x_label = 'UMAP_1', y_label = 'UMAP_1', show_grid = False )
+    MPL_SAVE( 'umap.hdbscan', folder = path_folder_graph )
+
 def umap( adata, l_name_col_for_regression = [ ], float_scale_max_value = 10, int_pca_n_comps = 50, int_neighbors_n_neighbors = 10, int_neighbors_n_pcs = 50, dict_kw_umap = dict( ), dict_leiden = dict( ) ) :
     ''' # 2022-07-06 20:49:44 
     retrieve all expression data of the RamData with current barcodes/feature filters', perform dimension reduction process, and return the new AnnData object with umap coordinate and leiden cluster information

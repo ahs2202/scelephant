@@ -29,6 +29,7 @@ setup(
         'hdbscan>=0.8.28',
         'pgzip>=0.3.1',
         'numba>=0.55.2',
+        'pynndescent>=0.5.7'
 #         'pyopa>=0.8.2',
 #         'numpy>=1.22.4',
 
