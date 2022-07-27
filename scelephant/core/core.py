@@ -27,7 +27,7 @@ import sklearn.cluster as skc # K-means
 # define version
 _version_ = '0.0.2'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-07-21 10:35:32'
+_last_modified_time_ = '2022-07-27 10:23:49'
 
 """ # 2022-07-21 10:35:42  realease note
 
@@ -1733,6 +1733,323 @@ def _get_func_processed_bytes_to_arrays_mtx_and_other_settings_based_on_file_for
         def func_processed_bytes_to_arrays_mtx( bytes_content ) :
             return _pickle_bytes_to_obj( _gunzip_bytes( bytes_content ) )
     return str_ext, str_ext_index, func_processed_bytes_to_arrays_mtx
+
+''' memory-efficient methods for handling large files '''
+def create_stream_from_a_gzip_file( path_file_gzip, pipe_sender, func, int_buffer_size = 100 ) :
+    ''' # 2022-07-27 06:50:29 
+    parse and decorate mtx record for sorting. the resulting records only contains two values, index of axis that were not indexed and the data value, for more efficient pipe operation
+    return a generator yielding ungziped records
+    
+    'path_file_gzip' : input file gzip file to create stream of decorated mtx record 
+    'pipe_sender' : pipe for retrieving decorated mtx records. when all records are parsed, None will be given.
+    'func' : a function for transforming each 'line' in the input gzip file to a (decorated) record. if None is returned, the line will be ignored and will not be included in the output stream.
+    'int_buffer_size' : the number of entries for each batch that will be given to 'pipe_sender'. increasing this number will reduce the overhead associated with interprocess-communication through pipe, but will require more memory usage
+    
+    returns:
+    return the process that will be used for unzipping the input gzip file and creating a stream.
+    '''
+    # handle arguments
+    int_buffer_size = int( max( 1, int_buffer_size ) ) 
+    
+    # define a function for doing the work
+    def __gunzip( path_file_gzip, pipe_sender, int_buffer_size ) :
+        """ # 2022-07-25 22:22:33 
+        unzip gzip file and create a stream using the given pipe
+        """
+        with gzip.open( path_file_gzip, "rt" ) as file :
+            l_buffer = [ ] # initialize the buffer
+            for line in file :
+                rec = func( line ) # convert gzipped line into a decorated record
+                if rec is not None : # if the transformed record is valid
+                    l_buffer.append( rec ) # add a parsed record to the buffer
+                    
+                if len( l_buffer ) >= int_buffer_size : # if the buffer is full
+                    pipe_sender.send( l_buffer ) # send a list of record of a given buffer size
+                    l_buffer = [ ] # initialize the next buffer
+        pipe_sender.send( None )
+    p = mp.Process( target = __gunzip, args = ( path_file_gzip, pipe_sender, int_buffer_size ) )
+    return p # return the process
+def concurrent_merge_sort_using_pipe( pipe_sender, * l_pipe_receiver, int_max_num_pipe_for_each_worker = 8, int_buffer_size = 100 ) :
+    """ # 2022-07-27 06:50:22 
+    inputs:
+    'pipe_sender' : a pipe through which sorted decorated mtx records will be send. when all records are parsed, None will be given.
+    'l_pipe_receiver' : list of pipes through which decorated mtx records will be received. when all records are parsed, these pipes should return None.
+    'int_max_num_pipe_for_each_worker' : maximum number of input pipes for each worker. this argument and the number of input pipes together will determine the number of threads used for sorting
+    'int_buffer_size' : the number of entries for each batch that will be given to 'pipe_sender'. increasing this number will reduce the overhead associated with interprocess-communication through pipe, but will require more memory usage
+
+    returns:
+    l_p : list of processes for all the workers that will be used for sorting
+    """
+    # parse arguments
+    int_max_num_pipe_for_each_worker = int( int_max_num_pipe_for_each_worker )
+    # handle when no input pipes are given
+    if len( l_pipe_receiver ) == 0 :
+        pipe_sender.send( None ) # notify the end of records
+        
+    int_num_merging_layers = int( np.ceil( math.log( len( l_pipe_receiver ), int_max_num_pipe_for_each_worker ) ) ) # retrieve the number of merging layers.
+    def __pipe_receiver_to_iterator( pipe_receiver ) :
+        ''' # 2022-07-25 00:59:22 
+        convert pipe_receiver to iterator 
+        '''
+        while True :
+            l_r = pipe_receiver.recv( ) # retrieve a batch of records
+            # detect pipe_receiver
+            if l_r is None :
+                break
+            for r in l_r : # iterate through record by record, and yield each record
+                yield r
+    def __sorter( pipe_sender, * l_pipe_receiver ) :
+        """ # 2022-07-25 00:57:56 
+        """
+        # handle when no input pipes are given
+        if len( l_pipe_receiver ) == 0 :
+            pipe_sender.send( None )
+            
+        # perform merge sorting
+        l_buffer = [ ] # initialize a buffer
+        for r in heapq.merge( * list( map( __pipe_receiver_to_iterator, l_pipe_receiver ) ) ) : # convert pipe to iterator
+            l_buffer.append( r ) # add a parsed record to the buffer
+            # flush the buffer
+            if len( l_buffer ) >= int_buffer_size : # if the buffer is full
+                pipe_sender.send( l_buffer ) # return record in a sorted order
+                l_buffer = [ ] # initialize the buffer
+        pipe_sender.send( None ) # notify the end of records
+    l_p = [ ] # initialize the list that will contain all the processes that will be used for sorting.
+    while len( l_pipe_receiver ) > int_max_num_pipe_for_each_worker : # perform merge operations for each layer until all input pipes can be merged using a single worker (perform merge operations for all layers except for the last layer)
+        l_pipe_receiver_for_the_next_layer = [ ] # initialize the list of receiving pipes for the next layer, which will be collected while initializing workers for the current merging layer 
+        for index_worker_in_a_layer in range( int( np.ceil( len( l_pipe_receiver ) / int_max_num_pipe_for_each_worker ) ) ) : # iterate through the workers of the current merging layer
+            pipe_sender_for_a_worker, pipe_receiver_for_a_worker = mp.Pipe( )
+            l_pipe_receiver_for_the_next_layer.append( pipe_receiver_for_a_worker ) # collect receiving end of pipes for the initiated workers
+            l_p.append( mp.Process( target = __sorter, args = [ pipe_sender_for_a_worker ] + list( l_pipe_receiver[ index_worker_in_a_layer * int_max_num_pipe_for_each_worker : ( index_worker_in_a_layer + 1 ) * int_max_num_pipe_for_each_worker ] ) ) )
+        l_pipe_receiver = l_pipe_receiver_for_the_next_layer # initialize the next layer
+    # retrieve a worker for the last merging layer
+    l_p.append( mp.Process( target = __sorter, args = [ pipe_sender ] + list( l_pipe_receiver ) ) )
+    return l_p # return the list of processes
+def write_stream_as_a_gzip_file( pipe_receiver, path_file_gzip, func, compresslevel = 6, int_num_threads = 1, int_buffer_size = 100 ) :
+    ''' # 2022-07-27 06:50:14 
+    parse and decorate mtx record for sorting. the resulting records only contains two values, index of axis that were not indexed and the data value, for more efficient pipe operation
+    return a generator yielding ungziped records
+    
+    'pipe_receiver' : pipe for retrieving decorated mtx records. when all records are parsed, None should be given.
+    'path_file_gzip' : output gzip file path
+    'func' : a function for transforming each '(decorated) record to a line in the original gzip file' in the input gzip file to a. if None is returned, the line will be ignored and will not be included in the output stream.
+    
+    'flag_mtx_sorted_by_id_feature' : whether to create decoration with id_feature / id_barcode
+    'flag_dtype_is_float' : set this flag to True to export float values to the output mtx matrix
+    'compresslevel' : compression level of the output Gzip file. 6 by default
+    'int_num_threads' : the number of threads for gzip writer. if 'int_num_threads' > 1, pgzip will be used to write the output gzip file.
+    
+    returns:
+    return the process that will be used for gzipping the input stream
+    '''
+    # handle input arguments
+    int_num_threads = int( max( 1, int_num_threads ) )
+    # define a function for doing the work
+    def __gzip( pipe_receiver, path_file_gzip, func ) :
+        """ # 2022-07-25 22:22:33 
+        unzip gzip file and create a stream using the given pipe
+        """
+        with gzip.open( path_file_gzip, "wt", compresslevel = compresslevel ) if int_num_threads <= 1 else pgzip.open( path_file_gzip, "wt", compresslevel = compresslevel, thread = int_num_threads ) as newfile : # open the output file
+            while True :
+                l_r = pipe_receiver.recv( ) # retrieve record
+                if l_r is None : # handle when all records are parsed
+                    break
+                l_buffer = [ ] # initialize the buffer
+                for r in l_r : # iterate through the list of records
+                    l_buffer.append( func( r ) ) # collect the output
+                    # write the output file
+                    if len( l_buffer ) >= int_buffer_size : # when the buffer is full, flush the buffer
+                        newfile.write( ''.join( l_buffer ) ) # write the output
+                        l_buffer = [ ] # initialize the buffer
+    p = mp.Process( target = __gzip, args = ( pipe_receiver, path_file_gzip, func ) )
+    return p # return the process
+def concurrent_merge_sort_mtx( path_file_output, l_path_file, flag_mtx_sorted_by_id_feature = True, int_buffer_size = 100, compresslevel = 6, int_max_num_pipe_for_each_worker = 8, flag_dtype_is_float = False, flag_return_processes = False, int_num_threads = 8 ) :
+    """ # 2022-07-27 06:50:06 
+    
+    'path_file_output' : output mtx gzip file path
+    'l_path_file' : list of input mtx gzip file paths
+    'flag_mtx_sorted_by_id_feature' : whether to create decoration with id_feature / id_barcode
+    'int_buffer_size' : the number of entries for each batch that will be given to 'pipe_sender'. increasing this number will reduce the overhead associated with interprocess-communication through pipe, but will require more memory usage
+    'compresslevel' : compression level of the output Gzip file. 6 by default
+    'int_max_num_pipe_for_each_worker' : maximum number of input pipes for each worker. this argument and the number of input pipes together will determine the number of threads used for sorting
+    'flag_dtype_is_float' : set this flag to True to export float values to the output mtx matrix
+    'flag_return_processes' : if False, run all the processes. if True, return the processes that can be run to perform the concurrent merge sort operation.
+    'int_num_threads' : the number of threads for gzip writer. if 'int_num_threads' > 1, pgzip will be used to write the output gzip file.
+    """
+    def __decode_mtx( line ) :
+        """ # 2022-07-27 00:28:42 
+        decode a line and return a parsed line (record)
+        """
+        ''' skip comment lines '''
+        if line[ 0 ] == '%' :
+            return None
+        ''' parse a mtx record '''
+        index_row, index_column, float_value = line.strip( ).split( ) # parse a record of a matrix-market format file
+        index_row, index_column, float_value = int( index_row ) - 1, int( index_column ) - 1, float( float_value ) # 1-based > 0-based coordinates
+        # return record with decoration according to the sorted axis # return 0-based coordinates
+        if flag_mtx_sorted_by_id_feature :
+            res = index_row, ( index_column, float_value ) 
+        else :
+            res = index_column, ( index_row, float_value )
+        return res
+    convert_to_output_dtype = float if flag_dtype_is_float else int
+    def __encode_mtx( r ) :
+        """ # 2022-07-27 00:31:27 
+        encode parsed record into a line (in an original format)
+        """
+        dec, rec = r # retrieve decorator and the remaining record
+        if flag_mtx_sorted_by_id_feature : 
+            index_row = dec
+            index_column, val = rec
+        else :
+            index_column = dec
+            index_row, val = rec
+        val = convert_to_output_dtype( val ) # convert to the output dtype
+        return str( index_row + 1 ) + ' ' + str( index_column + 1 ) + ' ' + str( val ) + '\n' # return the output
+    
+    # construct and collect the processes for the parsers
+    l_p = [ ]
+    l_pipe_receiver = [ ]
+    for index_file, path_file in enumerate( l_path_file ) :
+        pipe_sender, pipe_receiver = mp.Pipe( )
+        p = create_stream_from_a_gzip_file( path_file, pipe_sender, func = __decode_mtx, int_buffer_size = int_buffer_size )
+        l_p.append( p )
+        l_pipe_receiver.append( pipe_receiver )
+    
+    # construct and collect the processes for a concurrent merge sort tree and writer
+    pipe_sender, pipe_receiver = mp.Pipe( ) # create a link
+    l_p.extend( concurrent_merge_sort_using_pipe( pipe_sender, * l_pipe_receiver, int_max_num_pipe_for_each_worker = int_max_num_pipe_for_each_worker, int_buffer_size = int_buffer_size ) )
+    l_p.append( write_stream_as_a_gzip_file( pipe_receiver, path_file_output, func = __encode_mtx, compresslevel = compresslevel, int_num_threads = int_num_threads, int_buffer_size = int_buffer_size ) )
+
+    if flag_return_processes : 
+        # simply return the processes
+        return l_p
+    else :
+        # run the processes
+        for p in l_p : p.start( )
+        for p in l_p : p.join( )
+def create_and_sort_chunk( path_file_gzip, path_prefix_chunk, func_encoding, func_decoding, pipe_sender, int_num_records_in_a_chunk = 10000000, int_num_threads_for_sorting_and_writing = 2, int_buffer_size = 100 ) :
+    """ # 2022-07-27 07:22:09 
+    split an input gzip file into smaller chunks and sort individual chunks.
+    returns a list of processes that will perform the operation.
+    
+    'path_file_gzip' : file path of an input gzip file
+    'path_prefix_chunk' : a prefix for the chunks that will be written.
+    'func_encoding' : a function for transforming a decorated record into a line in a gzip file.
+    'func_decoding' : a function for transforming a line in a gzip file into a decorated record. the lines will be sorted according to the first element of the returned records. the first element (key) should be float/integers (numbers)
+    'pipe_sender' : a pipe that will be used to return the list of file path of the created chunks. when all chunks are created, None will be given.
+    'int_num_records_in_a_chunk' : the number of maximum records in a chunk
+    'int_num_threads_for_sorting_and_writing' : number of workers for sorting and writing operations. the number of worker for reading the input gzip file will be 1.
+    'int_buffer_size' : the number of entries for each batch that will be given to 'pipe_sender'. increasing this number will reduce the overhead associated with interprocess-communication through pipe, but will require more memory usage
+
+    """
+    # handle arguments
+    int_buffer_size = int( max( 1, int_buffer_size ) ) 
+    
+    def __sort_and_write( pipe_receiver_record, pipe_sender_file_path ) :
+        """ # 2022-07-27 09:07:26 
+        receive records for a chunk, sort the records, and write encoded records as a gzip file
+        """
+        l_r = [ ] # initialize a list for collecting records
+        while True :
+            b = pipe_receiver_record.recv( )
+            if b is None : 
+                break
+            if isinstance( b, str ) :
+                newfile = gzip.open( b, 'wt' ) # open a new file using the name
+                
+                ''' sort records '''
+                int_num_records = len( l_r )
+                arr_key = np.zeros( int_num_records, dtype = float ) # the first element (key) should be float/integers (numbers)
+                for i, r in enumerate( l_r ) :
+                    arr_key[ i ] = r[ 0 ]
+                l_r = np.array( l_r, dtype = object )[ arr_key.argsort( ) ] # sort records by keys
+                del arr_key
+                
+                for r in l_r :
+                    newfile.write( func_encoding( r ) )
+                
+                l_r = [ ] # initialize a list for collecting records
+                newfile.close( ) # close an output file
+                pipe_sender_file_path.send( b ) # send the file path of written chunk
+            else :
+                # collect record from the buffer
+                for r in b :
+                    l_r.append( r )
+                    
+    # initialize
+    l_p = [ ] # initialize the list of processes
+    l_pipe_sender_record = [ ] # collect the pipe for distributing records
+    l_pipe_receiver_file_path = [ ] # collect the pipe for receiving file path
+    # compose processes for sorting and writing chunks
+    for index_process in range( int_num_threads_for_sorting_and_writing ) :
+        pipe_sender_record, pipe_receiver_record = mp.Pipe( ) # create a pipe for sending parsed records
+        pipe_sender_file_path, pipe_receiver_file_path = mp.Pipe( ) # create a pipe for sending file path of written chunks
+        l_pipe_sender_record.append( pipe_sender_record )
+        l_pipe_receiver_file_path.append( pipe_receiver_file_path )
+        l_p.append( mp.Process( target = __sort_and_write, args = ( pipe_receiver_record, pipe_sender_file_path ) ) )
+        
+    # define a function for reading gzip file
+    def __gunzip( path_file_gzip, path_prefix_chunk, pipe_sender, int_num_records_in_a_chunk, int_buffer_size ) :
+        """ # 2022-07-25 22:22:33 
+        unzip gzip file, distribute records across workers, and collect the file path of written chunks
+        """
+        int_num_workers = len( l_pipe_sender_record ) # retrieve the number of workers
+        arr_num_files = np.zeros( int_num_workers, dtype = int ) # initialize an array indicating how many files each worker processes need to write
+        
+        def __collect_file_path( ) :
+            ''' # 2022-07-27 09:48:04 
+            collect file paths of written chunks from workers and report the file path using 'pipe_sender' 
+            '''
+            for index_worker, pipe_receiver_file_path in enumerate( l_pipe_receiver_file_path ) :
+                if pipe_receiver_file_path.poll( ) :
+                    path_file = pipe_receiver_file_path.recv( )
+                    pipe_sender.send( path_file )
+                    arr_num_files[ index_worker ] -= 1 # update the number of files for the process                    
+                    assert arr_num_files[ index_worker ] >= 0
+        
+        # iterate through lines in the input gzip file and assign works to the workers
+        with gzip.open( path_file_gzip, "rt" ) as file :
+            l_buffer = [ ] # initialize the buffer
+            int_num_sent_records = 0 # initialize the number of send records
+            index_worker = 0 # initialize the worker for receiving records
+            for line in file :
+                r = func_decoding( line ) # convert gzipped line into a decorated record
+                if r is not None : # if the transformed record is valid
+                    l_buffer.append( r ) # add a parsed record to the buffer
+                
+                if len( l_buffer ) >= int_buffer_size : # if the buffer is full
+                    l_pipe_sender_record[ index_worker ].send( l_buffer ) # send a list of record of a given buffer size
+                    int_num_sent_records += len( l_buffer ) # update 'int_num_sent_records'
+                    l_buffer = [ ] # initialize the next buffer
+                elif int_num_sent_records + len( l_buffer ) >= int_num_records_in_a_chunk :
+                    l_pipe_sender_record[ index_worker ].send( l_buffer ) # send a list of records
+                    int_num_sent_records += len( l_buffer ) # update 'int_num_sent_records'
+                    l_buffer = [ ] # initialize the next buffer
+                    int_num_sent_records = 0 # initialize the next chunk
+                    l_pipe_sender_record[ index_worker ].send( f"{path_prefix_chunk}.{UUID( )}.gz" ) # assign the file path of the chunk
+                    arr_num_files[ index_worker ] += 1 # update the number of files for the process
+                    index_worker = ( 1 + index_worker ) % int_num_workers  # update the index of the worker
+                    __collect_file_path( ) # collect and report file path
+                
+        if len( l_buffer ) > 0 : # if there is some buffer remaining, flush the buffer
+            l_pipe_sender_record[ index_worker ].send( l_buffer ) # send a list of records
+            l_pipe_sender_record[ index_worker ].send( f"{path_prefix_chunk}.{UUID( )}.gz" ) # assign the file path of the chunk
+            arr_num_files[ index_worker ] += 1 # update the number of files for the process
+            __collect_file_path( ) # collect and report file path
+
+        # wait until all worker processes complete writing files
+        while arr_num_files.sum( ) > 0 :
+            time.sleep( 1 )
+            __collect_file_path( ) # collect and report file path
+            
+        # terminate the worker processes
+        for pipe_sender_record in l_pipe_sender_record :
+            pipe_sender_record.send( None )
+            
+        pipe_sender.send( None ) # notify that the process has been completed
+    l_p.append( mp.Process( target = __gunzip, args = ( path_file_gzip, path_prefix_chunk, pipe_sender, int_num_records_in_a_chunk, int_buffer_size ) ) )
+    return l_p # return the list of processes
 
 ''' utility functions for handling zarr '''
 def zarr_exists( path_folder_zarr ) :
