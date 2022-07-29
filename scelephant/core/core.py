@@ -27,7 +27,7 @@ import sklearn.cluster as skc # K-means
 # define version
 _version_ = '0.0.2'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-07-27 10:23:49'
+_last_modified_time_ = '2022-07-28 23:43:23'
 
 """ # 2022-07-21 10:35:42  realease note
 
@@ -40,6 +40,14 @@ TODO: use Pynndescent for efficient HDBSCAN cluster label assignment, even when 
 TODO: use Pynndescent for better subsampling of cells before UMAP embedding
 
 if these implementations are in place, subclustering on HTTP-hosted RamData will be efficient and accurate.
+
+# 2022-07-28 16:00:50 
+
+Hard dependency on entries sorted by string representations ('id_feature' and 'id_cell') will be dropped. 
+This decision was made to make integration of datasets (especially datasets fetched from the web with dataset exists locally) more efficient.
+Also, this change will make the RamData construction process more time- and memory-efficient
+
+Also, hard dependency on feature/barcode sorted ramtx will be dropped, and a new ramtx, dense ramtx will be introduced (not implemented yet)
 """
 
 ''' previosuly written for biobookshelf '''
@@ -768,20 +776,24 @@ def MTX_10X_Retrieve_number_of_rows_columns_and_records( path_folder_mtx_10x_inp
     """ # 2022-03-05 19:58:32 
     Retrieve the number of rows, columns, and entries from the matrix with the matrix market format 
     
+    'path_folder_mtx_10x_input' : a folder mtx file resides or path to mtx file
+    
     Returns:
     int_num_rows, int_num_columns, int_num_entries
     """
     ''' handle inputs '''
-    if path_folder_mtx_10x_input[ -1 ] != '/' :
-        path_folder_mtx_10x_input += '/'
+    if path_folder_mtx_10x_input[ -3 : ].lower( ) == '.gz' : # when a path to mtx file was given
+        path_file_input_mtx = path_folder_mtx_10x_input
+    else : # when a folder where mtx file resides was given
+        if path_folder_mtx_10x_input[ -1 ] != '/' :
+            path_folder_mtx_10x_input += '/'
 
-    # define input file directories
-    path_file_input_mtx = f'{path_folder_mtx_10x_input}matrix.mtx.gz'
+        # define input file directories
+        path_file_input_mtx = f'{path_folder_mtx_10x_input}matrix.mtx.gz'
     
-    # check whether all required files are present
-    if sum( list( not os.path.exists( path_folder ) for path_folder in [ path_file_input_mtx ] ) ) :
-        if verbose :
-            print( f'required file(s) is not present at {path_folder_mtx_10x}' )
+        # check whether all required files are present
+        if sum( list( not os.path.exists( path_folder ) for path_folder in [ path_file_input_mtx ] ) ) :
+            return None
     
     # read the input matrix
     with gzip.open( path_file_input_mtx, 'rb' ) as file :
@@ -1735,7 +1747,9 @@ def _get_func_processed_bytes_to_arrays_mtx_and_other_settings_based_on_file_for
     return str_ext, str_ext_index, func_processed_bytes_to_arrays_mtx
 
 ''' memory-efficient methods for handling large files '''
-def create_stream_from_a_gzip_file( path_file_gzip, pipe_sender, func, int_buffer_size = 100 ) :
+# latest 2022-07-28 11:31:12 
+# implementation using pipe (~3 times more efficient)
+def create_stream_from_a_gzip_file_using_pipe( path_file_gzip, pipe_sender, func, int_buffer_size = 100 ) :
     ''' # 2022-07-27 06:50:29 
     parse and decorate mtx record for sorting. the resulting records only contains two values, index of axis that were not indexed and the data value, for more efficient pipe operation
     return a generator yielding ungziped records
@@ -1766,6 +1780,8 @@ def create_stream_from_a_gzip_file( path_file_gzip, pipe_sender, func, int_buffe
                 if len( l_buffer ) >= int_buffer_size : # if the buffer is full
                     pipe_sender.send( l_buffer ) # send a list of record of a given buffer size
                     l_buffer = [ ] # initialize the next buffer
+            if len( l_buffer ) > 0 : # flush remaining buffer
+                pipe_sender.send( l_buffer ) 
         pipe_sender.send( None )
     p = mp.Process( target = __gunzip, args = ( path_file_gzip, pipe_sender, int_buffer_size ) )
     return p # return the process
@@ -1785,7 +1801,8 @@ def concurrent_merge_sort_using_pipe( pipe_sender, * l_pipe_receiver, int_max_nu
     # handle when no input pipes are given
     if len( l_pipe_receiver ) == 0 :
         pipe_sender.send( None ) # notify the end of records
-        
+        return -1
+    
     int_num_merging_layers = int( np.ceil( math.log( len( l_pipe_receiver ), int_max_num_pipe_for_each_worker ) ) ) # retrieve the number of merging layers.
     def __pipe_receiver_to_iterator( pipe_receiver ) :
         ''' # 2022-07-25 00:59:22 
@@ -1813,6 +1830,8 @@ def concurrent_merge_sort_using_pipe( pipe_sender, * l_pipe_receiver, int_max_nu
             if len( l_buffer ) >= int_buffer_size : # if the buffer is full
                 pipe_sender.send( l_buffer ) # return record in a sorted order
                 l_buffer = [ ] # initialize the buffer
+        if len( l_buffer ) > 0 : # if there are some records remaining in the buffer
+            pipe_sender.send( l_buffer ) # send the buffer
         pipe_sender.send( None ) # notify the end of records
     l_p = [ ] # initialize the list that will contain all the processes that will be used for sorting.
     while len( l_pipe_receiver ) > int_max_num_pipe_for_each_worker : # perform merge operations for each layer until all input pipes can be merged using a single worker (perform merge operations for all layers except for the last layer)
@@ -1825,19 +1844,21 @@ def concurrent_merge_sort_using_pipe( pipe_sender, * l_pipe_receiver, int_max_nu
     # retrieve a worker for the last merging layer
     l_p.append( mp.Process( target = __sorter, args = [ pipe_sender ] + list( l_pipe_receiver ) ) )
     return l_p # return the list of processes
-def write_stream_as_a_gzip_file( pipe_receiver, path_file_gzip, func, compresslevel = 6, int_num_threads = 1, int_buffer_size = 100 ) :
+def write_stream_as_a_gzip_file_using_pipe( pipe_receiver, path_file_gzip, func, compresslevel = 6, int_num_threads = 1, int_buffer_size = 100, header = None ) :
     ''' # 2022-07-27 06:50:14 
     parse and decorate mtx record for sorting. the resulting records only contains two values, index of axis that were not indexed and the data value, for more efficient pipe operation
     return a generator yielding ungziped records
-    
+        
+    arguments:
     'pipe_receiver' : pipe for retrieving decorated mtx records. when all records are parsed, None should be given.
     'path_file_gzip' : output gzip file path
     'func' : a function for transforming each '(decorated) record to a line in the original gzip file' in the input gzip file to a. if None is returned, the line will be ignored and will not be included in the output stream.
-    
     'flag_mtx_sorted_by_id_feature' : whether to create decoration with id_feature / id_barcode
     'flag_dtype_is_float' : set this flag to True to export float values to the output mtx matrix
     'compresslevel' : compression level of the output Gzip file. 6 by default
-    'int_num_threads' : the number of threads for gzip writer. if 'int_num_threads' > 1, pgzip will be used to write the output gzip file.
+    'header' : a header text to include. if None is given, no header will be written.
+    'int_num_threads' : the number of threads for gzip writer. if 'int_num_threads' > 1, pgzip will be used to write the output gzip file. please note that pgzip (multithreaded version of gzip module) has some memory-leaking issue.
+    'int_buffer_size' : the number of entries for each batch that will be given to 'pipe_sender'. increasing this number will reduce the overhead associated with interprocess-communication through pipe, but will require more memory usage
     
     returns:
     return the process that will be used for gzipping the input stream
@@ -1850,6 +1871,8 @@ def write_stream_as_a_gzip_file( pipe_receiver, path_file_gzip, func, compressle
         unzip gzip file and create a stream using the given pipe
         """
         with gzip.open( path_file_gzip, "wt", compresslevel = compresslevel ) if int_num_threads <= 1 else pgzip.open( path_file_gzip, "wt", compresslevel = compresslevel, thread = int_num_threads ) as newfile : # open the output file
+            if header is not None : # if a valid header is given, write the header
+                newfile.write( header )
             while True :
                 l_r = pipe_receiver.recv( ) # retrieve record
                 if l_r is None : # handle when all records are parsed
@@ -1861,9 +1884,108 @@ def write_stream_as_a_gzip_file( pipe_receiver, path_file_gzip, func, compressle
                     if len( l_buffer ) >= int_buffer_size : # when the buffer is full, flush the buffer
                         newfile.write( ''.join( l_buffer ) ) # write the output
                         l_buffer = [ ] # initialize the buffer
+                if len( l_buffer ) > 0 : # flush the buffer
+                    newfile.write( ''.join( l_buffer ) ) # flush the buffer
     p = mp.Process( target = __gzip, args = ( pipe_receiver, path_file_gzip, func ) )
     return p # return the process
-def concurrent_merge_sort_mtx( path_file_output, l_path_file, flag_mtx_sorted_by_id_feature = True, int_buffer_size = 100, compresslevel = 6, int_max_num_pipe_for_each_worker = 8, flag_dtype_is_float = False, flag_return_processes = False, int_num_threads = 8 ) :
+def write_stream_as_a_ramtx_zarr_using_pipe( pipe_receiver, za_mtx, za_mtx_index ) :
+    ''' # 2022-07-29 09:54:57 
+    write a stream of decorated mtx records to a ramtx zarr object (and its associated index)
+        
+    arguments:
+    'pipe_receiver' : pipe for retrieving decorated mtx records. when all records are parsed, None should be given.
+    'za_mtx', 'za_mtx_index' : output zarr objects
+
+    returns:
+    return the list of processes that will be used for building a ramtx zarr from the input stream
+    '''
+    # retrieve settings
+    dtype_mtx = za_mtx.dtype
+    dtype_mtx_index = za_mtx_index.dtype
+    # set buffer size
+    int_buffer_size_mtx_index = za_mtx_index.chunks[ 0 ] * 10
+    int_buffer_size_mtx = za_mtx.chunks[ 0 ] * 10
+    
+    # define a function for doing the work
+    def __write_zarr( pipe_receiver, za ) :
+        """ # 2022-07-29 09:41:08 
+        write an array of a specific coordinates to a given zarr object
+        """
+        while True :
+            r = pipe_receiver.recv( )
+            if r is None : # exist once the stream ends
+                break
+            st, en, arr = r # parse the received record
+            za[ st : en ] = arr # write zarr object
+    def __compose_array( pipe_receiver, pipe_sender_to_mtx_writer, pipe_sender_to_mtx_index_writer ) :
+        """ # 2022-07-25 22:22:33 
+        convert a given stream into ramtx arrays (mtx and mtx index)
+        """
+        # perform merge sorting
+        int_entry_currently_being_written = None # place holder value
+        int_num_mtx_records_written = 0
+        l_mtx_record = [ ]
+        int_num_mtx_index_records_written = 0
+        l_mtx_index = [ ]
+
+        # iterate through records
+        while True :
+            l_r = pipe_receiver.recv( ) # retrieve record
+            if l_r is None : # handle when all records are parsed
+                break
+            for r in l_r : # iterate through the list of records
+                int_entry_of_the_current_record, mtx_record = r
+                if int_entry_currently_being_written is None :
+                    int_entry_currently_being_written = int_entry_of_the_current_record # update current int_entry
+                elif int_entry_currently_being_written != int_entry_of_the_current_record : # if current int_entry is different from the previous one, which mark the change of sorted blocks (a block has the same id_entry), save the data for the previous block to the output zarr and initialze data for the next block 
+                    ''' compose index '''
+                    l_mtx_index.append( [ int_num_mtx_records_written, int_num_mtx_records_written + len( l_mtx_record ) ] ) # collect information required for indexing # add records to mtx_index
+                    if int_entry_currently_being_written + 1 > int_entry_of_the_current_record :
+                        for int_entry in range( int_entry_currently_being_written + 1, int_entry_of_the_current_record ) : # for the int_entry that lack count data and does not have indexing data, put place holder values
+                            l_mtx_index.append( [ 0, 0 ] ) # put place holder values for int_entry lacking count data.
+                    int_entry_currently_being_written = int_entry_of_the_current_record # update current int_entry    
+                    
+                    ''' check mtx buffer and flush '''
+                    if len( l_mtx_record ) >= int_buffer_size_mtx : # if buffer is full
+                        pipe_sender_to_mtx_writer.send( ( int_num_mtx_records_written, int_num_mtx_records_written + len( l_mtx_record ), np.array( l_mtx_record, dtype = dtype_mtx ) ) ) # send data to the zarr mtx writer
+                        int_num_mtx_records_written += len( l_mtx_record )
+                        l_mtx_record = [ ] # reset buffer
+                    
+                    ''' check mtx index buffer and flush '''
+                    if len( l_mtx_index ) >= int_buffer_size_mtx_index : # if buffer is full
+                        pipe_sender_to_mtx_index_writer.send( ( int_num_mtx_index_records_written, int_num_mtx_index_records_written + len( l_mtx_index ), np.array( l_mtx_index, dtype = dtype_mtx_index ) ) ) # send data to the zarr mtx index writer
+                        int_num_mtx_index_records_written += len( l_mtx_index ) # update 'int_num_mtx_index_records_written'
+                        l_mtx_index = [ ] # reset buffer
+                # collect mtx record
+                l_mtx_record.append( mtx_record )
+
+        # write the record for the last entry
+        assert len( l_mtx_record ) > 0 # there SHOULD be a last entry
+        ''' compose index '''
+        l_mtx_index.append( [ int_num_mtx_records_written, int_num_mtx_records_written + len( l_mtx_record ) ] ) # collect information required for indexing # add records to mtx_index
+        for int_entry in range( int_entry_currently_being_written + 1, za_mtx_index.shape[ 0 ] ) : # for the int_entry that lack count data and does not have indexing data, put place holder values # set 'next' int_entry to the end of the int_entry values so that place holder values can be set to the missing int_entry 
+            l_mtx_index.append( [ 0, 0 ] ) # put place holder values for int_entry lacking count data.
+
+        ''' flush mtx buffer '''
+        pipe_sender_to_mtx_writer.send( ( int_num_mtx_records_written, int_num_mtx_records_written + len( l_mtx_record ), np.array( l_mtx_record, dtype = dtype_mtx ) ) ) # send data to the zarr mtx writer
+
+        ''' flush mtx index buffer '''
+        pipe_sender_to_mtx_index_writer.send( ( int_num_mtx_index_records_written, int_num_mtx_index_records_written + len( l_mtx_index ), np.array( l_mtx_index, dtype = dtype_mtx_index ) ) ) # send data to the zarr mtx index writer
+
+        ''' send termination signals '''
+        pipe_sender_to_mtx_writer.send( None )
+        pipe_sender_to_mtx_index_writer.send( None )
+        
+    # create pipes for communications between the processes
+    pipe_sender_to_mtx_writer, pipe_receiver_to_mtx_writer = mp.Pipe( )
+    pipe_sender_to_mtx_index_writer, pipe_receiver_to_mtx_index_writer = mp.Pipe( )
+    # compose the list of processes
+    l_p = [ ]
+    l_p.append( mp.Process( target = __compose_array, args = ( pipe_receiver, pipe_sender_to_mtx_writer, pipe_sender_to_mtx_index_writer ) ) )
+    l_p.append( mp.Process( target = __write_zarr, args = ( pipe_receiver_to_mtx_writer, za_mtx ) ) )
+    l_p.append( mp.Process( target = __write_zarr, args = ( pipe_receiver_to_mtx_index_writer, za_mtx_index ) ) )
+    return l_p # return the list of processes
+def concurrent_merge_sort_using_pipe_mtx( path_file_output = None, l_path_file = [ ], flag_mtx_sorted_by_id_feature = True, int_buffer_size = 100, compresslevel = 6, int_max_num_pipe_for_each_worker = 8, flag_dtype_is_float = False, flag_return_processes = False, int_num_threads = 1, flag_delete_input_files = False, header = None, za_mtx = None, za_mtx_index = None ) :
     """ # 2022-07-27 06:50:06 
     
     'path_file_output' : output mtx gzip file path
@@ -1875,7 +1997,15 @@ def concurrent_merge_sort_mtx( path_file_output, l_path_file, flag_mtx_sorted_by
     'flag_dtype_is_float' : set this flag to True to export float values to the output mtx matrix
     'flag_return_processes' : if False, run all the processes. if True, return the processes that can be run to perform the concurrent merge sort operation.
     'int_num_threads' : the number of threads for gzip writer. if 'int_num_threads' > 1, pgzip will be used to write the output gzip file.
+    'header' : a header text to include. if None is given, no header will be written.
+    'flag_delete_input_files' : delete input files
+    'za_mtx', 'za_mtx_index' : to build ramtx zarr object from the input mtx files, please use these arguments to pass over zarr mtx and zarr mtx index objects.
     """
+    # handle invalid input
+    if len( l_path_file ) == 0 : # if the list of input files are empty, exit
+        return
+    if not ( path_file_output is not None or ( za_mtx is not None and za_mtx_index is not None ) ) : # if all output are invalid, exit
+        return
     def __decode_mtx( line ) :
         """ # 2022-07-27 00:28:42 
         decode a line and return a parsed line (record)
@@ -1912,14 +2042,17 @@ def concurrent_merge_sort_mtx( path_file_output, l_path_file, flag_mtx_sorted_by
     l_pipe_receiver = [ ]
     for index_file, path_file in enumerate( l_path_file ) :
         pipe_sender, pipe_receiver = mp.Pipe( )
-        p = create_stream_from_a_gzip_file( path_file, pipe_sender, func = __decode_mtx, int_buffer_size = int_buffer_size )
+        p = create_stream_from_a_gzip_file_using_pipe( path_file, pipe_sender, func = __decode_mtx, int_buffer_size = int_buffer_size )
         l_p.append( p )
         l_pipe_receiver.append( pipe_receiver )
     
     # construct and collect the processes for a concurrent merge sort tree and writer
     pipe_sender, pipe_receiver = mp.Pipe( ) # create a link
     l_p.extend( concurrent_merge_sort_using_pipe( pipe_sender, * l_pipe_receiver, int_max_num_pipe_for_each_worker = int_max_num_pipe_for_each_worker, int_buffer_size = int_buffer_size ) )
-    l_p.append( write_stream_as_a_gzip_file( pipe_receiver, path_file_output, func = __encode_mtx, compresslevel = compresslevel, int_num_threads = int_num_threads, int_buffer_size = int_buffer_size ) )
+    if path_file_output is not None : # when an output file is an another gzip file
+        l_p.append( write_stream_as_a_gzip_file_using_pipe( pipe_receiver, path_file_output, func = __encode_mtx, compresslevel = compresslevel, int_num_threads = int_num_threads, int_buffer_size = int_buffer_size, header = header ) )
+    else : # when the output is a ramtx zarr object
+        l_p.extend( write_stream_as_a_ramtx_zarr_using_pipe( pipe_receiver, za_mtx, za_mtx_index ) )
 
     if flag_return_processes : 
         # simply return the processes
@@ -1928,8 +2061,18 @@ def concurrent_merge_sort_mtx( path_file_output, l_path_file, flag_mtx_sorted_by
         # run the processes
         for p in l_p : p.start( )
         for p in l_p : p.join( )
-def create_and_sort_chunk( path_file_gzip, path_prefix_chunk, func_encoding, func_decoding, pipe_sender, int_num_records_in_a_chunk = 10000000, int_num_threads_for_sorting_and_writing = 2, int_buffer_size = 100 ) :
-    """ # 2022-07-27 07:22:09 
+            
+    # delete input files if 'flag_delete_input_files' is True
+    if flag_delete_input_files :
+        for path_file in l_path_file :
+            os.remove( path_file )
+    
+    if path_file_output is not None : # when an output file is an another gzip file # return the path to the output file
+        return path_file_output
+
+# for sorting mtx and creating RamData
+def create_and_sort_chunk( path_file_gzip, path_prefix_chunk, func_encoding, func_decoding, pipe_sender, func_detect_header = None, int_num_records_in_a_chunk = 10000000, int_num_threads_for_sorting_and_writing = 5, int_buffer_size = 300 ) :
+    """ # 2022-07-28 11:07:36 
     split an input gzip file into smaller chunks and sort individual chunks.
     returns a list of processes that will perform the operation.
     
@@ -1938,6 +2081,7 @@ def create_and_sort_chunk( path_file_gzip, path_prefix_chunk, func_encoding, fun
     'func_encoding' : a function for transforming a decorated record into a line in a gzip file.
     'func_decoding' : a function for transforming a line in a gzip file into a decorated record. the lines will be sorted according to the first element of the returned records. the first element (key) should be float/integers (numbers)
     'pipe_sender' : a pipe that will be used to return the list of file path of the created chunks. when all chunks are created, None will be given.
+    'func_detect_header' : a function for detecting header lines in a gzip file. the opened gzip file will be given ('rw' mode) to the function and the funciton should consume all header lines. optionally, the function can return a line that are the start of the record if the algorithm required to read non-header line to detect the end of header.
     'int_num_records_in_a_chunk' : the number of maximum records in a chunk
     'int_num_threads_for_sorting_and_writing' : number of workers for sorting and writing operations. the number of worker for reading the input gzip file will be 1.
     'int_buffer_size' : the number of entries for each batch that will be given to 'pipe_sender'. increasing this number will reduce the overhead associated with interprocess-communication through pipe, but will require more memory usage
@@ -2001,19 +2145,32 @@ def create_and_sort_chunk( path_file_gzip, path_prefix_chunk, func_encoding, fun
             ''' # 2022-07-27 09:48:04 
             collect file paths of written chunks from workers and report the file path using 'pipe_sender' 
             '''
-            for index_worker, pipe_receiver_file_path in enumerate( l_pipe_receiver_file_path ) :
-                if pipe_receiver_file_path.poll( ) :
-                    path_file = pipe_receiver_file_path.recv( )
-                    pipe_sender.send( path_file )
-                    arr_num_files[ index_worker ] -= 1 # update the number of files for the process                    
-                    assert arr_num_files[ index_worker ] >= 0
+            while True : 
+                for index_worker, pipe_receiver_file_path in enumerate( l_pipe_receiver_file_path ) :
+                    if pipe_receiver_file_path.poll( ) :
+                        path_file = pipe_receiver_file_path.recv( )
+                        pipe_sender.send( path_file )
+                        arr_num_files[ index_worker ] -= 1 # update the number of files for the process                    
+                        assert arr_num_files[ index_worker ] >= 0
+                        
+                # if all workers has less than two files to write, does not block
+                if ( arr_num_files <= 2 ).sum( ) == int_num_workers :
+                    break
+                time.sleep( 1 ) # sleep for one second before collecting completed works
         
         # iterate through lines in the input gzip file and assign works to the workers
         with gzip.open( path_file_gzip, "rt" ) as file :
             l_buffer = [ ] # initialize the buffer
             int_num_sent_records = 0 # initialize the number of send records
             index_worker = 0 # initialize the worker for receiving records
-            for line in file :
+            
+            # detect header from the start of the file
+            if func_detect_header is not None and hasattr( func_detect_header, '__call__' ) : # if a valid function for detecting header has been given
+                line = func_detect_header( file ) # consume header lines
+                if line is None : # if exactly header lines are consumed and no actual records were consumed from the file, read the first record
+                    line = file.readline( )
+            # iterate lines of the rest of the gzip file    
+            while True :
                 r = func_decoding( line ) # convert gzipped line into a decorated record
                 if r is not None : # if the transformed record is valid
                     l_buffer.append( r ) # add a parsed record to the buffer
@@ -2031,6 +2188,9 @@ def create_and_sort_chunk( path_file_gzip, path_prefix_chunk, func_encoding, fun
                     arr_num_files[ index_worker ] += 1 # update the number of files for the process
                     index_worker = ( 1 + index_worker ) % int_num_workers  # update the index of the worker
                     __collect_file_path( ) # collect and report file path
+                line = file.readline( ) # read the next line
+                if len( line ) == 0 :
+                    break
                 
         if len( l_buffer ) > 0 : # if there is some buffer remaining, flush the buffer
             l_pipe_sender_record[ index_worker ].send( l_buffer ) # send a list of records
@@ -2050,7 +2210,236 @@ def create_and_sort_chunk( path_file_gzip, path_prefix_chunk, func_encoding, fun
         pipe_sender.send( None ) # notify that the process has been completed
     l_p.append( mp.Process( target = __gunzip, args = ( path_file_gzip, path_prefix_chunk, pipe_sender, int_num_records_in_a_chunk, int_buffer_size ) ) )
     return l_p # return the list of processes
+def sort_mtx( path_file_gzip, path_file_gzip_sorted = None, int_num_records_in_a_chunk = 10000000, int_buffer_size = 300, compresslevel = 6, flag_dtype_is_float = False, flag_mtx_sorted_by_id_feature = True, int_num_threads_for_chunking = 5, int_num_threads_for_writing = 1, int_max_num_input_files_for_each_merge_sort_worker = 8, int_num_chunks_to_combine_before_concurrent_merge_sorting = 8, za_mtx = None, za_mtx_index = None ) :
+    """ # 2022-07-28 11:07:44 
+    sort a given mtx file in a very time- and memory-efficient manner
+    
+    'path_file_gzip' : file path of an input gzip file
+    'int_num_records_in_a_chunk' : the number of maximum records in a chunk
+    'int_num_threads_for_chunking' : number of workers for sorting and writing operations. the number of worker for reading the input gzip file will be 1.
+    'int_buffer_size' : the number of entries for each batch that will be given to 'pipe_sender'. increasing this number will reduce the overhead associated with interprocess-communication through pipe, but will require more memory usage
+    'flag_mtx_sorted_by_id_feature' : whether to create decoration with id_feature / id_barcode
+    'compresslevel' : compression level of the output Gzip file. 6 by default
+    'int_max_num_input_files_for_each_merge_sort_worker' : maximum number of input pipes for each worker. this argument and the number of input pipes together will determine the number of threads used for sorting
+    'flag_dtype_is_float' : set this flag to True to export float values to the output mtx matrix
+    'int_num_threads_for_writing' : the number of threads for gzip writer. if 'int_num_threads' > 1, pgzip will be used to write the output gzip file. please note that pgzip (multithreaded version of gzip module) has some memory-leaking issue for large inputs.
+    'flag_delete_input_files' : delete input files
+    'za_mtx', 'za_mtx_index' : to build ramtx zarr object from the input mtx files, please use these arguments to pass over zarr mtx and zarr mtx index objects.
 
+    """
+    # check validity of inputs
+    if path_file_gzip_sorted is None :
+        assert za_mtx is not None and za_mtx_index is not None # if ramtx zarr object will be written, both arguments should be valid
+    # create a temporary folder
+    path_folder = path_file_gzip.rsplit( '/', 1 )[ 0 ] + '/'
+    path_folder_temp = f"{path_folder}temp_{UUID( )}/"
+    os.makedirs( path_folder_temp, exist_ok = True )
+    
+    # create and sort chunks
+    def __detect_header_mtx( file ) :
+        """ # 2022-07-28 10:21:15 
+        detect header lines from mtx file
+        """
+        line = file.readline( )
+        if len( line ) > 0 and line[ 0 ] == '%' : # if commend lines are detected 
+            # read comment and the description line of a mtx file
+            while True :
+                if line[ 0 ] != '%' : # once a description line was consumed, exit the function
+                    break
+                line = file.readline( ) # read the next line
+            return None
+        else : # if no header was detected, return a consumed line
+            return line
+    def __decode_mtx( line ) :
+        """ # 2022-07-27 00:28:42 
+        decode a line and return a parsed line (record)
+        """
+        ''' parse a mtx record '''
+        try :
+            index_row, index_column, float_value = line.strip( ).split( ) # parse a record of a matrix-market format file
+        except :
+            return None
+        index_row, index_column, float_value = int( index_row ) - 1, int( index_column ) - 1, float( float_value ) # 1-based > 0-based coordinates
+        # return record with decoration according to the sorted axis # return 0-based coordinates
+        if flag_mtx_sorted_by_id_feature :
+            res = index_row, ( index_column, float_value ) 
+        else :
+            res = index_column, ( index_row, float_value )
+        return res
+    convert_to_output_dtype = float if flag_dtype_is_float else int
+    def __encode_mtx( r ) :
+        """ # 2022-07-27 00:31:27 
+        encode parsed record into a line (in an original format)
+        """
+        dec, rec = r # retrieve decorator and the remaining record
+        if flag_mtx_sorted_by_id_feature : 
+            index_row = dec
+            index_column, val = rec
+        else :
+            index_column = dec
+            index_row, val = rec
+        val = convert_to_output_dtype( val ) # convert to the output dtype
+        return str( index_row + 1 ) + ' ' + str( index_column + 1 ) + ' ' + str( val ) + '\n' # return the output
+    pipe_sender, pipe_receiver = mp.Pipe( ) # create a link
+    l_p = create_and_sort_chunk( path_file_gzip, f"{path_folder_temp}chunk", __encode_mtx, __decode_mtx, pipe_sender, func_detect_header = __detect_header_mtx, int_num_records_in_a_chunk = int_num_records_in_a_chunk, int_num_threads_for_sorting_and_writing = int_num_threads_for_chunking, int_buffer_size = int_buffer_size ) # retrieve processes
+    for p in l_p : p.start( ) # start chunking
+    
+    l_path_file_for_concurrent_merge_sorting = [ ]
+    l_path_file_chunk_for_merging = [ ]
+    dict_process = dict( )
+    
+    def __combine_chunks( path_file_output, l_path_file, pipe_sender ) :
+        """ # 2022-07-27 22:05:31 
+        merge sort a given list of chunks and return a signal once operation has been completed
+        """
+        pipe_sender.send( concurrent_merge_sort_using_pipe_mtx( path_file_output = path_file_output, l_path_file = l_path_file, flag_mtx_sorted_by_id_feature = flag_mtx_sorted_by_id_feature, int_buffer_size = int_buffer_size, compresslevel = compresslevel, int_max_num_pipe_for_each_worker = int_max_num_input_files_for_each_merge_sort_worker, flag_dtype_is_float = flag_dtype_is_float, flag_return_processes = False, int_num_threads = int_num_threads_for_writing, flag_delete_input_files = True ) )
+    def __run_combine_chunks( l_path_file ) :
+        pipe_sender, pipe_receiver = mp.Pipe( ) # create a link
+        path_file_output = f"{path_folder_temp}combined_chunk.{UUID( )}.gz"
+        p = mp.Process( target = __combine_chunks, args = ( path_file_output, l_path_file, pipe_sender ) )
+        dict_process[ UUID( ) ] = { 'p' : p, 'pipe_receiver' : pipe_receiver, 'path_file_output' : path_file_output } # collect the process
+        p.start( ) # start the process
+    def __collect_files_for_concurrent_merge_sorting( ) :
+        for id_process in list( dict_process ) :
+            if dict_process[ id_process ][ 'pipe_receiver' ].poll( ) : # if the process has been completed
+                path_file_output = dict_process[ id_process ][ 'pipe_receiver' ].recv( ) # receive output
+                assert path_file_output is not None # check whether the merge sort was successful
+                l_path_file_for_concurrent_merge_sorting.append( path_file_output ) # collect the file path of the larger chunk
+                dict_process[ id_process ][ 'p' ].join( )
+                del dict_process[ id_process ] # remove the process from the dictionary of running processes
+    ''' merge created chunks into larger chunks while chunking is completed '''
+    while True :
+        if not pipe_receiver.poll( ) :
+            time.sleep( 1 ) # sleep for 1 second
+        else : # if an input is available
+            path_file_chunk = pipe_receiver.recv( )
+            # if all chunks are created, exit
+            if path_file_chunk is None :
+                break
+            # collect file path of chunks, and combine these smaller chunks into larger chunks for concurrent merge sort operation
+            if int_num_chunks_to_combine_before_concurrent_merge_sorting == 1 : # when 'int_num_chunks_to_combine_before_concurrent_merge_sorting' == 1, the small chunks will be directly used for concurrent merge sort.
+                l_path_file_for_concurrent_merge_sorting.append( path_file_chunk )
+            else :
+                l_path_file_chunk_for_merging.append( path_file_chunk ) # collect file path of chunks
+                if len( l_path_file_chunk_for_merging ) >= int_num_chunks_to_combine_before_concurrent_merge_sorting : # if the number of collected chunks reaches the number that could be combined into a larger chunk
+                    __run_combine_chunks( l_path_file_chunk_for_merging ) # combine chunks into a larger chunk
+                    l_path_file_chunk_for_merging = [ ] # initialize the list for the next run
+                __collect_files_for_concurrent_merge_sorting( ) # collect file path of chunks for concurrent merge sorting
+                    
+    if len( l_path_file_chunk_for_merging ) > 0 :
+        l_path_file_for_concurrent_merge_sorting.extend( l_path_file_chunk_for_merging )
+        
+    while len( dict_process ) > 0 : # wait until all preliminary merge sort operation on created chunks are completed
+        __collect_files_for_concurrent_merge_sorting( ) # collect files for concurrent merge sorting
+        time.sleep( 1 ) # sleep for 1 second
+    
+    if path_file_gzip_sorted is not None : # if an ouptut file is another mtx.gz file
+        # retrieve metadata from the input mtx file
+        int_num_rows, int_num_columns, int_num_records = MTX_10X_Retrieve_number_of_rows_columns_and_records( path_file_gzip )
+        header = f"""%%MatrixMarket matrix coordinate integer general\n%\n{int_num_rows} {int_num_columns} {int_num_records}\n""" # compose a header
+
+        # perform merge sorting preliminarily merge-sorted chunks into a single sorted output file
+        os.makedirs( path_file_gzip_sorted.rsplit( '/', 1 )[ 0 ], exist_ok = True ) # create an output folder
+        concurrent_merge_sort_using_pipe_mtx( path_file_gzip_sorted, l_path_file_for_concurrent_merge_sorting, flag_mtx_sorted_by_id_feature = flag_mtx_sorted_by_id_feature, int_buffer_size = int_buffer_size, compresslevel = compresslevel, int_max_num_pipe_for_each_worker = int_max_num_input_files_for_each_merge_sort_worker, flag_dtype_is_float = flag_dtype_is_float, flag_return_processes = False, int_num_threads = int_num_threads_for_writing, flag_delete_input_files = True, header = header ) # write matrix market file header
+    else : # if an output is a ramtx zarr object
+        concurrent_merge_sort_using_pipe_mtx( l_path_file = l_path_file_for_concurrent_merge_sorting, flag_mtx_sorted_by_id_feature = flag_mtx_sorted_by_id_feature, int_buffer_size = int_buffer_size, compresslevel = compresslevel, int_max_num_pipe_for_each_worker = int_max_num_input_files_for_each_merge_sort_worker, flag_dtype_is_float = flag_dtype_is_float, flag_return_processes = False, int_num_threads = int_num_threads_for_writing, flag_delete_input_files = True, za_mtx = za_mtx, za_mtx_index = za_mtx_index ) # write ramtx zarr object
+    
+    # delete temp folder
+    shutil.rmtree( path_folder_temp )
+def create_ramtx_from_mtx( path_folder_mtx_10x_input, path_folder_output, int_num_records_in_a_chunk = 10000000, int_buffer_size = 300, compresslevel = 6, flag_dtype_is_float = False, flag_mtx_sorted_by_id_feature = True, int_num_threads_for_chunking = 5, int_num_threads_for_writing = 1, int_max_num_input_files_for_each_merge_sort_worker = 8, int_num_chunks_to_combine_before_concurrent_merge_sorting = 8, dtype_mtx = np.float64, dtype_mtx_index = np.float64, int_num_of_records_in_a_chunk_zarr_matrix = 20000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, verbose = False, flag_debugging = False ) :
+    """ # 2022-07-29 21:25:59 
+    sort a given mtx file in a very time- and memory-efficient manner, and create ramtx object in the given output folder
+    
+    'path_folder_mtx_10x_input' : a folder where mtx/feature/barcode files reside.
+    'path_folder_output' : folder directory of the output folder that will contains zarr representation of a mtx file
+    'int_num_records_in_a_chunk' : the number of maximum records in a chunk
+    'int_num_threads_for_chunking' : number of workers for sorting and writing operations. the number of worker for reading the input gzip file will be 1.
+    'int_buffer_size' : the number of entries for each batch that will be given to 'pipe_sender'. increasing this number will reduce the overhead associated with interprocess-communication through pipe, but will require more memory usage
+    'flag_mtx_sorted_by_id_feature' : whether to create decoration with id_feature / id_barcode
+    'compresslevel' : compression level of the output Gzip file. 6 by default
+    'int_max_num_input_files_for_each_merge_sort_worker' : maximum number of input pipes for each worker. this argument and the number of input pipes together will determine the number of threads used for sorting
+    'flag_dtype_is_float' : set this flag to True to export float values to the output mtx matrix
+    'int_num_threads_for_writing' : the number of threads for gzip writer. if 'int_num_threads' > 1, pgzip will be used to write the output gzip file. please note that pgzip (multithreaded version of gzip module) has some memory-leaking issue for large inputs.
+    'flag_delete_input_files' : delete input files
+    
+    -- for zarr creation --
+    'dtype_mtx' (default: np.float64), dtype of the output zarr array for storing matrix
+    'dtype_mtx_index' (default: np.float64) : dtype of the output zarr array for storing matrix indices
+    'flag_debugging' : if True, does not delete temporary files
+    'int_num_of_records_in_a_chunk_zarr_matrix' : chunk size for output zarr objects
+    'int_num_of_entries_in_a_chunk_zarr_matrix_index' : chunk size for output zarr objects
+
+    """
+    path_file_flag_completion = f"{path_folder_output}ramtx.completed.flag"
+    if os.path.exists( path_file_flag_completion ) : # exit if a flag indicating the pipeline was completed previously.
+        return
+    
+    path_folder_temp = f"{path_folder_output}temp_{UUID( )}/"
+    os.makedirs( path_folder_temp, exist_ok = True )
+    
+    
+    """
+    construct RAMTx (Zarr) matrix
+    """
+    # retrieve file pathes
+    path_file_input_bc, path_file_input_feature, path_file_input_mtx = __Get_path_essential_files__( path_folder_mtx_10x_input )
+    # retrieve metadata from the input mtx file
+    int_num_features, int_num_barcodes, int_num_records = MTX_10X_Retrieve_number_of_rows_columns_and_records( path_folder_mtx_10x_input ) # retrieve metadata of mtx
+    # create an output directory
+    os.makedirs( path_folder_output, exist_ok = True )
+    # open persistent zarr arrays to store matrix and matrix index
+    za_mtx = zarr.open( f'{path_folder_output}matrix.zarr', mode = 'w', shape = ( int_num_records, 2 ), chunks = ( int_num_of_records_in_a_chunk_zarr_matrix, 2 ), dtype = dtype_mtx ) # each mtx record will contains two values instead of three values for more compact storage 
+    za_mtx_index = zarr.open( f'{path_folder_output}matrix.index.zarr', mode = 'w', shape = ( int_num_features if flag_mtx_sorted_by_id_feature else int_num_barcodes, 2 ), chunks = ( int_num_of_entries_in_a_chunk_zarr_matrix_index, 2 ), dtype = dtype_mtx_index ) # max number of matrix index entries is 'int_num_records' of the input matrix. this will be resized # dtype of index should be np.float64 to be compatible with Zarr.js, since Zarr.js currently does not support np.int64...
+    # build RAMtx matrix from the input matrix file
+    sort_mtx( path_file_input_mtx, int_num_records_in_a_chunk = int_num_records_in_a_chunk, int_buffer_size = int_buffer_size, compresslevel = compresslevel, flag_dtype_is_float = flag_dtype_is_float, flag_mtx_sorted_by_id_feature = flag_mtx_sorted_by_id_feature, int_num_threads_for_chunking = int_num_threads_for_chunking, int_num_threads_for_writing = int_num_threads_for_writing, int_max_num_input_files_for_each_merge_sort_worker = int_max_num_input_files_for_each_merge_sort_worker, int_num_chunks_to_combine_before_concurrent_merge_sorting = int_num_chunks_to_combine_before_concurrent_merge_sorting, za_mtx = za_mtx, za_mtx_index = za_mtx_index )
+    
+    """
+    prepare data for the axes (features/barcodes)
+    """
+    ''' write sorted barcodes and features files to zarr objects'''
+    for name_axis, flag_used_for_sorting in zip( [ 'barcodes', 'features' ], [ not flag_mtx_sorted_by_id_feature, flag_mtx_sorted_by_id_feature ] ) : # retrieve a flag whether the entry was used for sorting.
+        df = pd.read_csv( f"{path_folder_mtx_10x_input}{name_axis}.tsv.gz", sep = '\t', header = None )
+        df.sort_values( 0, inplace = True ) # sort by id_barcode or id_feature
+
+        # annotate and split the dataframe into a dataframe containing string representations and another dataframe containing numbers and categorical data, and save to Zarr objects separately
+        df.columns = list( f"{name_axis}_{i}" for i in range( len( df.columns ) ) ) # name the columns using 0-based indices
+        df_str = df.iloc[ :, : 2 ]
+        df_num_and_cat = df.iloc[ :, 2 : ]
+        del df 
+
+        # write zarr object for random access of string representation of features/barcodes
+        za = zarr.open( f'{path_folder_output}{name_axis}.str.zarr', mode = 'w', shape = df_str.shape, chunks = ( int_num_of_entries_in_a_chunk_zarr_matrix_index, 1 ), dtype = str, synchronizer = zarr.ThreadSynchronizer( ) ) # multithreading? # string object # individual columns will be chucked, so that each column can be retrieved separately.
+        za[ : ] = df_str.values
+        # write random-access compatible format for web applications (#2022-06-20 10:57:51 currently there is no javascript packages supporting string zarr objects)
+        if flag_used_for_sorting :
+            WEB.Index_Chunks_and_Base64_Encode( df_to_be_chunked_and_indexed = df_str, int_num_rows_for_each_chunk = int_num_of_entries_in_a_chunk_zarr_matrix_index, path_prefix_output = f"{path_folder_output}{name_axis}.str", path_folder_temp = path_folder_temp, flag_delete_temp_folder = True, flag_include_header = False )
+        del df_str
+
+        # build a ZarrDataFrame object for random access of number and categorical data of features/barcodes
+        zdf = ZarrDataFrame( f'{path_folder_output}{name_axis}.num_and_cat.zdf', df = df_num_and_cat, int_num_rows = len( df_num_and_cat ), int_num_rows_in_a_chunk = int_num_of_entries_in_a_chunk_zarr_matrix_index, flag_store_string_as_categorical = True, flag_retrieve_categorical_data_as_integers = True, flag_enforce_name_col_with_only_valid_characters = False, flag_load_data_after_adding_new_column = False ) # use the same chunk size for all feature/barcode objects
+        del df_num_and_cat
+
+    ''' write metadata '''
+    root = zarr.group( f'{path_folder_output}' )
+    root.attrs[ 'dict_ramtx_metadata' ] = { 
+        'path_folder_mtx_10x_input' : path_folder_mtx_10x_input,
+        'flag_ramtx_sorted_by_id_feature' : flag_mtx_sorted_by_id_feature,
+        'str_completed_time' : TIME_GET_timestamp( True ),
+        'int_num_features' : int_num_features,
+        'int_num_barcodes' : int_num_barcodes,
+        'int_num_records' : int_num_records,
+        'int_num_of_records_in_a_chunk_zarr_matrix' : int_num_of_records_in_a_chunk_zarr_matrix,
+        'int_num_of_entries_in_a_chunk_zarr_matrix_index' : int_num_of_entries_in_a_chunk_zarr_matrix_index,
+        'version' : _version_,
+    }
+
+    # delete temp folder
+    shutil.rmtree( path_folder_temp )
+    
+    ''' write a flag indicating the export has been completed '''
+    with open( path_file_flag_completion, 'w' ) as file :
+        file.write( TIME_GET_timestamp( True ) )
+    
 ''' utility functions for handling zarr '''
 def zarr_exists( path_folder_zarr ) :
     """ # 2022-07-20 01:06:09 
@@ -3705,7 +4094,7 @@ class RAMtx( ) :
         if len( ns[ 'l_int_entry_current_batch' ] ) > 0 :
             yield ns[ 'l_int_entry_current_batch' ]
 ''' a class for representing axis of RamData (barcodes/features) '''
-class Axis( ) :
+class RamDataAxis( ) :
     """ # 2022-07-16 23:56:47 
     a memory-efficient container of features/barcodes and associated metadata for a given RamData object.
     
@@ -4192,7 +4581,7 @@ class Axis( ) :
         # return subsampled entries
         return ba_subsampled
 ''' a class for representing a layer of RamData '''
-class Layer( ) :
+class RamDataLayer( ) :
     """ # 2022-06-25 16:32:19 
     A class for interactions with a pair of RAMtx objects of a count matrix. 
     
@@ -4813,8 +5202,8 @@ class RamData( ) :
                     print( 'The current RamData object cannot be modified yet no mask location is given. Therefore, the current RamData object will be "read-only"' )
         
         # initialize axis objects
-        self.bc = Axis( path_folder_ramdata, 'barcodes', ba_filter = None, ramdata = self, dict_kw_zdf = dict_kw_zdf, dict_kw_view = dict_kw_view, int_index_str_rep = int_index_str_rep_for_barcodes, verbose = verbose, mode = self._mode, path_folder_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only )
-        self.ft = Axis( path_folder_ramdata, 'features', ba_filter = None, ramdata = self, dict_kw_zdf = dict_kw_zdf, dict_kw_view = dict_kw_view, int_index_str_rep = int_index_str_rep_for_features, verbose = verbose, mode = self._mode, path_folder_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only )
+        self.bc = RamDataAxis( path_folder_ramdata, 'barcodes', ba_filter = None, ramdata = self, dict_kw_zdf = dict_kw_zdf, dict_kw_view = dict_kw_view, int_index_str_rep = int_index_str_rep_for_barcodes, verbose = verbose, mode = self._mode, path_folder_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only )
+        self.ft = RamDataAxis( path_folder_ramdata, 'features', ba_filter = None, ramdata = self, dict_kw_zdf = dict_kw_zdf, dict_kw_view = dict_kw_view, int_index_str_rep = int_index_str_rep_for_features, verbose = verbose, mode = self._mode, path_folder_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only )
         
         # initialize layor object
         self.layer = name_layer
@@ -4909,7 +5298,7 @@ class RamData( ) :
                 raise KeyError( f"'{name_layer}' data does not exists in the current RamData" )
 
             if name_layer != self.layer : # load new layer
-                self._layer = Layer( self._path_folder_ramdata, name_layer, ramdata = self, dtype_of_feature_and_barcode_indices = self._dtype_of_feature_and_barcode_indices, dtype_of_values = self._dtype_of_values, int_num_cpus = self._int_num_cpus_for_fetching_data, verbose = self.verbose, mode = self._mode, path_folder_ramdata_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only )
+                self._layer = RamDataLayer( self._path_folder_ramdata, name_layer, ramdata = self, dtype_of_feature_and_barcode_indices = self._dtype_of_feature_and_barcode_indices, dtype_of_values = self._dtype_of_values, int_num_cpus = self._int_num_cpus_for_fetching_data, verbose = self.verbose, mode = self._mode, path_folder_ramdata_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only )
 
                 if self.verbose :
                     print( f"'{name_layer}' layer has been loaded" )
@@ -5128,6 +5517,11 @@ class RamData( ) :
                             useful for identifying informative features
                             
                             returns: 'sum', 'mean', 'deviation', 'variance'
+                            
+                    'count_min_max' :
+                            calculate the min and max values, and count the number of active barcodes/features (that were not indexed) for the entry of the indexed axis
+                            
+                            returns: 'count', 'max', 'min'
                     
         'int_num_threads' : the number of CPUs to use. by default, the number of CPUs set by the RamData attribute 'int_num_cpus' will be used.
         'flag_overwrite_columns' : (Default: True) overwrite the columns of the output annotation dataframe of RamData.adata if columns with the same colume name exists
@@ -5188,6 +5582,17 @@ class RamData( ) :
                 arr_dev = ( arr_value - dict_summary[ 'mean' ] ) ** 2 # calculate the deviation
                 dict_summary[ 'deviation' ] = np.sum( arr_dev ) if int_num_records > 30 else sum( arr_dev )
                 dict_summary[ 'variance' ] = dict_summary[ 'deviation' ] / ( int_total_num_entries_not_indexed - 1 ) if int_total_num_entries_not_indexed > 1 else np.nan
+                return dict_summary
+        elif summarizing_func == 'count_min_max' :
+            int_min_num_records_for_numpy = 30
+            def summarizing_func( self, int_entry_indexed, arr_int_entries_not_indexed, arr_value ) :
+                ''' # 2022-07-27 15:29:07 
+                calculate sum and deviation of the values of the current entry
+                
+                assumes 'int_num_records' > 0
+                '''
+                int_num_records = len( arr_value ) # retrieve the number of records of the current entry
+                dict_summary = { 'count' : int_num_records, 'max' : np.max( arr_value ) if int_num_records > int_min_num_records_for_numpy else max( arr_value ), 'min' : np.min( arr_value ) if int_num_records > int_min_num_records_for_numpy else min( arr_value ) } # if an input array has more than 'int_min_num_records_for_numpy' elements, use numpy to calculate min/max values
                 return dict_summary
         elif not hasattr( summarizing_func, '__call__' ) : # if 'summarizing_func' is not a function, report error message and exit
             if self.verbose :
@@ -5556,6 +5961,64 @@ class RamData( ) :
     
         if not flag_name_col_total_count_already_loaded : # unload count data of barcodes from memory if the count data was not loaded before calling this method
             del self.bc.meta.dict[ name_col_total_count ]
+    def scale( self, name_layer = 'normalized_log1p', name_layer_new = 'normalized_log1p_scaled', name_col_variance = 'normalized_log1p_variance', name_col_mean = 'normalized_log1p_mean', max_value = 10, flag_simultaneous_processing_of_paired_ramtx = True, int_num_threads = None, ** args ) :
+        """ # 2022-07-27 16:32:26 
+        current implementation only allows output values to be not zero-centered. the zero-value will remain zero, while Z-scores of the non-zero values will be increased by Z-score of zero values, enabling processing of sparse count data
+
+        'name_layer' : the name of the data source layer
+        'name_layer_new' : the name of the data sink layer (new layer)
+        'name_col_variance' : name of feature metadata containing variance informatin
+        'name_col_mean' : name of feature metadata containing mean informatin
+        'max_value' : clip values larger than 'max_value' to 'max_value'
+        """
+        # check validity of inputs
+        # column names should be available in the metadata
+        assert name_col_variance in self.ft.meta 
+    #     assert name_col_mean in self.ft.meta 
+
+        # load feature data
+        # retrieve flag indicating whether the data has been already loaded 
+        flag_name_col_variance_already_loaded = name_col_variance in self.ft.meta.dict 
+        if not flag_name_col_variance_already_loaded : # load data in memory
+            self.ft.meta.load_as_dict( name_col_variance )
+    #     flag_name_col_mean_already_loaded = name_col_mean in self.ft.meta.dict 
+    #     if not flag_name_col_mean_already_loaded : 
+    #         self.ft.meta.load_as_dict( name_col_mean )
+        # retrieve data as a dictionary
+        dict_variance = self.ft.meta.dict[ name_col_variance ]
+    #     dict_mean = self.ft.meta.dict[ name_col_mean ]
+
+        # load layer
+        self.layer = name_layer
+
+        # define functions for scaling
+        def func_feature_indexed( self, int_entry_indexed, arr_int_entries_not_indexed, arr_value ) :
+            """ # 2022-07-27 14:32:21 
+            """
+            float_std = dict_variance[ int_entry_indexed ] ** 0.5 # retrieve standard deviation from the variance
+            if float_std == 0 : # handle when standard deviation is zero (all the data values should be zero)
+                return int_entry_indexed, arr_int_entries_not_indexed, arr_value # return result
+            arr_value /= float_std # scale count data using the standard deviation (in-place)
+            arr_value[ arr_value > max_value ] = max_value # cap exceptionally large values (in-place)
+            return int_entry_indexed, arr_int_entries_not_indexed, arr_value # return scaled data
+
+        def func_barcode_indexed( self, int_entry_indexed, arr_int_entries_not_indexed, arr_value ) : # normalize count data of a single barcode containing (likely) multiple features
+            """ # 2022-07-27 16:32:21 
+            """
+            # perform scaling in-place to reduce memory consumption
+            for i, e in enumerate( arr_int_entries_not_indexed.astype( int ) ) : # iterate through barcodes
+                float_std = dict_variance[ e ] ** 0.5 # retrieve standard deviation of the current feature from the variance
+                arr_value[ i ] = 0 if float_std == 0 else arr_value[ i ] / float_std # perform scaling of data for each feature
+            return int_entry_indexed, arr_int_entries_not_indexed, arr_value
+
+        ''' process the RAMtx matrices '''
+        self.apply( name_layer, name_layer_new, func = ( func_barcode_indexed, func_feature_indexed ), flag_simultaneous_processing_of_paired_ramtx = flag_simultaneous_processing_of_paired_ramtx, int_num_threads = int_num_threads, ** args ) # flag_dtype_output = None : use the same dtype as the input RAMtx object
+
+        # unload count data of barcodes from memory if the count data was not loaded before calling this method
+    #     if not flag_name_col_mean_already_loaded : 
+    #         del self.ft.meta.dict[ name_col_mean ]
+        if not flag_name_col_variance_already_loaded : 
+            del self.ft.meta.dict[ name_col_variance ]
     def identify_highly_variable_features( self, name_layer = 'normalized_log1p', int_num_highly_variable_features = 2000, float_min_mean = 0.01, float_min_variance = 0.01, name_col_filter = 'filter_normalized_log1p_highly_variable', flag_show_graph = True, coords_for_sampling = range( 0, 1000000 ) ) :
         """ # 2022-06-07 22:53:55 
         identify highly variable features
