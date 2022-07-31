@@ -27,7 +27,7 @@ import sklearn.cluster as skc # K-means
 # define version
 _version_ = '0.0.3'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-07-28 23:43:23'
+_last_modified_time_ = '2022-07-31 14:45:06'
 
 """ # 2022-07-21 10:35:42  realease note
 
@@ -51,6 +51,21 @@ Also, hard dependency on feature/barcode sorted ramtx will be dropped, and a new
 
 # 2022-07-30 17:24:25 
 metadata naming convention changed, removing backward compatibility.
+
+dense ramtx was introduced, and the dependency on the existence of a paired sparse ramtx object was dropped. 
+below is a short description about the different types of ramtx objects:
+
+    # 'mode' of RAMtx objects
+    There are three valid 'mode' (or internal structures) for RAMtx object : {'dense' or 'sparse_sorted_by_barcodes', 'sparse_sorted_by_features'}
+    
+    (sparse_sorted_by_barcodes) <---> (dense) <---> (sparse_sorted_by_features)
+    *fast barcode data retrieval                    *fast feature data retrieval
+    
+    As shown above, RAMtx objects are interconvertible. Of note, for the converion between sparse ramtx sorted by barcodes and features, 'dense' ramtx object should be used in the conversion process.
+    - dense ramtx object can be used to retrieve data of a single barcode or feature (with moderate efficiency)
+    - sparse ramtx object can only be used data of either a single barcode ('sparse_sorted_by_barcodes') or a single feature ('sparse_sorted_by_features') very efficiently.
+    
+    
 """
 
 ''' previosuly written for biobookshelf '''
@@ -2150,7 +2165,6 @@ def Convert_MTX_10X_to_RamData( path_folder_mtx_10x_input, path_folder_ramdata_o
         'layers' : [ name_layer ],
         'version' : _version_,
     }
-
 ''' memory-efficient methods for creating RAMtx/RamData object '''
 # latest 2022-07-28 11:31:12 
 # implementation using pipe (~3 times more efficient)
@@ -2759,7 +2773,7 @@ def create_zarr_from_mtx( path_file_input_mtx, path_folder_zarr, int_buffer_size
     'path_folder_zarr' : output zarr object folder
     'int_buffer_size' : number of lines for a pipe communcation. larger value will decrease an overhead for interprocess coummuncaiton. however, it will lead to more memory usage.
     'int_num_workers_for_writing_ramtx' : the number of worker for writing zarr object
-    'chunks_dense' : chunk size of the output zarr object. smaller number of rows in a chunk will lead to smaller memory consumption, since data of all genes for the cells in a chunk will be collected before writing.
+    'chunks_dense' : chunk size of the output zarr object. smaller number of rows in a chunk will lead to smaller memory consumption, since data of all genes for the cells in a chunk will be collected before writing. ( int_num_barcodes_in_a_chunk, int_num_features_in_a_chunk )
     'dtype_mtx' : zarr object dtype
     """
     int_num_barcodes_in_a_chunk = chunks_dense[ 0 ]
@@ -2878,7 +2892,7 @@ def create_ramtx_from_mtx( path_folder_mtx_10x_input, path_folder_output, mode =
     -- basic arguments --
     'path_folder_mtx_10x_input' : a folder where mtx/feature/barcode files reside.
     'path_folder_output' : folder directory of the output folder that will contains zarr representation of a mtx file
-    'mode' : {'dense' or 'sparse_sorted_by_barcodes', 'sparse_sorted_by_features'} : whether to create dense ramtx or sparse ramtx. for sparse ramtx, please set the appropriate 'flag_mtx_sorted_by_id_feature' flag argument for sorting. When building a dense ramtx, the chunk size can be set using 'chunks_dense' arguments
+    'mode' : {'dense' or 'sparse_for_querying_barcodes', 'sparse_for_querying_features'} : whether to create dense ramtx or sparse ramtx. for sparse ramtx, please set the appropriate 'flag_mtx_sorted_by_id_feature' flag argument for sorting. When building a dense ramtx, the chunk size can be set using 'chunks_dense' arguments
     'int_buffer_size' : the number of entries for each batch that will be given to 'pipe_sender'. increasing this number will reduce the overhead associated with interprocess-communication through pipe, but will require more memory usage
     'flag_debugging' : if True, does not delete temporary files
     
@@ -2896,7 +2910,7 @@ def create_ramtx_from_mtx( path_folder_mtx_10x_input, path_folder_output, mode =
 
     -- for dense ramtx creation --
     'dtype_dense_mtx' (default: np.float64), dtype of the output zarr array for storing dense matrix
-    'chunks_dense' : chunk size for dense ramtx object. if None is given, a dense ramtx object will be created. when dense ramtx object is created, the number of threads for chunking can be set using the 'int_num_threads_for_chunking' argument
+    'chunks_dense' : chunk size for dense ramtx object. if None is given, a dense ramtx object will be created. when dense ramtx object is created, the number of threads for chunking can be set using the 'int_num_threads_for_chunking' argument ( int_num_barcodes_in_a_chunk, int_num_features_in_a_chunk )
     
     -- for metadata creation --
     'int_num_of_entries_in_a_chunk_metadata' : chunk size for output ramtx metadata
@@ -3002,9 +3016,9 @@ def create_ramdata_from_mtx( path_folder_mtx_10x_input, path_folder_ramdata_outp
     -- basic arguments --
     'path_folder_mtx_10x_input' : a folder where mtx/feature/barcode files reside.
     'path_folder_ramdata_output' : an output folder directory of the RamData object
-    'set_modes' : a set of {'dense', 'sparse_sorted_by_barcodes', 'sparse_sorted_by_features'} : modes of ramtxs to build. 
+    'set_modes' : a set of {'dense', 'sparse_for_querying_barcodes', 'sparse_for_querying_features'} : modes of ramtxs to build. 
                 'dense' : dense ramtx. When building a dense ramtx, the chunk size can be set using 'chunks_dense' arguments
-                'sparse_sorted_by_barcodes/features' : sparse ramtx sorted by each axis
+                'sparse_for_querying_barcodes/features' : sparse ramtx sorted by each axis
     'int_buffer_size' : the number of entries for each batch that will be given to 'pipe_sender'. increasing this number will reduce the overhead associated with interprocess-communication through pipe, but will require more memory usage
     'flag_debugging' : if True, does not delete temporary files
     
@@ -3024,7 +3038,7 @@ def create_ramdata_from_mtx( path_folder_mtx_10x_input, path_folder_ramdata_outp
 
     -- for dense ramtx creation --
     'dtype_dense_mtx' (default: np.float64), dtype of the output zarr array for storing dense matrix
-    'chunks_dense' : chunk size for dense ramtx object. if None is given, a dense ramtx object will be created. when dense ramtx object is created, the number of threads for chunking can be set using the 'int_num_threads_for_chunking' argument
+    'chunks_dense' : chunk size for dense ramtx object. if None is given, a dense ramtx object will be created. when dense ramtx object is created, the number of threads for chunking can be set using the 'int_num_threads_for_chunking' argument ( int_num_barcodes_in_a_chunk, int_num_features_in_a_chunk )
     
     -- for metadata creation --
     'int_num_of_entries_in_a_chunk_metadata' : chunk size for output ramtx metadata
@@ -3033,7 +3047,7 @@ def create_ramdata_from_mtx( path_folder_mtx_10x_input, path_folder_ramdata_outp
     'name_layer' : a name of the ramdata layer to create (default: raw)
     """
     ''' handle arguments '''
-    set_valid_modes = { 'dense', 'sparse_sorted_by_barcodes', 'sparse_sorted_by_features' }
+    set_valid_modes = { 'dense', 'sparse_for_querying_barcodes', 'sparse_for_querying_features' }
     set_modes = set( e for e in set( e.lower( ).strip( ) for e in set_modes ) if e in set_valid_modes ) # retrieve valid mode
     assert len( set_modes ) > 0 # at least one valid mode should exists
     
@@ -3089,7 +3103,7 @@ def create_ramdata_from_mtx( path_folder_mtx_10x_input, path_folder_ramdata_outp
     # write layer metadata
     lay = zarr.group( path_folder_ramdata_layer )
     lay.attrs[ 'dict_metadata' ] = { 
-        'set_modes' : list( set_modes ),
+        'set_modes' : list( set_modes ) + ( [ 'dense_for_querying_barcodes', 'dense_for_querying_features' ] if 'dense' in set_modes else [ ] ), # dense ramtx can be operated for querying either barcodes/features
         'version' : _version_,
     }
     
@@ -3957,13 +3971,25 @@ class ZarrDataFrame( ) :
             del values
             self.dict[ name_col ] = dict_data # add column loaded as a dictionary to the cache    
             
-''' a class for accessing Zarr-backed count matrix data (RAMtx, Random-access matrix) '''
+''' a class for accessing Zarr-backed count matrix data (RAMtx, Random-Access matrix) '''
 class RAMtx( ) :
-    """ # 2022-07-21 00:03:40 
+    """ # 2022-07-31 00:50:03 
     This class represent a random-access mtx format for memory-efficient exploration of extremely large single-cell transcriptomics/genomics data.
     This class use a count matrix data stored in a random read-access compatible format, called RAMtx, enabling exploration of a count matrix with hundreds of millions cells with hundreds of millions of features.
     Also, the RAMtx format is supports multi-processing, and provide convenient interface for parallel processing of single-cell data
     Therefore, for exploration of count matrix produced from 'scarab count', which produces dozens of millions of features extracted from both coding and non coding regions, this class provides fast front-end application for exploration of exhaustive data generated from 'scarab count'
+    
+    
+    # 'mode' of RAMtx objects
+    There are three valid 'mode' (or internal structures) for RAMtx object : {'dense' or 'sparse_for_querying_barcodes', 'sparse_for_querying_features'}
+    
+    (sparse_for_querying_barcodes) <---> (dense) <---> (sparse_for_querying_features)
+    *fast barcode data retrieval                       *fast feature data retrieval
+    
+    As shown above, RAMtx objects are interconvertible. Of note, for the converion between sparse ramtx sorted by barcodes and features, 'dense' ramtx object should be used in the conversion process.
+    - dense ramtx object can be used to retrieve data of a single barcode or feature (with moderate efficiency)
+    - sparse ramtx object can only be used data of either a single barcode ('sparse_for_querying_barcodes') or a single feature ('sparse_for_querying_features') very efficiently.
+    
     
     arguments:
     'path_folder_ramtx' : a folder containing RAMtx object
@@ -3975,15 +4001,15 @@ class RAMtx( ) :
     'mode' : file mode. 'r' for read-only mode and 'a' for a mode allowing modifications
     'flag_is_read_only' : read-only status of RamData
     'path_folder_ramtx_mask' : a local (local file system) path to the mask of the RAMtx object that allows modifications to be written without modifying the source. if a valid local path to a mask is given, all modifications will be written to the mask
+    'is_for_querying_features' : a flag for indicating whether the current RAMtx will be used for querying features. for sparse matrix, this attribute will be fixed. However, for dense matrix, this atrribute can be changed any time.
     
     """
-    def __init__( self, path_folder_ramtx, ramdata = None, dtype_of_feature_and_barcode_indices = np.int32, dtype_of_values = np.float64, int_num_cpus = 1, verbose = False, flag_debugging = False, mode = 'a', flag_is_read_only = False, path_folder_ramtx_mask = None ) :
-        """ # 2022-07-21 00:03:35 
+    def __init__( self, path_folder_ramtx, ramdata = None, dtype_of_feature_and_barcode_indices = np.uint32, dtype_of_values = np.float64, int_num_cpus = 1, verbose = False, flag_debugging = False, mode = 'a', flag_is_read_only = False, path_folder_ramtx_mask = None, is_for_querying_features = True ) :
+        """ # 2022-07-31 00:49:59 
         """
         # read metadata
         self._root = zarr.open( path_folder_ramtx, 'a' )
-        dict_metadata = self._root.attrs[ 'dict_metadata' ]
-        self._dict_metadata = dict_metadata # set the metadata of the sort, index and export settings
+        self._dict_metadata = self._root.attrs[ 'dict_metadata' ] # retrieve the metadata
         
         # parse the metadata of the RAMtx object
         self._int_num_features, self._int_num_barcodes, self._int_num_records = self._dict_metadata[ 'int_num_features' ], self._dict_metadata[ 'int_num_barcodes' ], self._dict_metadata[ 'int_num_records' ]
@@ -4004,9 +4030,20 @@ class RAMtx( ) :
         self.ba_filter_features = ramdata.ft.filter if ramdata is not None else None
         self.ba_filter_barcodes = ramdata.bc.filter if ramdata is not None else None
         
-        # open Zarr object containing matrix and matrix indices
-        self._za_mtx_index = zarr.open( f'{self._path_folder_ramtx}matrix.index.zarr', 'r' )
-        self._za_mtx = zarr.open( f'{self._path_folder_ramtx}matrix.zarr', 'r' )
+        self.is_sparse = self.mode != 'dense' # retrieve a flag indicating whether ramtx is dense
+        if self.is_sparse :
+            self._is_for_querying_features = self._dict_metadata[ 'flag_ramtx_sorted_by_id_feature' ] # for sparse matrix, this attribute is fixed
+            # open Zarr object containing matrix and matrix indices
+            self._za_mtx_index = zarr.open( f'{self._path_folder_ramtx}matrix.index.zarr', 'r' )
+            self._za_mtx = zarr.open( f'{self._path_folder_ramtx}matrix.zarr', 'r' )
+        else :
+            self.is_for_querying_features = is_for_querying_features # set this attribute
+            self._za_mtx = zarr.open( f'{self._path_folder_ramtx}matrix.zarr', 'r' )
+    @property
+    def mode( self ) :
+        """ # 2022-07-30 20:13:32 
+        """
+        return self._dict_metadata[ 'mode' ]
     @property
     def _path_folder_ramtx_modifiable( self ) :
         """ # 2022-07-21 09:04:28 
@@ -4015,44 +4052,65 @@ class RAMtx( ) :
         return ( None if self._flag_is_read_only else self._path_folder_ramtx ) if self._path_folder_ramtx_mask is None else self._path_folder_ramtx_mask
     @property
     def ba_active_entries( self ) :
-        """ # 2022-07-21 09:17:14 
+        """ # 2022-07-31 00:46:44 
         return a bitarray filter of the indexed axis where all the entries with valid count data is marked '1'
         """
-        # internal settings
-        int_num_chunks_in_a_batch = 100 # 'int_num_chunks_in_a_batch' : the number of chunks in a batch. increasing this number will increase the memory consumption
-        
-        try :
-            za = zarr.open( f'{self._path_folder_ramtx}matrix.index.active_entries.zarr/', mode = 'r', synchronizer = zarr.ThreadSynchronizer( ) ) # open zarr object of the current RAMtx object
-        except : # if the zarr object (cache) is not available
-            # if the boolean array of the active entries is not available
-            if self._path_folder_ramtx_modifiable is None : # if modifiable RAMtx object does not exist
-                za = ( self._za_mtx_index[ :, 1 ] - self._za_mtx_index[ :, 0 ] ) > 0 # retrieve mask without chunking
-            else :
-                # if modifiable RAMtx object is available, using zarr object, retrieve mask chunk by chunk
-                int_size_chunk = self._za_mtx_index.chunks[ 0 ] # retrieve the size of the chunk
-                za = zarr.open( f"{self._path_folder_ramtx_modifiable}matrix.index.active_entries.zarr/", mode = 'w', shape = ( self.len_indexed_axis, ), chunks = ( int_size_chunk * int_num_chunks_in_a_batch, ), dtype = bool, synchronizer = zarr.ThreadSynchronizer( ) ) # the size of the chunk will be 100 times of the chunk used for matrix index, since the dtype is boolean
-                len_indexed_axis = self.len_indexed_axis
-                int_pos_start = 0
-                int_num_entries_to_retrieve = int( int_size_chunk * int_num_chunks_in_a_batch )
-                while int_pos_start < len_indexed_axis :
-                    sl = slice( int_pos_start, int_pos_start + int_num_entries_to_retrieve )
-                    za[ sl ] = ( self._za_mtx_index[ sl ][ :, 1 ] - self._za_mtx_index[ sl ][ :, 0 ] ) > 0 # active entry is defined by finding entries with at least one count record
-                    int_pos_start += int_num_entries_to_retrieve # update the position
-            
-        ba = bk.BA.to_bitarray( za[ : ] ) # return the boolean array of active entries as a bitarray object
-        self._n_active_entries = ba.count( ) # calculate the number of active entries
-        return ba
+        if not self.is_sparse :
+            # currently not implemented
+            # raise NotImplementedError( 'not supported for dense' )
+            # if current ramtx is dense ramtx, assumes all entries are active
+            ba = bitarray( self.len_axis_for_querying )
+            ba.setall( 1 )
+            return ba
+        else : # for sparse matrix
+            # internal settings
+            int_num_chunks_in_a_batch = 100 # 'int_num_chunks_in_a_batch' : the number of chunks in a batch. increasing this number will increase the memory consumption
+
+            try :
+                za = zarr.open( f'{self._path_folder_ramtx}matrix.index.active_entries.zarr/', mode = 'r', synchronizer = zarr.ThreadSynchronizer( ) ) # open zarr object of the current RAMtx object
+            except : # if the zarr object (cache) is not available
+                # if the boolean array of the active entries is not available
+                if self._path_folder_ramtx_modifiable is None : # if modifiable RAMtx object does not exist
+                    za = ( self._za_mtx_index[ :, 1 ] - self._za_mtx_index[ :, 0 ] ) > 0 # retrieve mask without chunking
+                else :
+                    # if modifiable RAMtx object is available, using zarr object, retrieve mask chunk by chunk
+                    int_size_chunk = self._za_mtx_index.chunks[ 0 ] # retrieve the size of the chunk
+                    za = zarr.open( f"{self._path_folder_ramtx_modifiable}matrix.index.active_entries.zarr/", mode = 'w', shape = ( self.len_axis_for_querying, ), chunks = ( int_size_chunk * int_num_chunks_in_a_batch, ), dtype = bool, synchronizer = zarr.ThreadSynchronizer( ) ) # the size of the chunk will be 100 times of the chunk used for matrix index, since the dtype is boolean
+                    len_axis_for_querying = self.len_axis_for_querying
+                    int_pos_start = 0
+                    int_num_entries_to_retrieve = int( int_size_chunk * int_num_chunks_in_a_batch )
+                    while int_pos_start < len_axis_for_querying :
+                        sl = slice( int_pos_start, int_pos_start + int_num_entries_to_retrieve )
+                        za[ sl ] = ( self._za_mtx_index[ sl ][ :, 1 ] - self._za_mtx_index[ sl ][ :, 0 ] ) > 0 # active entry is defined by finding entries with at least one count record
+                        int_pos_start += int_num_entries_to_retrieve # update the position
+                        
+                self._n_active_entries = ba.count( ) # calculate the number of active entries
+
+                # update metadata
+                self._dict_metadata[ 'n_active_entries' ] = self._n_active_entries 
+                self._save_metadata_( )
+
+            ba = bk.BA.to_bitarray( za[ : ] ) # return the boolean array of active entries as a bitarray object
+            return ba
+    def _save_metadata_( self ) :
+        ''' # 2022-07-31 00:40:33 
+        a method for saving metadata to the disk 
+        '''
+        if not self._flag_is_read_only : # update metadata only when the current RamData object is not read-only
+            if hasattr( self, '_dict_metadata' ) : # if metadata has been loaded
+                # convert 'columns' to list before saving attributes
+                self._root.attrs[ 'dict_metadata' ] = self._dict_metadata # update metadata
     @property
     def n_active_entries( self ) :
-        ''' # 2022-07-02 15:04:39 
+        ''' # 2022-07-31 00:46:40 
         calculate the number of active entries
         '''
         # calculate the number of active entries if it has not been calculated.
-        if not hasattr( self, '_n_active_entries' ) :
-            self._n_active_entries = self.ba_active_entries.count( )
-        return self._n_active_entries
+        if not 'n_active_entries' in self._dict_metadata :
+            self.ba_active_entries
+        return self._dict_metadata[ 'n_active_entries' ] if 'n_active_entries' in self._dict_metadata else self.len_axis_for_querying # if the number of active entries cannot be calculated, return the number of all entries
     def __repr__( self ) :
-        return f"<RAMtx object containing {self._int_num_records} records of {self._int_num_features} features X {self._int_num_barcodes} barcodes\n\tRAMtx path: {self._path_folder_ramtx}>"
+        return f"<RAMtx object ({self.mode}) for querying '{'features' if self.is_for_querying_features else  'barcodes'}' containing {self._int_num_records} records of {self._int_num_features} features X {self._int_num_barcodes} barcodes\n\tRAMtx path: {self._path_folder_ramtx}>"
     @property
     def ba_filter_features( self ) :
         ''' # 2022-06-23 17:05:55 
@@ -4082,66 +4140,79 @@ class RAMtx( ) :
             assert len( ba_filter ) == self._int_num_barcodes
         self._ba_filter_barcodes = ba_filter
     @property
+    def is_for_querying_features( self ) :
+        """ # 2022-07-30 20:37:02 
+        """
+        return self._is_for_querying_features
+    @is_for_querying_features.setter
+    def is_for_querying_features( self, flag ) :
+        """ # 2022-07-30 20:37:37 
+        """
+        if self.is_sparse : # if current RAMtx is in sparse format, this property is fixed
+            return 
+        self._is_for_querying_features = flag # update property
+    @property
     def flag_ramtx_sorted_by_id_feature( self ) :
         ''' # 2022-06-23 09:06:51 
         retrieve 'flag_ramtx_sorted_by_id_feature' setting from the RAMtx metadata
         '''
-        return self._dict_metadata[ 'flag_ramtx_sorted_by_id_feature' ]
+        return self._dict_metadata[ 'flag_ramtx_sorted_by_id_feature' ] if self.is_sparse else None
     @property
-    def len_indexed_axis( self ) :
+    def len_axis_for_querying( self ) :
         ''' # 2022-06-23 09:08:44 
         retrieve number of elements of the indexed axis
         '''
-        return self._int_num_features if self.flag_ramtx_sorted_by_id_feature else self._int_num_barcodes
+        return self._int_num_features if self.is_for_querying_features else self._int_num_barcodes
     @property
-    def indexed_axis( self ) :
+    def axis_for_querying( self ) :
         """
         # 2022-06-30 21:45:48 
         return 'Axis' object of the indexed axis
         """
-        return None if self._ramdata is None else ( self._ramdata.ft if self.flag_ramtx_sorted_by_id_feature else self._ramdata.bc )
+        return None if self._ramdata is None else ( self._ramdata.ft if self.is_for_querying_features else self._ramdata.bc )
     @property
-    def ba_filter_indexed_axis( self ) :
+    def ba_filter_axis_for_querying( self ) :
         ''' # 2022-06-23 09:08:44 
         retrieve filter of the indexed axis
         '''
-        return self.ba_filter_features if self.flag_ramtx_sorted_by_id_feature else self.ba_filter_barcodes
+        return self.ba_filter_features if self.is_for_querying_features else self.ba_filter_barcodes
     def __contains__( self, x ) -> bool :
         ''' # 2022-06-23 09:13:31 
         check whether an integer representation of indexed entry is available in the index. if filter is active, also check whether the entry is active '''
-        return ( 0 <= x < self.len_indexed_axis ) and ( self.ba_filter_indexed_axis is None or self.ba_filter_indexed_axis[ x ] ) # x should be in valid range, and if it is, check whether x is an active element in the filter (if filter has been set)
+        return ( 0 <= x < self.len_axis_for_querying ) and ( self.ba_filter_axis_for_querying is None or self.ba_filter_axis_for_querying[ x ] ) # x should be in valid range, and if it is, check whether x is an active element in the filter (if filter has been set)
     def __iter__( self ) :
         ''' # 2022-06-23 09:13:46 
         yield each entry in the index upon iteration. if filter is active, ignore inactive elements '''
-        if self.ba_filter_indexed_axis is None : # if filter is not set, iterate over all elements
-            return iter( range( self.len_indexed_axis ) )
+        if self.ba_filter_axis_for_querying is None : # if filter is not set, iterate over all elements
+            return iter( range( self.len_axis_for_querying ) )
         else : # if filter is active, yield indices of active elements only
-            return iter( bk.BA.to_integer_indices( self.ba_filter_indexed_axis ) )
+            return iter( bk.BA.to_integer_indices( self.ba_filter_axis_for_querying ) )
     def __getitem__( self, l_int_entry ) : 
-        """ # 2022-07-05 23:13:11 
-        Retrieve data from RAMtx as lists of values and arrays, each value and array contains data of a single 'int_entry' of the indexed axis
-        '__getitem__' can be used to retrieve minimal data required to build a sparse matrix
+        """ # 2022-07-31 00:37:59 
+        Retrieve data of a given list of entries from RAMtx as lists of values and arrays (i.e. sparse matrix), each value and array contains data of a single 'int_entry' of the indexed axis
+        '__getitem__' can be used to retrieve minimal number of values required to build a sparse matrix or dense matrix from it
         
         Returns:
-        l_int_entry_indexed_valid, l_arr_int_entry_not_indexed, l_arr_value 
+        l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying, l_arr_value :
+            'l_int_entry_of_axis_for_querying' only contains int_entry of valid entries
         """
         # initialize the output data structures
-        l_int_entry_indexed_valid, l_arr_int_entry_not_indexed, l_arr_value = [ ], [ ], [ ]
+        l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying, l_arr_value = [ ], [ ], [ ]
         
         # wrap in a list if a single entry was queried
         if isinstance( l_int_entry, ( int, np.int64, np.int32, np.int16, np.int8 ) ) : # check whether the given entry is an integer
             l_int_entry = [ l_int_entry ]
         ''' retrieve filters '''
-        flag_ramtx_sorted_by_id_feature = self.flag_ramtx_sorted_by_id_feature
-        ba_filter_indexed_axis, ba_filter_not_indexed_axis = ( self.ba_filter_features, self.ba_filter_barcodes ) if flag_ramtx_sorted_by_id_feature else ( self.ba_filter_barcodes, self.ba_filter_features )
+        is_for_querying_features = self.is_for_querying_features
+        ba_filter_axis_for_querying, ba_filter_not_axis_for_querying = ( self.ba_filter_features, self.ba_filter_barcodes ) if is_for_querying_features else ( self.ba_filter_barcodes, self.ba_filter_features )
             
         ''' filter 'int_entry', if a filter has been set '''
-        if ba_filter_indexed_axis is not None :
-            l_int_entry = bk.BA.to_integer_indices( ba_filter_indexed_axis ) if len( l_int_entry ) == 0 else list( int_entry for int_entry in l_int_entry if ba_filter_indexed_axis[ int_entry ] ) # filter 'l_int_entry' or use the entries in the given filter (if no int_entry was given, use all active entries)
+        if ba_filter_axis_for_querying is not None :
+            l_int_entry = bk.BA.to_integer_indices( ba_filter_axis_for_querying ) if len( l_int_entry ) == 0 else list( int_entry for int_entry in l_int_entry if ba_filter_axis_for_querying[ int_entry ] ) # filter 'l_int_entry' or use the entries in the given filter (if no int_entry was given, use all active entries in the filter)
                 
         # if no valid entries are available, return an empty result
         if len( l_int_entry ) == 0 :
-            return l_int_entry_indexed_valid, l_arr_int_entry_not_indexed, l_arr_value
+            return l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying, l_arr_value
             
         ''' sort 'int_entry' so that closely located entries can be retrieved together '''
         # sort indices of entries so that the data access can occur in the same direction across threads
@@ -4155,77 +4226,160 @@ class RAMtx( ) :
         retrieve data from RAMtx data structure
         """
         # retrieve flags for dtype conversions
-        flag_change_dtype_mtx_index = self._za_mtx_index.dtype != np.int64
-        flag_change_dtype_of_feature_and_barcode_indices = self._za_mtx.dtype != self._dtype_of_feature_and_barcode_indices
         flag_change_dtype_of_values = self._za_mtx.dtype != self._dtype_of_values
         
         # retrieve dictionaries for changing coordinates
-        dict_change_int_entry_indexed, dict_change_int_entry_not_indexed = None, None # initialize the dictionaries
+        dict_change_int_entry_of_axis_for_querying, dict_change_int_entry_of_axis_not_for_querying = None, None # initialize the dictionaries
         if self._ramdata is not None : # if RAMtx has been attached to RamData, retrieve dictionaries that can be used to change coordinate
-            if self.flag_ramtx_sorted_by_id_feature :
-                dict_change_int_entry_indexed = self._ramdata.ft.dict_change
-                dict_change_int_entry_not_indexed = self._ramdata.bc.dict_change
+            if self.is_for_querying_features :
+                dict_change_int_entry_of_axis_for_querying = self._ramdata.ft.dict_change
+                dict_change_int_entry_of_axis_not_for_querying = self._ramdata.bc.dict_change
             else :
-                dict_change_int_entry_indexed = self._ramdata.bc.dict_change
-                dict_change_int_entry_not_indexed = self._ramdata.ft.dict_change
+                dict_change_int_entry_of_axis_for_querying = self._ramdata.bc.dict_change
+                dict_change_int_entry_of_axis_not_for_querying = self._ramdata.ft.dict_change
         # compose a vectorized function for the conversion of int_entries of the non-indexed axis.
         def f( i ) :
-            return dict_change_int_entry_not_indexed[ i ]
-        vchange_int_entry_not_indexed = np.vectorize( f ) if dict_change_int_entry_not_indexed is not None else None
+            return dict_change_int_entry_of_axis_not_for_querying[ i ]
+        vchange_int_entry_of_axis_not_for_querying = np.vectorize( f ) if dict_change_int_entry_of_axis_not_for_querying is not None else None
         
-        def __retrieve_data_from_ramtx_as_a_worker__( pipe_from_main_thread = None, pipe_to_main_thread = None, flag_as_a_worker = True ) :
+        ''' internal settings '''
+        int_num_chunks_for_a_batch = 2
+        
+        def __retrieve_data( pipe_from_main_thread = None, pipe_to_main_thread = None, flag_as_a_worker = True ) :
             """ # 2022-07-02 12:35:44 
             retrieve data as a worker in a worker process or in the main processs (in single-process mode)
             """
+            ''' initialize '''
             # handle inputs
             l_int_entry = pipe_from_main_thread.recv( ) if flag_as_a_worker else pipe_from_main_thread  # receive work if 'flag_as_a_worker' is True or use 'pipe_from_main_thread' as a list of works
             # for each int_entry, retrieve data and collect records
-            l_int_entry_indexed_valid, l_arr_int_entry_not_indexed, l_arr_value = [ ], [ ], [ ]
+            l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying, l_arr_value = [ ], [ ], [ ]
             
-            # retrieve mtx_index data and remove invalid entries
-            arr_index = self._za_mtx_index.get_orthogonal_selection( l_int_entry ) # retrieve mtx_index data 
-            if flag_change_dtype_mtx_index : # convert dtype of retrieved mtx_index data
-                arr_index = arr_index.astype( np.int64 )
-            # iterate through each 'int_entry'
-            for int_entry, index in zip( l_int_entry, arr_index ) : # iterate through each entry
-                st, en = index
-                if st == en : # if there is no count data for the 'int_entry', continue on to the next 'int_entry' # drop 'int_entry' lacking count data (when start and end index is the same, the 'int_entry' does not contain any data)
-                    continue
-                arr_int_entry_not_indexed, arr_value = self._za_mtx[ st : en ].T # retrieve count data from the Zarr object
-                
+            def __process_entry( int_entry, arr_int_entry_of_axis_not_for_querying, arr_value ) :
+                """ # 2022-07-30 22:07:46 
+                process retrieve data. apply filter and change coordinates
+                """
                 ''' if a filter for not-indexed axis has been set, apply the filter to the retrieved records '''
-                if ba_filter_not_indexed_axis is not None :
-                    arr_int_entry_not_indexed = arr_int_entry_not_indexed.astype( np.int64 ) # convert to integer type
-                    arr_mask = np.zeros( len( arr_int_entry_not_indexed ), dtype = bool ) # initialize the mask for filtering records
-                    for i, int_entry_not_indexed in enumerate( arr_int_entry_not_indexed ) : # iterate through each record
-                        if ba_filter_not_indexed_axis[ int_entry_not_indexed ] : # check whether the current int_entry is included in the filter
+                if ba_filter_not_axis_for_querying is not None :
+                    arr_int_entry_of_axis_not_for_querying = arr_int_entry_of_axis_not_for_querying.astype( np.int64 ) # convert to integer type
+                    arr_mask = np.zeros( len( arr_int_entry_of_axis_not_for_querying ), dtype = bool ) # initialize the mask for filtering records
+                    for i, int_entry_of_axis_not_for_querying in enumerate( arr_int_entry_of_axis_not_for_querying ) : # iterate through each record
+                        if ba_filter_not_axis_for_querying[ int_entry_of_axis_not_for_querying ] : # check whether the current int_entry is included in the filter
                             arr_mask[ i ] = True # include the record
                     # if no valid data exists (all data were filtered out), continue to the next 'int_entry'
                     if arr_mask.sum( ) == 0 :
-                        continue
-                        
+                        return
+
                     # filter records using the mask
-                    arr_int_entry_not_indexed = arr_int_entry_not_indexed[ arr_mask ]
+                    arr_int_entry_of_axis_not_for_querying = arr_int_entry_of_axis_not_for_querying[ arr_mask ]
                     arr_value = arr_value[ arr_mask ]
-                    
+
                     # convert int_entry for the non-indexed axis if a mapping has been given
-                    if vchange_int_entry_not_indexed is not None :
-                        arr_int_entry_not_indexed = vchange_int_entry_not_indexed( arr_int_entry_not_indexed )
-                    
+                    if vchange_int_entry_of_axis_not_for_querying is not None :
+                        arr_int_entry_of_axis_not_for_querying = vchange_int_entry_of_axis_not_for_querying( arr_int_entry_of_axis_not_for_querying )
+
                 ''' convert dtypes of retrieved data '''
                 if flag_change_dtype_of_feature_and_barcode_indices :
-                    arr_int_entry_not_indexed = arr_int_entry_not_indexed.astype( self._dtype_of_feature_and_barcode_indices )
+                    arr_int_entry_of_axis_not_for_querying = arr_int_entry_of_axis_not_for_querying.astype( self._dtype_of_feature_and_barcode_indices )
                 if flag_change_dtype_of_values :
                     arr_value = arr_value.astype( self._dtype_of_values )
-                
+
                 ''' append the retrieved data to the output results '''
-                l_int_entry_indexed_valid.append( int_entry if dict_change_int_entry_indexed is None else dict_change_int_entry_indexed[ int_entry ] ) # convert int_entry for the indexed axis if a mapping has been given 
-                l_arr_int_entry_not_indexed.append( arr_int_entry_not_indexed )
+                l_int_entry_of_axis_for_querying.append( int_entry if dict_change_int_entry_of_axis_for_querying is None else dict_change_int_entry_of_axis_for_querying[ int_entry ] ) # convert int_entry for the indexed axis if a mapping has been given 
+                l_arr_int_entry_of_axis_not_for_querying.append( arr_int_entry_of_axis_not_for_querying )
                 l_arr_value.append( arr_value )
+            def __fetch_from_sparse_ramtx( l_int_entry_in_a_batch, l_index_in_a_batch ) :
+                """ # 2022-07-30 22:32:14 
+                fetch data from sparse ramtx
+                """
+                arr_index_of_a_batch = np.array( l_index_in_a_batch ) # convert index of the batch to a numpy array
+                st_batch, en_batch = arr_index_of_a_batch[ 0, 0 ], arr_index_of_a_batch[ - 1, 1 ] # retrieve start and end positions of the current batch
+                arr_int_entry_of_axis_not_for_querying, arr_value = self._za_mtx[ st_batch : en_batch ].T # fetch data from the Zarr object
+                
+                for int_entry, index in zip( l_int_entry_in_a_batch, arr_index_of_a_batch - st_batch ) : # substract the start position of the batch to retrieve the local index
+                    st, en = index
+                    sl = slice( st, en )
+                    __process_entry( int_entry, arr_int_entry_of_axis_not_for_querying[ sl ], arr_value[ sl ] )
+            def __fetch_from_dense_ramtx( l_int_entry_in_a_batch ) :
+                """ # 2022-07-30 23:33:37 
+                fetch data from dense ramtx
+                """
+                for int_entry, arr_data in zip( l_int_entry_in_a_batch, self._za_mtx.get_orthogonal_selection( ( slice( None, None ), l_int_entry_in_a_batch ) ).T if is_for_querying_features else self._za_mtx.get_orthogonal_selection( ( l_int_entry_in_a_batch, slice( None, None ) ) ) ) : # fetch data from the Zarr object and iterate through each entry and its data
+                    arr_int_entry_of_axis_not_for_querying = np.where( arr_data )[ 0 ]
+                    __process_entry( int_entry, arr_int_entry_of_axis_not_for_querying, arr_data[ arr_int_entry_of_axis_not_for_querying ] )
+            
+            ''' retrieve data '''
+            if self.is_sparse : # handle sparse ramtx
+                ''' sparse ramtx '''
+                # prepare
+                int_num_records_in_a_chunk = self._za_mtx.chunks[ 0 ] # retrieve the number of records in a chunk
+                # retrieve flags for dtype conversions
+                flag_change_dtype_mtx_index = self._za_mtx_index.dtype != np.int64
+                flag_change_dtype_of_feature_and_barcode_indices = self._za_mtx.dtype != self._dtype_of_feature_and_barcode_indices
+                
+                # retrieve mtx_index data and remove invalid entries
+                arr_index = self._za_mtx_index.get_orthogonal_selection( l_int_entry ) # retrieve mtx_index data 
+                if flag_change_dtype_mtx_index : # convert dtype of retrieved mtx_index data
+                    arr_index = arr_index.astype( np.int64 )
+                
+                index_chunk_start_current_batch = None # initialize the index of the chunk at the start of the batch
+                l_int_entry_in_a_batch, l_index_in_a_batch = [ ], [ ] # several entries will be processed together as a batch if they reside in the same or nearby chunk ('int_num_chunks_for_a_batch' setting)
+                # iterate through each 'int_entry'
+                for int_entry, index in zip( l_int_entry, arr_index ) : # iterate through each entry
+                    st, en = index
+                    if st == en : # if there is no count data for the 'int_entry', continue on to the next 'int_entry' # drop 'int_entry' lacking count data (when start and end index is the same, the 'int_entry' does not contain any data)
+                        continue
+                    
+                    ''' if batch is full, flush the batch '''
+                    index_chunk_end = en - 1 // int_num_records_in_a_chunk # retrieve the index of the last chunk
+                    if index_chunk_start_current_batch is not None and index_chunk_end >= index_chunk_start_current_batch + int_num_chunks_for_a_batch : # if start has been set 
+                        __fetch_from_sparse_ramtx( l_int_entry_in_a_batch, l_index_in_a_batch )
+                        l_int_entry_in_a_batch, l_index_in_a_batch = [ ], [ ] # initialize the next batch
+                        index_chunk_start_current_batch = None # reset start
+                        
+                    ''' start the batch '''
+                    # if start has not been set, set the start of the current batch
+                    if index_chunk_start_current_batch is None : # start the batch
+                        index_chunk_start_current_batch = st // int_num_records_in_a_chunk 
+                    
+                    # add int_entry to the batch 
+                    l_int_entry_in_a_batch.append( int_entry ) 
+                    l_index_in_a_batch.append( [ st, en ] )
+                
+                if len( l_int_entry_in_a_batch ) > 0 : # if some entries remains unprocessed, flush the buffer
+                    __fetch_from_sparse_ramtx( l_int_entry_in_a_batch, l_index_in_a_batch )
+            else :
+                ''' dense ramtx '''
+                # prepare
+                int_num_entries_in_a_chunk = self._za_mtx.chunks[ 1 ] if is_for_querying_features else self._za_mtx.chunks[ 0 ] # retrieve the number of entries in a chunk
+                flag_change_dtype_of_feature_and_barcode_indices = False # since indices from dense ramtx (return values of np.where) will be in np.int64 format, there will be no need to change dtype of indices
+                
+                index_chunk_start_current_batch = None # initialize the index of the chunk at the start of the batch
+                l_int_entry_in_a_batch = [ ] # several entries will be processed together as a batch if they reside in the same or nearby chunk ('int_num_chunks_for_a_batch' setting)
+                # iterate through each 'int_entry'
+                for int_entry in l_int_entry : # iterate through each entry
+                    ''' if batch is full, flush the batch '''
+                    index_chunk = int_entry // int_num_entries_in_a_chunk # retrieve the index of the chunk of the current entry
+                    if index_chunk_start_current_batch is not None and index_chunk >= index_chunk_start_current_batch + int_num_chunks_for_a_batch : # if batch has been started
+                        __fetch_from_dense_ramtx( l_int_entry_in_a_batch )
+                        l_int_entry_in_a_batch = [ ] # initialize the next batch
+                        index_chunk_start_current_batch = None # reset start
+                        
+                    ''' start the batch '''
+                    # if start has not been set, set the start of the current batch
+                    if index_chunk_start_current_batch is None : # start the batch
+                        index_chunk_start_current_batch = index_chunk
+                    
+                    # add int_entry to the batch 
+                    l_int_entry_in_a_batch.append( int_entry ) 
+                
+                if len( l_int_entry_in_a_batch ) > 0 : # if some entries remains unprocessed, flush the buffer
+                    __fetch_from_dense_ramtx( l_int_entry_in_a_batch )
+
             
             ''' return the retrieved data '''
             # compose a output value
-            output = ( l_int_entry_indexed_valid, l_arr_int_entry_not_indexed, l_arr_value )
+            output = ( l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying, l_arr_value )
             # if 'flag_as_a_worker' is True, send the result or return the result
             if flag_as_a_worker :
                 pipe_to_main_thread.send( output ) # send unzipped result back
@@ -4238,11 +4392,11 @@ class RAMtx( ) :
             int_n_workers = min( self.int_num_cpus, int_num_entries ) # one thread for distributing records. Minimum numbers of workers for sorting is 1 # the number of workers should not be larger than the number of entries to retrieve.
             l_pipes_from_main_process_to_worker = list( mp.Pipe( ) for _ in range( self.int_num_cpus ) ) # create pipes for sending records to workers # add process for receivers
             l_pipes_from_worker_to_main_process = list( mp.Pipe( ) for _ in range( self.int_num_cpus ) ) # create pipes for collecting results from workers
-            l_processes = list( mp.Process( target = __retrieve_data_from_ramtx_as_a_worker__, args = ( l_pipes_from_main_process_to_worker[ index_worker ][ 1 ], l_pipes_from_worker_to_main_process[ index_worker ][ 0 ] ) ) for index_worker in range( int_n_workers ) ) # add a process for distributing fastq records
+            l_processes = list( mp.Process( target = __retrieve_data, args = ( l_pipes_from_main_process_to_worker[ index_worker ][ 1 ], l_pipes_from_worker_to_main_process[ index_worker ][ 0 ] ) ) for index_worker in range( int_n_workers ) ) # add a process for distributing fastq records
             for p in l_processes :
                 p.start( )
             # distribute works
-            for index_worker, l_int_entry_for_each_worker in enumerate( LIST_Split( l_int_entry, int_n_workers ) ) : # continuous or distributed ? what would be more efficient?
+            for index_worker, l_int_entry_for_each_worker in enumerate( LIST_Split( l_int_entry, int_n_workers, flag_contiguous_chunk = True ) ) : # no load balacing for now
                 l_pipes_from_main_process_to_worker[ index_worker ][ 0 ].send( l_int_entry_for_each_worker )
             # wait until all works are completed
             int_num_workers_completed = 0
@@ -4250,8 +4404,8 @@ class RAMtx( ) :
                 for _, pipe in l_pipes_from_worker_to_main_process :
                     if pipe.poll( ) :
                         otuput = pipe.recv( )
-                        l_int_entry_indexed_valid.extend( otuput[ 0 ] )
-                        l_arr_int_entry_not_indexed.extend( otuput[ 1 ] )
+                        l_int_entry_of_axis_for_querying.extend( otuput[ 0 ] )
+                        l_arr_int_entry_of_axis_not_for_querying.extend( otuput[ 1 ] )
                         l_arr_value.extend( otuput[ 2 ] )
                         del otuput
                         int_num_workers_completed += 1
@@ -4260,38 +4414,38 @@ class RAMtx( ) :
             for p in l_processes :
                 p.join( )
         else : # single thread mode
-            l_int_entry_indexed_valid, l_arr_int_entry_not_indexed, l_arr_value = __retrieve_data_from_ramtx_as_a_worker__( l_int_entry, flag_as_a_worker = False )
+            l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying, l_arr_value = __retrieve_data( l_int_entry, flag_as_a_worker = False )
         
-        return l_int_entry_indexed_valid, l_arr_int_entry_not_indexed, l_arr_value
+        return l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying, l_arr_value
     def get_sparse_matrix( self, l_int_entry ) :
         """ # 2022-07-13 09:25:59 
         
         get sparse matrix for the given list of integer representations of the entries.
         """
-        l_int_entry_indexed_valid, l_arr_int_entry_not_indexed, l_arr_value = self[ l_int_entry ] # parse retrieved result
+        l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying, l_arr_value = self[ l_int_entry ] # parse retrieved result
         
         # combine the arrays
-        arr_int_entry_not_indexed = np.concatenate( l_arr_int_entry_not_indexed )
+        arr_int_entry_of_axis_not_for_querying = np.concatenate( l_arr_int_entry_of_axis_not_for_querying )
         arr_value = np.concatenate( l_arr_value )
         del l_arr_value # delete intermediate objects
         
-        # compose 'arr_int_entry_indexed'
-        arr_int_entry_indexed = np.zeros( len( arr_int_entry_not_indexed ), dtype = self._dtype_of_feature_and_barcode_indices ) # create an empty array
+        # compose 'arr_int_entry_of_axis_for_querying'
+        arr_int_entry_of_axis_for_querying = np.zeros( len( arr_int_entry_of_axis_not_for_querying ), dtype = self._dtype_of_feature_and_barcode_indices ) # create an empty array
         int_pos = 0
-        for int_entry_indexed, a in zip( l_int_entry_indexed_valid, l_arr_int_entry_not_indexed ) :
+        for int_entry_of_axis_for_querying, a in zip( l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying ) :
             n = len( a )
-            arr_int_entry_indexed[ int_pos : int_pos + n ] = int_entry_indexed # compose 'arr_int_entry_indexed'
+            arr_int_entry_of_axis_for_querying[ int_pos : int_pos + n ] = int_entry_of_axis_for_querying # compose 'arr_int_entry_of_axis_for_querying'
             int_pos += n # update the current position
-        del l_int_entry_indexed_valid, l_arr_int_entry_not_indexed # delete intermediate objects
+        del l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying # delete intermediate objects
         
-        # get 'arr_int_barcode' and 'arr_int_feature' based on 'self.flag_ramtx_sorted_by_id_feature'
-        if self.flag_ramtx_sorted_by_id_feature :
-            arr_int_barcode = arr_int_entry_not_indexed
-            arr_int_feature = arr_int_entry_indexed
+        # get 'arr_int_barcode' and 'arr_int_feature' based on 'self.is_for_querying_features'
+        if self.is_for_querying_features :
+            arr_int_barcode = arr_int_entry_of_axis_not_for_querying
+            arr_int_feature = arr_int_entry_of_axis_for_querying
         else :
-            arr_int_barcode = arr_int_entry_indexed
-            arr_int_feature = arr_int_entry_not_indexed
-        del arr_int_entry_indexed, arr_int_entry_not_indexed # delete intermediate objects
+            arr_int_barcode = arr_int_entry_of_axis_for_querying
+            arr_int_feature = arr_int_entry_of_axis_not_for_querying
+        del arr_int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying # delete intermediate objects
         
         n_bc, n_ft = ( self._int_num_barcodes, self._int_num_features ) if self._ramdata is None else ( self._ramdata.bc.meta.n_rows, self._ramdata.ft.meta.n_rows ) # detect whether the current RAMtx has been attached to a RamData and retrieve the number of barcodes and features accordingly
         X = scipy.sparse.csr_matrix( scipy.sparse.coo_matrix( ( arr_value, ( arr_int_barcode, arr_int_feature ) ), shape = ( n_bc, n_ft ) ) ) # convert count data to a sparse matrix
@@ -4307,7 +4461,7 @@ class RAMtx( ) :
         '''
         # set defaule arguments
         if ba is None :
-            ba = self.ba_filter_indexed_axis # if None is given, ba_filter of the currently indexed axis will be used.
+            ba = self.ba_filter_axis_for_querying # if None is given, ba_filter of the currently indexed axis will be used.
             if ba is None : # if filter is not set or the current RAMtx has not been attached to a RamData object, use the active entries
                 ba = self.ba_active_entries # if None is given, self.ba_active_entries bitarray will be used.
         # initialize
@@ -4318,23 +4472,27 @@ class RAMtx( ) :
             """ # 2022-07-03 22:11:06 
             retrieve indices of the current 'weight_current_batch', calculate weights, and yield a batch
             """
-            st, en = self._za_mtx_index.get_orthogonal_selection( ns[ 'l_int_entry_for_weight_calculation_batch' ] ).T # retrieve start and end coordinates of the entries
-            arr_weight = en - st # calculate weight for each entry
-            del st, en
-            for int_entry, weight in zip( ns[ 'l_int_entry_for_weight_calculation_batch' ], arr_weight ) :
-                # update the current batch
-                ns[ 'l_int_entry_current_batch' ].append( int_entry )
-                ns[ 'int_accumulated_weight_current_batch' ] += weight
+            if self.is_sparse : # handle sparse ramtx
+                st, en = self._za_mtx_index.get_orthogonal_selection( ns[ 'l_int_entry_for_weight_calculation_batch' ] ).T # retrieve start and end coordinates of the entries
+                arr_weight = en - st # calculate weight for each entry
+                del st, en
+                for int_entry, weight in zip( ns[ 'l_int_entry_for_weight_calculation_batch' ], arr_weight ) :
+                    # update the current batch
+                    ns[ 'l_int_entry_current_batch' ].append( int_entry )
+                    ns[ 'int_accumulated_weight_current_batch' ] += weight
 
-                # check whether the current batch is full
-                if ns[ 'int_accumulated_weight_current_batch' ] >= int_total_weight_for_each_batch : # a current batch is full, yield the batch
-                    yield ns[ 'l_int_entry_current_batch' ] # return a batch
-                    # initialize the next batch
-                    ns[ 'l_int_entry_current_batch' ] = [ ] 
-                    ns[ 'int_accumulated_weight_current_batch' ] = 0
-
+                    # check whether the current batch is full
+                    if ns[ 'int_accumulated_weight_current_batch' ] >= int_total_weight_for_each_batch : # a current batch is full, yield the batch
+                        yield ns[ 'l_int_entry_current_batch' ] # return a batch
+                        # initialize the next batch
+                        ns[ 'l_int_entry_current_batch' ] = [ ] 
+                        ns[ 'int_accumulated_weight_current_batch' ] = 0
+            else : # handle dense ramtx
+                yield ns[ 'l_int_entry_for_weight_calculation_batch' ]
+                
             # initialize next 'weight_calculation_batch'
             ns[ 'l_int_entry_for_weight_calculation_batch' ] = [ ]
+                
 
         for int_entry in bk.BA.find( ba ) : # iterate through active entries of the given bitarray
             ns[ 'l_int_entry_for_weight_calculation_batch' ].append( int_entry ) # collect int_entry for the current 'weight_calculation_batch'
@@ -4836,7 +4994,7 @@ class RamDataAxis( ) :
         return ba_subsampled
 ''' a class for representing a layer of RamData '''
 class RamDataLayer( ) :
-    """ # 2022-06-25 16:32:19 
+    """ # 2022-07-31 14:39:50 
     A class for interactions with a pair of RAMtx objects of a count matrix. 
     
     'path_folder_ramdata' : location of RamData
@@ -4846,28 +5004,82 @@ class RamDataLayer( ) :
     'path_folder_ramdata_mask' : a local (local file system) path to the mask of the RamData object that allows modifications to be written without modifying the source. if a valid local path to a mask is given, all modifications will be written to the mask
     """
     def __init__( self, path_folder_ramdata, name_layer, ramdata = None, dtype_of_feature_and_barcode_indices = np.int32, dtype_of_values = np.float64, int_num_cpus = 1, verbose = False, mode = 'a', path_folder_ramdata_mask = None, flag_is_read_only = False ) :
-        """ # 2022-06-25 16:40:44 
+        """ # 2022-07-31 14:33:46 
         """
         # set attributes
         self._path_folder_ramdata = path_folder_ramdata
         self._name_layer = name_layer
+        self._path_folder_ramdata_layer = f"{path_folder_ramdata}{name_layer}/"
         self._ramdata = ramdata
         self._mode = mode
         self._int_num_cpus = int_num_cpus
         self._path_folder_ramdata_mask = path_folder_ramdata_mask
+        if path_folder_ramdata_mask is not None : # set path to the mask of the layer if ramdata mask has been given
+            self._path_folder_ramdata_layer_mask = f"{self._path_folder_ramdata_mask}{name_layer}/"
         self._flag_is_read_only = flag_is_read_only
+        
+        # read metadata
+        self._root = zarr.open( self._path_folder_ramdata_layer, 'a' )
+        self._dict_metadata = self._root.attrs[ 'dict_metadata' ] # retrieve the metadata 
         
         # retrieve filters from the axes
         ba_filter_features = ramdata.ft.filter if ramdata is not None else None
         ba_filter_barcodes = ramdata.bc.filter if ramdata is not None else None
         
-        # open RAMtx objects without filters
-        self._ramtx_features = RAMtx( f'{self._path_folder_ramdata}{name_layer}/sorted_by_feature/', ramdata = ramdata, dtype_of_feature_and_barcode_indices = dtype_of_feature_and_barcode_indices, dtype_of_values = dtype_of_values, int_num_cpus = int_num_cpus, verbose = verbose, flag_debugging = False, mode = self._mode, path_folder_ramtx_mask = None if self._path_folder_ramdata_mask is None else f'{self._path_folder_ramdata_mask}{name_layer}/sorted_by_feature/', flag_is_read_only = self._flag_is_read_only )
-        self._ramtx_barcodes = RAMtx( f'{self._path_folder_ramdata}{name_layer}/sorted_by_barcode/', ramdata = ramdata, dtype_of_feature_and_barcode_indices = dtype_of_feature_and_barcode_indices, dtype_of_values = dtype_of_values, int_num_cpus = int_num_cpus, verbose = verbose, flag_debugging = False, mode = self._mode, path_folder_ramtx_mask = None if self._path_folder_ramdata_mask is None else f'{self._path_folder_ramdata_mask}{name_layer}/sorted_by_barcode/', flag_is_read_only = self._flag_is_read_only )
+        # load RAMtx objects without filters
+        # define arguments for opening RAMtx objects
+        dict_kwargs = {
+            'ramdata' : ramdata, 
+            'dtype_of_feature_and_barcode_indices' : dtype_of_feature_and_barcode_indices, 
+            'dtype_of_values' : dtype_of_values, 
+            'int_num_cpus' : int_num_cpus, 
+            'verbose' : verbose, 
+            'flag_debugging' : False, 
+            'mode' : self._mode, 
+            'path_folder_ramtx_mask' : f'{self._path_folder_ramdata_layer_mask}{mode}/' if self._mask_available else None, 
+            'flag_is_read_only' : self._flag_is_read_only
+        }
+        for mode in self.modes : # iterate through each mode
+            if 'dense_for_querying_' in mode :
+                rtx = RAMtx( f'{self._path_folder_ramdata_layer}dense/', is_for_querying_features = mode.rsplit( 'dense_for_querying_', 1 )[ 1 ] == 'features', ** dict_kwargs ) # open dense ramtx in querying_features/querying_barcodes modes
+            else :
+                rtx = RAMtx( f'{self._path_folder_ramdata_layer}{mode}/', ** dict_kwargs )
+            setattr( self, f"ramtx_{mode}", rtx ) # set ramtx as an attribute
         
         # set filters of the current layer
         self.ba_filter_features = ba_filter_features
         self.ba_filter_barcodes = ba_filter_barcodes
+    def __repr__( self ) :
+        """ # 2022-07-31 01:03:21 
+        """
+        return f"<RamDataLayer object '{self.name}' containing {self.modes} RAMtx objects\n\tRamDataLayer path: {self._path_folder_ramdata_layer}>"
+    @property
+    def name( self ) :
+        """ # 2022-07-31 01:10:00 
+        return the name of the layer
+        """
+        return self._name_layer
+    def _save_metadata_( self ) :
+        ''' # 2022-07-20 10:31:39 
+        save metadata of the current ZarrDataFrame
+        '''
+        if not self._flag_is_read_only : # save metadata only when it is not in the read-only mode
+            # convert to list before saving attributes
+            temp = self._dict_metadata[ 'set_modes' ]
+            self._dict_metadata[ 'set_modes' ] = list( temp )
+            self._root.attrs[ 'dict_metadata' ] = self._dict_metadata # update metadata
+            self._dict_metadata[ 'set_modes' ] = temp # revert to set
+    @property
+    def _mask_available( self ) :
+        """ # 2022-07-30 18:38:30 
+        """
+        return self._path_folder_ramdata_mask is not None
+    @property
+    def modes( self ) :
+        """ # 2022-07-30 18:29:54 
+        return a subst of {'dense' or 'sparse_for_querying_barcodes', 'sparse_for_querying_features'}
+        """
+        return self._dict_metadata[ 'set_modes' ]
     @property
     def int_num_cpus( self ) :
         """ # 2022-07-21 23:22:24 
@@ -4878,20 +5090,26 @@ class RamDataLayer( ) :
         """ # 2022-07-21 23:22:24 
         """
         self._int_num_cpus = max( 1, int( val ) ) # set integer values
-        self._ramtx_features.int_num_cpus = self._int_num_cpus # update 'int_num_cpus' attributes of RAMtxs
-        self._ramtx_barcodes.int_num_cpus = self._int_num_cpus
+        for rtx in self : # iterate through ramtxs
+            rtx.int_num_cpus = self._int_num_cpus # update 'int_num_cpus' attributes of RAMtxs
     @property
     def int_num_features( self ) :
         """ # 2022-06-28 21:39:20 
         return the number of features
         """
-        return self._ramtx_features.len_indexed_axis
+        return self[ list( self.modes )[ 0 ] ]._int_num_features # return an attribute of the first ramtx of the current layer
     @property
     def int_num_barcodes( self ) :
         """ # 2022-06-28 21:39:20 
         return the number of features
         """
-        return self._ramtx_barcodes.len_indexed_axis
+        return self[ list( self.modes )[ 0 ] ]._int_num_barcodes # return an attribute of the first ramtx of the current layer
+    @property
+    def int_num_records( self ) :
+        """ # 2022-06-28 21:39:20 
+        return the number of features
+        """
+        return self[ list( self.modes )[ 0 ] ]._int_num_records # return an attribute of the first ramtx of the current layer
     @property
     def ba_filter_features( self ) :
         """ # 2022-06-26 01:31:24 
@@ -4903,8 +5121,8 @@ class RamDataLayer( ) :
         """
         # set/update the filter for the associated RAMtx objects
         self._ba_filter_features = ba_filter
-        self._ramtx_features.ba_filter_features = ba_filter
-        self._ramtx_barcodes.ba_filter_features = ba_filter
+        for rtx in self :
+            rtx.ba_filter_features = ba_filter
     @property
     def ba_filter_barcodes( self ) :
         """ # 2022-06-26 01:31:24 
@@ -4916,38 +5134,87 @@ class RamDataLayer( ) :
         """
         # set/update the filter for the associated RAMtx objects
         self._ba_filter_barcodes = ba_filter
-        self._ramtx_features.ba_filter_barcodes = ba_filter
-        self._ramtx_barcodes.ba_filter_barcodes = ba_filter
-    def __getitem__( self, l_int_bc = slice( None, None, None ), l_int_ft = slice( None, None, None ) ) :
-        """ # 2022-06-28 21:22:38 
-        return a count data of a given list of integer representation of barcodes and features. slice can also be used.
+        for rtx in self :
+            rtx.ba_filter_barcodes = ba_filter
+    def __contains__( self, x ) :
+        """ # 2022-07-30 18:41:51 
+        check whether mode 'x' is available in the layer
         """
-        sl_all = slice( None, None, None ) # slice selecting all entries
-        def get_l_int( l_int, length ) :
-            ''' # 2022-06-28 22:29:08 
-            get list of integer indices for the iterable with a given length ('length')
-            '''
-            # when a slice is given, convert slice to the list of integer indices
-            if isinstance( l_int, slice ) :
-                l_int = list( bk.Slice_to_Range( l_int, length ) )
-            return l_int # returns the list of integer indices
-        # 
-        if l_int_bc == sl_all and l_int_ft == sl_all : # if all barcodes and all features are selected
-            if self.int_num_features > self.int_num_barcodes : # if the number of features are greter than the number of barcodes, retrieve data for each barcode (less number of RAMtx accesses)
-                return self._ramtx_barcodes[ np.arange( self.int_num_barcodes ) ]
-            else :
-                return self._ramtx_features[ np.arange( self.int_num_features ) ]
-        elif l_int_bc == sl_all : # if all barcodes will be used, use ramtx_features to retrieve count data
-            return self._ramtx_features[ get_l_int( l_int_ft, self.int_num_features ) ]
-        elif l_int_ft == sl_all : # if all features will be used, use ramtx_barcodes to retrieve count data
-            return self._ramtx_barcodes[ get_l_int( l_int_bc, self.int_num_barcodes ) ]
-        else : # if count data of a subset of barcodes and a subset of features will be retrieved
-            l_int_ft = get_l_int( l_int_ft, self.int_num_features )
-            l_int_bc = get_l_int( l_int_bc, self.int_num_barcodes )
-            if len( l_int_ft ) > len( l_int_bc ) : # if the number of features are larger than the number of barcodes, use 'ramtx_barcodes'
-                return self._ramtx_barcodes[ l_int_bc ]
-            else :
-                return self._ramtx_features[ l_int_ft ]
+        return x in self.modes
+    def __iter__( self ) :
+        """ # 2022-07-30 18:42:50 
+        iterate through ramtx of the modes available in the layer
+        """
+        return iter( list( self[ mode ] for mode in self.modes ) )
+    def select_ramtx( self, ba_entry_bc, ba_entry_ft ) :
+        """ # 2022-07-31 11:46:33 
+        select appropriate ramtx based on the queryed barcode and features, given as a bitarray filters 'ba_entry_bc', 'ba_entry_ft'
+        """
+        # count the number of valid queried entries
+        int_num_entries_queried_bc = ba_entry_bc.count( )
+        int_num_entries_queried_ft = ba_entry_ft.count( )
+        
+        # detect and handle the cases when one of the axes is empty
+        if int_num_entries_queried_bc == 0 or int_num_entries_queried_ft == 0 :
+            if self.verbose :
+                print( f"Warning: currently queried view is (barcode x features) {int_num_entries_queried_bc} x {int_num_entries_queried_ft}. please change the filter or queries in order to retrieve a valid data" )
+
+        # choose which ramtx object to use
+        flag_use_ramtx_for_querying_feature = int_num_entries_queried_bc >= int_num_entries_queried_ft # select which axis to use. if there is more number of barcodes than features, use ramtx for querying 'features'
+        return self.get_ramtx( self, flag_is_for_querying_features = flag_use_ramtx_for_querying_feature ) # retrieve ramtx
+    def get_ramtx( self, flag_is_for_querying_features = True, flag_prefer_dense = False ) :
+        """ # 2022-07-31 11:55:06 
+        retrieve ramtx for querying feature/barcodes
+        """
+        mode_dense = f"dense_for_querying_{'features' if flag_is_for_querying_features else 'barcodes'}" # retrieve mode name for dense ramtx based on 'flag_is_for_querying_features'
+        mode_sparse = f"sparse_for_querying_{'features' if flag_is_for_querying_features else 'barcodes'}" # retrieve mode name for sparse ramtx based on 'flag_is_for_querying_features'
+        for mode in [ mode_dense, mode_sparse ] if flag_prefer_dense else [ mode_sparse, mode_dense ] : # search ramtx considering 'flag_prefer_dense'
+            if mode in self :
+                return self[ mode ]
+        if self.verbose :
+            print( f"ramtx for querying {'features' if flag_is_for_querying_features else 'barcodes'} efficiently is not available for layer {self.name}, containing the following modes: {self.modes}" )
+        if len( list( self.modes ) ) > 0 : # return any ramtx object as a fallback
+            if self.verbose :
+                print( 'returning any ramtx object. it may work or not ... ' )
+            return self[ list( self.modes )[ 0 ] ]
+        if self.verbose :
+            print( f"current layer {self.name} does not contain any valid ramtx objects" )
+        return None
+    def __getitem__( self, mode ) :
+        """ # 2022-07-30 18:44:49 
+        """
+        if mode in self : # if a given mode is available
+            return getattr( self, f"ramtx_{mode}" ) # return the ramtx of the given mode
+#     def __getitem__( self, l_int_bc = slice( None, None, None ), l_int_ft = slice( None, None, None ) ) :
+#         """ # 2022-06-28 21:22:38 
+#         return a count data of a given list of integer representation of barcodes and features. slice can also be used.
+#         """
+#         sl_all = slice( None, None, None ) # slice selecting all entries
+#         def get_l_int( l_int, length ) :
+#             ''' # 2022-06-28 22:29:08 
+#             get list of integer indices for the iterable with a given length ('length')
+#             '''
+#             # when a slice is given, convert slice to the list of integer indices
+#             if isinstance( l_int, slice ) :
+#                 l_int = list( bk.Slice_to_Range( l_int, length ) )
+#             return l_int # returns the list of integer indices
+#         # 
+#         if l_int_bc == sl_all and l_int_ft == sl_all : # if all barcodes and all features are selected
+#             if self.int_num_features > self.int_num_barcodes : # if the number of features are greter than the number of barcodes, retrieve data for each barcode (less number of RAMtx accesses)
+#                 return self._ramtx_barcodes[ np.arange( self.int_num_barcodes ) ]
+#             else :
+#                 return self._ramtx_features[ np.arange( self.int_num_features ) ]
+#         elif l_int_bc == sl_all : # if all barcodes will be used, use ramtx_features to retrieve count data
+#             return self._ramtx_features[ get_l_int( l_int_ft, self.int_num_features ) ]
+#         elif l_int_ft == sl_all : # if all features will be used, use ramtx_barcodes to retrieve count data
+#             return self._ramtx_barcodes[ get_l_int( l_int_bc, self.int_num_barcodes ) ]
+#         else : # if count data of a subset of barcodes and a subset of features will be retrieved
+#             l_int_ft = get_l_int( l_int_ft, self.int_num_features )
+#             l_int_bc = get_l_int( l_int_bc, self.int_num_barcodes )
+#             if len( l_int_ft ) > len( l_int_bc ) : # if the number of features are larger than the number of barcodes, use 'ramtx_barcodes'
+#                 return self._ramtx_barcodes[ l_int_bc ]
+#             else :
+#                 return self._ramtx_features[ l_int_ft ]
 ''' # not implemented in zarr '''
 def Convert_Scanpy_AnnData_to_RAMtx( adata, path_folder_ramtx_output, flag_ramtx_sorted_by_id_feature = True, file_format = 'mtx_gzipped', int_num_threads = 15, verbose = False, flag_overwrite_existing_files = False, flag_sort_and_index_again = False, flag_debugging = False, flag_covert_dense_matrix = False, int_num_digits_after_floating_point_for_export = 5, flag_output_value_is_float = True, dtype_of_row_and_col_indices = np.uint32, dtype_of_value = None ) :
     ''' # 2022-05-25 22:50:27 
@@ -5404,6 +5671,7 @@ def Convert_df_count_to_RAMtx( path_file_df_count, path_folder_ramtx_output, fla
     with open( f"{path_folder_ramtx_output}ramtx.metadata.json", 'w' ) as file :
         json.dump( dict_metadata, file )
 
+        
 class RamData( ) :
     """ # 2022-07-21 23:32:59 
     This class provides frameworks for single-cell transcriptomic/genomic data analysis, utilizing RAMtx data structures, which is backed by Zarr persistant arrays.
@@ -5459,7 +5727,7 @@ class RamData( ) :
         self.bc = RamDataAxis( path_folder_ramdata, 'barcodes', ba_filter = None, ramdata = self, dict_kw_zdf = dict_kw_zdf, dict_kw_view = dict_kw_view, int_index_str_rep = int_index_str_rep_for_barcodes, verbose = verbose, mode = self._mode, path_folder_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only )
         self.ft = RamDataAxis( path_folder_ramdata, 'features', ba_filter = None, ramdata = self, dict_kw_zdf = dict_kw_zdf, dict_kw_view = dict_kw_view, int_index_str_rep = int_index_str_rep_for_features, verbose = verbose, mode = self._mode, path_folder_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only )
         
-        # initialize layor object
+        # initialize the layor object
         self.layer = name_layer
         
         # initialize databases
@@ -5528,14 +5796,14 @@ class RamData( ) :
         """ # 2022-07-21 23:32:35 
         """
         self._int_num_cpus_for_fetching_data = max( 1, int( val ) ) # set an integer value
-        if self._layer is not None :
-            self._layer.int_num_cpus = self._int_num_cpus_for_fetching_data # update 'int_num_cpus' attributes of RAMtxs
+        if self.layer is not None :
+            self.layer.int_num_cpus = self._int_num_cpus_for_fetching_data # update 'int_num_cpus' attributes of RAMtxs
     @property
     def layer( self ) :
         """ # 2022-06-24 00:16:56 
         retrieve the name of layer from the layer object if it has been loaded.
         """
-        return self._layer._name_layer if hasattr( self, '_layer' ) else None # if no layer is set, return None
+        return self._layer if hasattr( self, '_layer' ) else None # if no layer is set, return None
     @layer.setter
     def layer( self, name_layer ) :
         """ # 2022-07-20 23:29:23 
@@ -5551,7 +5819,7 @@ class RamData( ) :
             if name_layer not in self.layers :
                 raise KeyError( f"'{name_layer}' data does not exists in the current RamData" )
 
-            if name_layer != self.layer : # load new layer
+            if self.layer is None or name_layer != self.layer.name : # if no layer has been loaded or new layer name has been given, load the new layer
                 self._layer = RamDataLayer( self._path_folder_ramdata, name_layer, ramdata = self, dtype_of_feature_and_barcode_indices = self._dtype_of_feature_and_barcode_indices, dtype_of_values = self._dtype_of_values, int_num_cpus = self._int_num_cpus_for_fetching_data, verbose = self.verbose, mode = self._mode, path_folder_ramdata_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only )
 
                 if self.verbose :
@@ -5560,7 +5828,7 @@ class RamData( ) :
         """ # 2022-07-20 00:38:24 
         display RamData
         """
-        return f"<{'' if not self._flag_is_read_only else '(read-only) '}RamData object ({'' if self.bc.filter is None else f'{self.bc.meta.n_rows}/'}{self.metadata[ 'int_num_barcodes' ]} barcodes X {'' if self.ft.filter is None else f'{self.ft.meta.n_rows}/'}{self.metadata[ 'int_num_features' ]} features" + ( '' if self.layer is None else f", {self._layer._ramtx_barcodes._int_num_records} records in the currently active layer '{self.layer}'" ) + f") stored at {self._path_folder_ramdata}{'' if self._path_folder_ramdata_mask is None else f' with local mask available at {self._path_folder_ramdata_mask}'}\n\twith the following layers : {self.layers}\n\t\tcurrent layer is '{self.layer}'>" # show the number of records of the current layer if available.
+        return f"<{'' if not self._flag_is_read_only else '(read-only) '}RamData object ({'' if self.bc.filter is None else f'{self.bc.meta.n_rows}/'}{self.metadata[ 'int_num_barcodes' ]} barcodes X {'' if self.ft.filter is None else f'{self.ft.meta.n_rows}/'}{self.metadata[ 'int_num_features' ]} features" + ( '' if self.layer is None else f", {self.layer.int_num_records} records in the currently active layer '{self.layer.name}'" ) + f") stored at {self._path_folder_ramdata}{'' if self._path_folder_ramdata_mask is None else f' with local mask available at {self._path_folder_ramdata_mask}'}\n\twith the following layers : {self.layers}\n\t\tcurrent layer is '{self.layer.name}'>" # show the number of records of the current layer if available.
     def create_view( self ) :
         """  # 2022-07-06 21:17:56 
         create view of the RamData using the current filter settings (load dictionaries for coordinate conversion for filtered barcodes/features)
@@ -5672,7 +5940,7 @@ class RamData( ) :
 
         # retrieve ramtx
         flag_use_ramtx_indexed_by_features = int_num_entries_queried_bc >= int_num_entries_queried_ft # select which axis to use. if there is more number of barcodes than features, use ramtx indexed with 'feature' axis
-        rtx = self._layer._ramtx_features if flag_use_ramtx_indexed_by_features else self._layer._ramtx_barcodes
+        rtx = self.layer._ramtx_features if flag_use_ramtx_indexed_by_features else self.layer._ramtx_barcodes
         
         # set barcode/feature filters for the queried entries
         self.bc.filter = ba_entry_bc
@@ -5740,7 +6008,7 @@ class RamData( ) :
             path_folder_temp = f"{path_folder}temp_{UUID( )}/"
             os.makedirs( path_folder_temp, exist_ok = True ) # create the temporary folder
             return path_folder_temp # return the path to the temporary folder
-    def summarize( self, name_layer, axis, summarizing_func, int_num_threads = None, flag_overwrite_columns = True, int_num_entries_for_each_weight_calculation_batch = 1000, int_total_weight_for_each_batch = 1000000 ) :
+    def summarize( self, name_layer, axis, summarizing_func, int_num_threads = None, flag_overwrite_columns = True, int_num_entries_for_each_weight_calculation_batch = 2000, int_total_weight_for_each_batch = 2000000 ) :
         ''' # 2022-07-20 23:40:02 
         this function summarize entries of the given axis (0 = barcode, 1 = feature) using the given function
         
@@ -5755,7 +6023,7 @@ class RamData( ) :
                1 or 'feature' for applying a given summarizing function for features
         'summarizing_func' : function object. a function that takes a RAMtx output and return a dictionary containing 'name_of_summarized_data' as key and 'value_of_summarized_data' as value. the resulting summarized outputs will be added as metadata of the given Axis (self.bc.meta or self.ft.meta)
         
-                    summarizing_func( self, int_entry_indexed, arr_int_entries_not_indexed, arr_value ) -> dictionary containing 'key' as summarized metric name and 'value' as a summarized value for the entry
+                    summarizing_func( self, int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value ) -> dictionary containing 'key' as summarized metric name and 'value' as a summarized value for the entry
                     
                     a list of pre-defined functions are the followings :
                     'sum' :
@@ -5805,7 +6073,7 @@ class RamData( ) :
         # set layer
         self.layer = name_layer
         # handle inputs
-        flag_summarizing_barcode = axis in { 0, 'barcode' } # retrieve a flag indicating whether the data is summarized for each barcode or not
+        flag_summarizing_barcode = axis in { 0, 'barcode', 'barcodes' } # retrieve a flag indicating whether the data is summarized for each barcode or not
         
         # retrieve the total number of entries in the axis that was not indexed (if calculating average expression of feature across barcodes, divide expression with # of barcodes, and vice versa.)
         int_total_num_entries_not_indexed = self.ft.meta.n_rows if flag_summarizing_barcode else self.bc.meta.n_rows 
@@ -5813,7 +6081,7 @@ class RamData( ) :
         if int_num_threads is None : # use default number of threads
             int_num_threads = self.int_num_cpus
         if summarizing_func == 'sum' :
-            def summarizing_func( self, int_entry_indexed, arr_int_entries_not_indexed, arr_value ) :
+            def summarizing_func( self, int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value ) :
                 ''' # 2022-07-19 12:19:49 
                 calculate sum of the values of the current entry
                 
@@ -5824,7 +6092,7 @@ class RamData( ) :
                 dict_summary[ 'mean' ] = dict_summary[ 'sum' ] / int_total_num_entries_not_indexed # calculate the mean
                 return dict_summary
         elif summarizing_func == 'sum_and_dev' :
-            def summarizing_func( self, int_entry_indexed, arr_int_entries_not_indexed, arr_value ) :
+            def summarizing_func( self, int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value ) :
                 ''' # 2022-07-19 12:19:53 
                 calculate sum and deviation of the values of the current entry
                 
@@ -5839,7 +6107,7 @@ class RamData( ) :
                 return dict_summary
         elif summarizing_func == 'count_min_max' :
             int_min_num_records_for_numpy = 30
-            def summarizing_func( self, int_entry_indexed, arr_int_entries_not_indexed, arr_value ) :
+            def summarizing_func( self, int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value ) :
                 ''' # 2022-07-27 15:29:07 
                 calculate sum and deviation of the values of the current entry
                 
@@ -5860,7 +6128,11 @@ class RamData( ) :
         
         
         # retrieve RAMtx object to summarize
-        rtx = self._layer._ramtx_barcodes if flag_summarizing_barcode else self._layer._ramtx_features
+        rtx = self.layer.get_ramtx( not flag_summarizing_barcode )
+        if rtx is None :
+            if self.verbose :
+                print( f'it appears that the current layer {self.layer.name} appears to be empty, exiting' )
+            return
         # retrieve Axis object to summarize 
         ax = self.bc if flag_summarizing_barcode else self.ft
         
@@ -5888,11 +6160,11 @@ class RamData( ) :
             newfile = gzip.open( path_file_output, 'wb' )
             
             # iterate through the data of each entry
-            for int_entry_indexed_valid, arr_int_entry_not_indexed, arr_value in zip( * rtx[ l_int_entry_current_batch ] ) : # retrieve data for the current batch
+            for int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying, arr_value in zip( * rtx[ l_int_entry_current_batch ] ) : # retrieve data for the current batch
                 # retrieve summary for the entry
-                dict_res = summarizing_func( self, int_entry_indexed_valid, arr_int_entry_not_indexed, arr_value ) # summarize the data for the entry
+                dict_res = summarizing_func( self, int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying, arr_value ) # summarize the data for the entry
                 # write the result to an output file
-                newfile.write( ( '\t'.join( map( str, [ int_entry_indexed_valid ] + list( dict_res[ name_col ] if name_col in dict_res else np.nan for name_col in l_name_col_summarized ) ) ) + '\n' ).encode( ) ) # write an index for the current entry # 0>1 coordinate conversion for 'int_entry'
+                newfile.write( ( '\t'.join( map( str, [ int_entry_of_axis_for_querying ] + list( dict_res[ name_col ] if name_col in dict_res else np.nan for name_col in l_name_col_summarized ) ) ) + '\n' ).encode( ) ) # write an index for the current entry # 0>1 coordinate conversion for 'int_entry'
             newfile.close( ) # close file
             pipe_to_main_process.send( path_file_output ) # send information about the output file
         def post_process_batch( path_file_result ) :
@@ -5922,7 +6194,7 @@ class RamData( ) :
         'path_folder_ramdata_output' : (Default: store inside the current RamData). The directory of the RamData object that will contain the outputs (paired RAMtx objects). if integer representations of features and barcodes are updated from filtering, the output RAMtx is now incompatible with the current RamData and should be stored as a separate RamData object. The output directory of the new RamData object can be given through this argument.
         'func' : function object or string (Default: identity) a function that takes a tuple of two integers (integer representations of barcode and feature) and another integer or float (value) and returns a modified record. Also, the current RamData object will be given as the first argument (self), and attributes of the current RamData can be used inside the function
 
-                 func( self, int_entry_indexed, arr_int_entries_not_indexed, arr_value ) -> int_entry_indexed, arr_int_entries_not_indexed, arr_value
+                 func( self, int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value ) -> int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value
 
                  if None is returned, the entry will be discarded in the output RAMtx object. Therefore, the function can be used to both filter or/and transform values
                  
@@ -5973,12 +6245,12 @@ class RamData( ) :
             func_bc, func_ft = func
         elif func == 'ident' or func is None  :
             # define identity function if 'func' has not been given
-            def func_bc( self, int_entry_indexed, arr_int_entries_not_indexed, arr_value ) :
-                return int_entry_indexed, arr_int_entries_not_indexed, arr_value
+            def func_bc( self, int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value ) :
+                return int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value
             func_ft = func_bc # use the same function for the other axis
         elif func == 'log1p' :
-            def func_bc( self, int_entry_indexed, arr_int_entries_not_indexed, arr_value ) :
-                return int_entry_indexed, arr_int_entries_not_indexed, np.log10( arr_value + 1 )
+            def func_bc( self, int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value ) :
+                return int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, np.log10( arr_value + 1 )
             func_ft = func_bc # use the same function for the other axis
             
         # check the validility of the input arguments
@@ -6037,13 +6309,13 @@ class RamData( ) :
                 int_num_records_written = 0 # initialize the record count
 
                 # iterate through the data of each entry
-                for int_entry_indexed_valid, arr_int_entry_not_indexed, arr_value in zip( * rtx[ l_int_entry_current_batch ] ) : # retrieve data for the current batch
+                for int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying, arr_value in zip( * rtx[ l_int_entry_current_batch ] ) : # retrieve data for the current batch
                     # transform the values of an entry
-                    int_entry_indexed_valid, arr_int_entry_not_indexed, arr_value = func( self, int_entry_indexed_valid, arr_int_entry_not_indexed, arr_value ) 
+                    int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying, arr_value = func( self, int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying, arr_value ) 
                     int_num_records = len( arr_value ) # retrieve number of returned records
-                    za_output[ int_num_records_written : int_num_records_written + int_num_records ] = np.vstack( ( arr_int_entry_not_indexed, arr_value ) ).T # save transformed data
+                    za_output[ int_num_records_written : int_num_records_written + int_num_records ] = np.vstack( ( arr_int_entry_of_axis_not_for_querying, arr_value ) ).T # save transformed data
                     # write the result to the index file
-                    newfile_index.write( ( '\t'.join( map( str, [ int_entry_indexed_valid, int_num_records_written, int_num_records_written + int_num_records ] ) ) + '\n' ).encode( ) ) # write an index for the current entry # 0>1 coordinate conversion for 'int_entry'
+                    newfile_index.write( ( '\t'.join( map( str, [ int_entry_of_axis_for_querying, int_num_records_written, int_num_records_written + int_num_records ] ) ) + '\n' ).encode( ) ) # write an index for the current entry # 0>1 coordinate conversion for 'int_entry'
                     # update the number of records written
                     int_num_records_written += int_num_records
                 newfile_index.close( ) # close file
@@ -6109,12 +6381,12 @@ class RamData( ) :
         path_folder_data_new = f"{path_folder_ramdata_output}{name_layer_new}/" # compose the output directory of the paird RAMtx objects inside the output RamData object
                 
         if flag_simultaneous_processing_of_paired_ramtx :
-            l_process = list( mp.Process( target = RAMtx_Apply, args = ( self, rtx, ax, func, path_folder_ramtx_output, int_num_threads_for_the_current_process ) ) for rtx, ax, func, path_folder_ramtx_output, int_num_threads_for_the_current_process in zip( [ self._layer._ramtx_features, self._layer._ramtx_barcodes ], [ self.ft, self.bc ], [ func_ft, func_bc ], [ f"{path_folder_data_new}sorted_by_feature/", f"{path_folder_data_new}sorted_by_barcode/" ], [ int( np.floor( int_num_threads / 2 ) ), int( np.ceil( int_num_threads / 2 ) ) ] ) )
+            l_process = list( mp.Process( target = RAMtx_Apply, args = ( self, rtx, ax, func, path_folder_ramtx_output, int_num_threads_for_the_current_process ) ) for rtx, ax, func, path_folder_ramtx_output, int_num_threads_for_the_current_process in zip( [ self.layer._ramtx_features, self.layer._ramtx_barcodes ], [ self.ft, self.bc ], [ func_ft, func_bc ], [ f"{path_folder_data_new}sorted_by_feature/", f"{path_folder_data_new}sorted_by_barcode/" ], [ int( np.floor( int_num_threads / 2 ) ), int( np.ceil( int_num_threads / 2 ) ) ] ) )
             for p in l_process : p.start( )
             for p in l_process : p.join( )
         else :
-            RAMtx_Apply( self, self._layer._ramtx_features, self.ft, func_ft, f"{path_folder_data_new}sorted_by_feature/", int_num_threads = int_num_threads )
-            RAMtx_Apply( self, self._layer._ramtx_barcodes, self.bc, func_bc, f"{path_folder_data_new}sorted_by_barcode/", int_num_threads = int_num_threads )
+            RAMtx_Apply( self, self.layer._ramtx_features, self.ft, func_ft, f"{path_folder_data_new}sorted_by_feature/", int_num_threads = int_num_threads )
+            RAMtx_Apply( self, self.layer._ramtx_barcodes, self.bc, func_bc, f"{path_folder_data_new}sorted_by_barcode/", int_num_threads = int_num_threads )
 
         if self.verbose :
             print( f'new layer {name_layer_new} has been successfully created' )
@@ -6196,19 +6468,19 @@ class RamData( ) :
         self.layer = name_layer
         
         # define functions for normalization
-        def func_norm_barcode_indexed( self, int_entry_indexed, arr_int_entries_not_indexed, arr_value ) :
+        def func_norm_barcode_indexed( self, int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value ) :
             """ # 2022-07-06 23:58:27 
             """
-            return int_entry_indexed, arr_int_entries_not_indexed, ( arr_value / dict_count[ int_entry_indexed ] * int_total_count_target ) # normalize count data of a single barcode
+            return int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, ( arr_value / dict_count[ int_entry_of_axis_for_querying ] * int_total_count_target ) # normalize count data of a single barcode
         
-        def func_norm_feature_indexed( self, int_entry_indexed, arr_int_entries_not_indexed, arr_value ) : # normalize count data of a single feature containing (possibly) multiple barcodes
+        def func_norm_feature_indexed( self, int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value ) : # normalize count data of a single feature containing (possibly) multiple barcodes
             """ # 2022-07-06 23:58:38 
             """
             # perform normalization in-place
-            for i, e in enumerate( arr_int_entries_not_indexed.astype( int ) ) : # iterate through barcodes
+            for i, e in enumerate( arr_int_entries_of_axis_not_for_querying.astype( int ) ) : # iterate through barcodes
                 arr_value[ i ] = arr_value[ i ] / dict_count[ e ] # perform normalization of count data for each barcode
             arr_value *= int_total_count_target
-            return int_entry_indexed, arr_int_entries_not_indexed, arr_value
+            return int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value
         
         ''' normalize the RAMtx matrices '''
         self.apply( name_layer, name_layer_new, func = ( func_norm_barcode_indexed, func_norm_feature_indexed ), flag_simultaneous_processing_of_paired_ramtx = flag_simultaneous_processing_of_paired_ramtx, int_num_threads = int_num_threads, ** args ) # flag_dtype_output = None : use the same dtype as the input RAMtx object
@@ -6246,24 +6518,24 @@ class RamData( ) :
         self.layer = name_layer
 
         # define functions for scaling
-        def func_feature_indexed( self, int_entry_indexed, arr_int_entries_not_indexed, arr_value ) :
+        def func_feature_indexed( self, int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value ) :
             """ # 2022-07-27 14:32:21 
             """
-            float_std = dict_variance[ int_entry_indexed ] ** 0.5 # retrieve standard deviation from the variance
+            float_std = dict_variance[ int_entry_of_axis_for_querying ] ** 0.5 # retrieve standard deviation from the variance
             if float_std == 0 : # handle when standard deviation is zero (all the data values should be zero)
-                return int_entry_indexed, arr_int_entries_not_indexed, arr_value # return result
+                return int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value # return result
             arr_value /= float_std # scale count data using the standard deviation (in-place)
             arr_value[ arr_value > max_value ] = max_value # cap exceptionally large values (in-place)
-            return int_entry_indexed, arr_int_entries_not_indexed, arr_value # return scaled data
+            return int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value # return scaled data
 
-        def func_barcode_indexed( self, int_entry_indexed, arr_int_entries_not_indexed, arr_value ) : # normalize count data of a single barcode containing (likely) multiple features
+        def func_barcode_indexed( self, int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value ) : # normalize count data of a single barcode containing (likely) multiple features
             """ # 2022-07-27 16:32:21 
             """
             # perform scaling in-place to reduce memory consumption
-            for i, e in enumerate( arr_int_entries_not_indexed.astype( int ) ) : # iterate through barcodes
+            for i, e in enumerate( arr_int_entries_of_axis_not_for_querying.astype( int ) ) : # iterate through barcodes
                 float_std = dict_variance[ e ] ** 0.5 # retrieve standard deviation of the current feature from the variance
                 arr_value[ i ] = 0 if float_std == 0 else arr_value[ i ] / float_std # perform scaling of data for each feature
-            return int_entry_indexed, arr_int_entries_not_indexed, arr_value
+            return int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value
 
         ''' process the RAMtx matrices '''
         self.apply( name_layer, name_layer_new, func = ( func_barcode_indexed, func_feature_indexed ), flag_simultaneous_processing_of_paired_ramtx = flag_simultaneous_processing_of_paired_ramtx, int_num_threads = int_num_threads, ** args ) # flag_dtype_output = None : use the same dtype as the input RAMtx object
@@ -6442,7 +6714,7 @@ class RamData( ) :
         self.layer = name_layer
 
         # retrieve RAMtx object (sorted by barcodes) to summarize # retrieve 'Barcode' Axis object
-        rtx, ax = self._layer._ramtx_barcodes, self.bc
+        rtx, ax = self.layer._ramtx_barcodes, self.bc
 
         # set filters for PCA calculation
         if name_col_filter is not None :
@@ -6996,7 +7268,7 @@ class RamData( ) :
         self.subset( path_folder_ramdata_output, set_str_barcode = set_str_barcode )
         if self.verbose :
             print( f'cell filtering completed for {len( set_str_barcode )} cells. A filtered RamData was exported at {path_folder_ramdata_output}' )
-
+        
 # utility functions
 # for benchmarking
 def draw_result( self, path_folder_graph, dict_kw_scatter = { 's' : 2, 'linewidth' : 0, 'alpha' : 0.1 } ) :
