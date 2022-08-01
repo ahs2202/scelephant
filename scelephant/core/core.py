@@ -27,7 +27,7 @@ import sklearn.cluster as skc # K-means
 # define version
 _version_ = '0.0.3'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-08-01 11:37:05'
+_last_modified_time_ = '2022-08-01 20:38:44'
 
 """ # 2022-07-21 10:35:42  realease note
 
@@ -65,7 +65,11 @@ below is a short description about the different types of ramtx objects:
     - dense ramtx object can be used to retrieve data of a single barcode or feature (with moderate efficiency)
     - sparse ramtx object can only be used data of either a single barcode ('sparse_sorted_by_barcodes') or a single feature ('sparse_sorted_by_features') very efficiently.
     
-    
+# 2022-08-01 20:38:54 
+
+RamData.apply has been implemented
+RAMtx.__getitem__ function has been improved to allow read data respecting chunk boundaries
+RAMtx.batch_generator
 """
 
 ''' previosuly written for biobookshelf '''
@@ -4396,8 +4400,8 @@ class RAMtx( ) :
             l_l_int_entry_for_each_worker = list( l for l in LIST_Split( l_int_entry, int_n_workers, flag_contiguous_chunk = True ) if len( l ) > 0 ) # retrieve a list of valid work loads for the workers
             int_n_workers = min( int_n_workers, len( l_l_int_entry_for_each_worker ) ) # adjust the number of workers according to the number of distributed workloads
             
-            l_pipes_from_main_process_to_worker = list( mp.Pipe( ) for _ in range( self.int_num_cpus ) ) # create pipes for sending records to workers # add process for receivers
-            l_pipes_from_worker_to_main_process = list( mp.Pipe( ) for _ in range( self.int_num_cpus ) ) # create pipes for collecting results from workers
+            l_pipes_from_main_process_to_worker = list( mp.Pipe( ) for _ in range( int_n_workers ) ) # create pipes for sending records to workers # add process for receivers
+            l_pipes_from_worker_to_main_process = list( mp.Pipe( ) for _ in range( int_n_workers ) ) # create pipes for collecting results from workers
             l_processes = list( mp.Process( target = __retrieve_data, args = ( l_pipes_from_main_process_to_worker[ index_worker ][ 1 ], l_pipes_from_worker_to_main_process[ index_worker ][ 0 ] ) ) for index_worker in range( int_n_workers ) ) # add a process for distributing fastq records
             for p in l_processes :
                 p.start( )
@@ -4406,19 +4410,24 @@ class RAMtx( ) :
                 l_pipes_from_main_process_to_worker[ index_worker ][ 0 ].send( l_int_entry_for_each_worker )
             # wait until all works are completed
             int_num_workers_completed = 0
+            l_output = list( [ ] for i in range( int_n_workers ) ) # initialize a list that will collect output results
             while int_num_workers_completed < int_n_workers : # until all works are completed
-                for _, pipe in l_pipes_from_worker_to_main_process :
-                    if pipe.poll( ) :
-                        otuput = pipe.recv( )
-                        l_int_entry_of_axis_for_querying.extend( otuput[ 0 ] )
-                        l_arr_int_entry_of_axis_not_for_querying.extend( otuput[ 1 ] )
-                        l_arr_value.extend( otuput[ 2 ] )
-                        del otuput
-                        int_num_workers_completed += 1
+                for index_worker, cxn in enumerate( l_pipes_from_worker_to_main_process ) :
+                    _, pipe_reciver = cxn # parse a connection
+                    if pipe_reciver.poll( ) :
+                        l_output[ index_worker ] = pipe_reciver.recv( ) # collect output 
+                        int_num_workers_completed += 1 # update the number of completed workers
                 time.sleep( 0.1 )
             # dismiss workers once all works are completed
             for p in l_processes :
                 p.join( )
+                
+            # ravel retrieved records
+            for output in l_output :
+                l_int_entry_of_axis_for_querying.extend( output[ 0 ] )
+                l_arr_int_entry_of_axis_not_for_querying.extend( output[ 1 ] )
+                l_arr_value.extend( output[ 2 ] )
+            del output, l_output
         else : # single thread mode
             l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying, l_arr_value = __retrieve_data( l_int_entry, flag_as_a_worker = False )
         
@@ -4467,8 +4476,8 @@ class RAMtx( ) :
         n_bc, n_ft = ( self._int_num_barcodes, self._int_num_features ) if self._ramdata is None else ( self._ramdata.bc.meta.n_rows, self._ramdata.ft.meta.n_rows ) # detect whether the current RAMtx has been attached to a RamData and retrieve the number of barcodes and features accordingly
         X = scipy.sparse.csr_matrix( scipy.sparse.coo_matrix( ( arr_value, ( arr_int_barcode, arr_int_feature ) ), shape = ( n_bc, n_ft ) ) ) # convert count data to a sparse matrix
         return X # return the composed sparse matrix 
-    def batch_generator( self, ba = None, int_num_entries_for_each_weight_calculation_batch = 1000, int_total_weight_for_each_batch = 1000000, int_min_num_entries_in_a_batch_if_weight_not_available = 2000, int_chunk_size_for_checking_boundary = 2000 ) :
-        ''' # 2022-07-12 22:05:27 
+    def batch_generator( self, ba = None, int_num_entries_for_each_weight_calculation_batch = 1000, int_total_weight_for_each_batch = 1000000, int_min_num_entries_in_a_batch_if_weight_not_available = 2000, int_chunk_size_for_checking_boundary = 2000, flag_return_index_batch = False ) :
+        ''' # 2022-08-01 19:20:30 
         generate batches of list of integer indices of the active entries in the given bitarray 'ba'. 
         Each bach has the following characteristics:
             monotonous: active entries in a batch are in an increasing order
@@ -4477,6 +4486,7 @@ class RAMtx( ) :
         'ba' : (default None) if None is given, self.ba_active_entries bitarray will be used.
         'int_min_num_entries_in_a_batch_if_weight_not_available' : for some reason (e.g. when ramtx is dense and yet the number of entries for each axis has not been calculated), return this number of entries in a batch
         'int_chunk_size_for_checking_boundary' : if this argument is given, each batch will respect the chunk boundary of the given chunk size so that different batches share the same 'chunk'.
+        'flag_return_index_batch' : if True, return 'index_batch' together with 'batch'
         '''
         # set defaule arguments
         if ba is None :
@@ -4485,7 +4495,7 @@ class RAMtx( ) :
                 ba = self.ba_active_entries # if None is given, self.ba_active_entries bitarray will be used.
         # initialize
         # a namespace that can safely shared between functions
-        ns = { 'int_accumulated_weight_current_batch' : 0, 'l_int_entry_current_batch' : [ ], 'l_int_entry_for_weight_calculation_batch' : [ ], 'index_chunk_end' : None }
+        ns = { 'int_accumulated_weight_current_batch' : 0, 'l_int_entry_current_batch' : [ ], 'l_int_entry_for_weight_calculation_batch' : [ ], 'index_chunk_end' : None, 'index_batch' : 0 } # initialize 'index_batch'
         
         # internal setting
         flag_weight_not_available = not self.is_sparse # currently, weights will be not available for dense matrix
@@ -4506,8 +4516,9 @@ class RAMtx( ) :
             ''' search for batch '''
             for int_entry, weight in zip( ns[ 'l_int_entry_for_weight_calculation_batch' ], arr_weight ) :
                 if ns[ 'index_chunk_end' ] is not None and ns[ 'index_chunk_end' ] != int_entry // int_chunk_size_for_checking_boundary : # if the chunk boundary has been set and the boundary has reached
-                    yield ns[ 'l_int_entry_current_batch' ] # return a batch
+                    yield ( ns[ 'index_batch' ], ns[ 'l_int_entry_current_batch' ] ) if flag_return_index_batch else ns[ 'l_int_entry_current_batch' ] # return a batch
                     # initialize the next batch
+                    ns[ 'index_batch' ] += 1
                     ns[ 'l_int_entry_current_batch' ] = [ ] 
                     ns[ 'int_accumulated_weight_current_batch' ] = 0
                     ns[ 'index_chunk_end' ] = None
@@ -4521,8 +4532,9 @@ class RAMtx( ) :
                     if int_chunk_size_for_checking_boundary is not None : # when chunk boundary checking is active
                         ns[ 'index_chunk_end' ] = int_entry // int_chunk_size_for_checking_boundary # set the chunk boundary
                     else :
-                        yield ns[ 'l_int_entry_current_batch' ] # return a batch
+                        yield ( ns[ 'index_batch' ], ns[ 'l_int_entry_current_batch' ] ) if flag_return_index_batch else ns[ 'l_int_entry_current_batch' ] # return a batch
                         # initialize the next batch
+                        ns[ 'index_batch' ] += 1
                         ns[ 'l_int_entry_current_batch' ] = [ ] 
                         ns[ 'int_accumulated_weight_current_batch' ] = 0
                 
@@ -4540,7 +4552,7 @@ class RAMtx( ) :
             yield e
         # return the remaining int_entries as the last batch (if available)
         if len( ns[ 'l_int_entry_current_batch' ] ) > 0 :
-            yield ns[ 'l_int_entry_current_batch' ]
+            yield ( ns[ 'index_batch' ], ns[ 'l_int_entry_current_batch' ] ) if flag_return_index_batch else ns[ 'l_int_entry_current_batch' ] # return a batch
 ''' a class for representing axis of RamData (barcodes/features) '''
 class RamDataAxis( ) :
     """ # 2022-07-16 23:56:47 
@@ -4889,7 +4901,7 @@ class RamDataAxis( ) :
         
         'flag_return_valid_entries_in_the_currently_active_layer' : return bitarray filter containing only the active entries in the current layer 
         """
-        if flag_return_valid_entries_in_the_currently_active_layer and self._ramdata.layer is not None : # if RamData has an active layer and 'flag_return_valid_entries_in_the_currently_active_layer' setting is True, return bitarray where entries with valid count data is marked as '1'
+        if flag_return_valid_entries_in_the_currently_active_layer and self._ramdata.layer is not None and self._ramdata.layer.get_ramtx( flag_is_for_querying_features = self._name_axis == 'features' ) is not None : # if RamData has an active layer and 'flag_return_valid_entries_in_the_currently_active_layer' setting is True, return bitarray where entries with valid count data is marked as '1' # if valid ramtx data is available
             ba = self._ramdata.layer.get_ramtx( flag_is_for_querying_features = self._name_axis == 'features' ).ba_active_entries
         else :
             # if layer is empty or 'flag_return_valid_entries_in_the_currently_active_layer' is False, just return a bitarray filled with '1'
@@ -5213,7 +5225,11 @@ class RamDataLayer( ) :
 
         # choose which ramtx object to use
         flag_use_ramtx_for_querying_feature = int_num_entries_queried_bc >= int_num_entries_queried_ft # select which axis to use. if there is more number of barcodes than features, use ramtx for querying 'features'
-        return self.get_ramtx( self, flag_is_for_querying_features = flag_use_ramtx_for_querying_feature ) # retrieve ramtx
+        
+        rtx = self.get_ramtx( flag_is_for_querying_features = flag_use_ramtx_for_querying_feature ) # retrieve ramtx
+        if rtx is None :
+            return self[ list( self.modes )[ 0 ] ] # return any ramtx as a fallback
+        return rtx
     def get_ramtx( self, flag_is_for_querying_features = True, flag_prefer_dense = False ) :
         """ # 2022-07-31 11:55:06 
         retrieve ramtx for querying feature/barcodes
@@ -5225,12 +5241,8 @@ class RamDataLayer( ) :
                 return self[ mode ]
         if self.verbose :
             print( f"ramtx for querying {'features' if flag_is_for_querying_features else 'barcodes'} efficiently is not available for layer {self.name}, containing the following modes: {self.modes}" )
-        if len( list( self.modes ) ) > 0 : # return any ramtx object as a fallback
-            if self.verbose :
-                print( 'returning any ramtx object. it may work or not ... ' )
-            return self[ list( self.modes )[ 0 ] ]
         if self.verbose :
-            print( f"current layer {self.name} does not contain any valid ramtx objects" )
+            print( f"current layer {self.name} does not contain any valid ramtx objects for the query" )
         return None
     def __getitem__( self, mode ) :
         """ # 2022-07-30 18:44:49 
@@ -5495,20 +5507,9 @@ class RamData( ) :
         
         # compose filters from the queried entries
         ba_entry_bc, l_str_bc, ba_entry_ft, l_str_ft = self.compose_filters( l_entry_bc = l_entry_bc, l_entry_ft = l_entry_ft, flag_use_str_repr_bc = flag_use_str_repr_bc, flag_use_str_repr_ft = flag_use_str_repr_ft )
-        
-        # count the number of valid queried entries
-        int_num_entries_queried_bc = ba_entry_bc.count( )
-        int_num_entries_queried_ft = ba_entry_ft.count( )
-        
-        # detect and handle the cases when one of the axes is empty
-        if int_num_entries_queried_bc == 0 or int_num_entries_queried_ft == 0 :
-            if self.verbose :
-                print( f"Error: currently queried view is (barcode x features) {int_num_entries_queried_bc} x {int_num_entries_queried_ft}. please change the filter or queries in order to retrieve a valid view" )
-            return None
 
-        # retrieve ramtx
-        flag_use_ramtx_indexed_by_features = int_num_entries_queried_bc >= int_num_entries_queried_ft # select which axis to use. if there is more number of barcodes than features, use ramtx indexed with 'feature' axis
-        rtx = self.layer._ramtx_features if flag_use_ramtx_indexed_by_features else self.layer._ramtx_barcodes
+        # retrieve ramtx for retrieving data
+        rtx = self.layer.select_ramtx( ba_entry_bc, ba_entry_ft )
         
         # set barcode/feature filters for the queried entries
         self.bc.filter = ba_entry_bc
@@ -5650,24 +5651,24 @@ class RamData( ) :
             int_num_threads = self.int_num_cpus
         if summarizing_func == 'sum' :
             def summarizing_func( self, int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value ) :
-                ''' # 2022-07-19 12:19:49 
+                ''' # 2022-08-01 21:05:06 
                 calculate sum of the values of the current entry
                 
                 assumes 'int_num_records' > 0
                 '''
                 int_num_records = len( arr_value ) # retrieve the number of records of the current entry
-                dict_summary = { 'sum' : np.sum( arr_value ) if int_num_records > 30 else sum( arr_value ) } # if an input array has more than 30 elements, use np.sum to calculate the sum
+                dict_summary = { 'sum' : np.sum( arr_value ) if int_num_records > 30 else sum( arr_value ), 'num_nonzero_values' : int_num_records } # if an input array has more than 30 elements, use np.sum to calculate the sum
                 dict_summary[ 'mean' ] = dict_summary[ 'sum' ] / int_total_num_entries_not_indexed # calculate the mean
                 return dict_summary
         elif summarizing_func == 'sum_and_dev' :
             def summarizing_func( self, int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value ) :
-                ''' # 2022-07-19 12:19:53 
+                ''' # 2022-08-01 21:05:02 
                 calculate sum and deviation of the values of the current entry
                 
                 assumes 'int_num_records' > 0
                 '''
                 int_num_records = len( arr_value ) # retrieve the number of records of the current entry
-                dict_summary = { 'sum' : np.sum( arr_value ) if int_num_records > 30 else sum( arr_value ) } # if an input array has more than 30 elements, use np.sum to calculate the sum
+                dict_summary = { 'sum' : np.sum( arr_value ) if int_num_records > 30 else sum( arr_value ), 'num_nonzero_values' : int_num_records } # if an input array has more than 30 elements, use np.sum to calculate the sum
                 dict_summary[ 'mean' ] = dict_summary[ 'sum' ] / int_total_num_entries_not_indexed # calculate the mean
                 arr_dev = ( arr_value - dict_summary[ 'mean' ] ) ** 2 # calculate the deviation
                 dict_summary[ 'deviation' ] = np.sum( arr_dev ) if int_num_records > 30 else sum( arr_dev )
@@ -5914,13 +5915,24 @@ class RamData( ) :
                 
                 ns[ 'int_num_chunks_written_to_ramtx' ] = 0 # initialize the number of chunks written to ramtx object
                 int_num_records_in_a_chunk_of_mtx_sparse = za_mtx_sparse.chunks[ 0 ] # retrieve the number of records in a chunk of output zarr matrix
+                
+                ns[ 'index_batch_waiting_to_be_written_sparse' ] = 0 # index of the batch currently waiting to be written. 
+                ns[ 'l_res_sparse' ] = [ ]
+                
 
             """ convert matrix values and save it to the output RAMtx object """
             # define functions for multiprocessing step
-            def process_batch( l_int_entry_current_batch, pipe_to_main_process ) :
+            def process_batch( batch, pipe_to_main_process ) :
                 ''' # 2022-05-08 13:19:07 
                 retrieve data for a given list of entries, transform values, and save to a Zarr object and index the object, and returns the number of written records and the paths of the written objects (index and Zarr matrix)
                 '''
+                # initialize
+                path_folder_zarr_output_sparse = None
+                path_file_index_output_sparse = None
+                
+                # parse batch
+                index_batch, l_int_entry_current_batch = batch
+                
                 # retrieve the number of index_entries
                 int_num_entries = len( l_int_entry_current_batch )
                 int_num_records_written = 0 # initialize the record count
@@ -5978,44 +5990,55 @@ class RamData( ) :
                     za_output_sparse.resize( int_num_records_written, 2 ) # resize the output Zarr object
                     pd.DataFrame( l_index ).to_csv( path_file_index_output_sparse, header = None, index = None, sep = '\t' ) # write the index file
                     
-                pipe_to_main_process.send( ( int_num_records_written, path_folder_zarr_output_sparse, path_file_index_output_sparse ) ) # send information about the output files
+                pipe_to_main_process.send( ( index_batch, int_num_records_written, path_folder_zarr_output_sparse, path_file_index_output_sparse ) ) # send information about the output files
             def post_process_batch( res ) :
                 """ # 2022-07-06 10:22:05 
                 """
                 # parse result
-                int_num_records_written, path_folder_zarr_output, path_file_index_output = res
+                index_batch, int_num_records_written, path_folder_zarr_output, path_file_index_output = res
                 ns[ 'int_num_records_written_to_ramtx' ] += int_num_records_written # update the number of records written to the output RAMtx
                 
                 """ %% SPARSE %% """
                 if flag_sparse_ramtx_output : # if sparse output is present
-                    int_num_chunks_written_for_a_batch = int( np.ceil( int_num_records_written / int_num_records_in_a_chunk_of_mtx_sparse ) ) # retrieve the number of chunks that were written for a batch
-                    int_num_chunks_written_to_ramtx = ns[ 'int_num_chunks_written_to_ramtx' ] # retrieve the number of chunks already present in the output RAMtx zarr matrix object
+                    ''' collect result of the current batch '''
+                    while len( ns[ 'l_res_sparse' ] ) < index_batch + 1 + 1 : # increase the length of ns[ 'l_res_sparse' ] until it can contain the result produced from the current batch. # add a padding (+1) to not raise indexError
+                        ns[ 'l_res_sparse' ].append( 0 ) # not completed batch will be marked by 0
+                    ns[ 'l_res_sparse' ][ index_batch ] = res # collect the result produced from the current batch
+                    
+                    ''' process results produced from batches in the order the batches were generated (in an ascending order of 'int_entry') '''
+                    while ns[ 'l_res_sparse' ][ ns[ 'index_batch_waiting_to_be_written_sparse' ] ] != 0 : # if the batch referenced by ns[ 'index_batch_waiting_to_be_written_sparse' ] has been completed
+                        index_batch, int_num_records_written, path_folder_zarr_output, path_file_index_output = ns[ 'l_res_sparse' ][ ns[ 'index_batch_waiting_to_be_written_sparse' ] ]
+                        int_num_chunks_written_for_a_batch = int( np.ceil( int_num_records_written / int_num_records_in_a_chunk_of_mtx_sparse ) ) # retrieve the number of chunks that were written for a batch
+                        int_num_chunks_written_to_ramtx = ns[ 'int_num_chunks_written_to_ramtx' ] # retrieve the number of chunks already present in the output RAMtx zarr matrix object
+                        
+                        # check size of Zarr matrix object, and increase the size if needed.
+                        int_min_num_rows_required = ( int_num_chunks_written_to_ramtx + int_num_chunks_written_for_a_batch ) * int_num_records_in_a_chunk_of_mtx_sparse # calculate the minimal number of rows required in the RAMtx Zarr matrix object
+                        if za_mtx_sparse.shape[ 0 ] < int_min_num_rows_required : # check whether the size of Zarr matrix is smaller than the minimum requirement
+                            za_mtx_sparse.resize( int_min_num_rows_required, 2 ) # resize the Zarr matrix so that data can be safely added to the matrix
 
-                    # check size of Zarr matrix object, and increase the size if needed.
-                    int_min_num_rows_required = ( int_num_chunks_written_to_ramtx + int_num_chunks_written_for_a_batch ) * int_num_records_in_a_chunk_of_mtx_sparse # calculate the minimal number of rows required in the RAMtx Zarr matrix object
-                    if za_mtx_sparse.shape[ 0 ] < int_min_num_rows_required : # check whether the size of Zarr matrix is smaller than the minimum requirement
-                        za_mtx_sparse.resize( int_min_num_rows_required, 2 ) # resize the Zarr matrix so that data can be safely added to the matrix
+                        # copy Zarr chunks to the sparse RAMtx Zarr matrix object
+                        os.chdir( path_folder_zarr_output ) # to reduce the length of file path, change directory to the output folder before retrieving file paths of the chunks
+                        for e in glob.glob( '*.0' ) : # to reduce the size of file paths returned by glob, use relative path to retrieve the list of chunk files of the Zarr matrix of the current batch
+                            index_chunk = int( e.split( '.0', 1 )[ 0 ] ) # retrieve the integer index of the chunk
+                            os.rename( e, path_folder_ramtx_sparse_mtx + str( index_chunk + int_num_chunks_written_to_ramtx ) + '.0' ) # simply rename the chunk to transfer stored values
 
-                    # copy Zarr chunks to the sparse RAMtx Zarr matrix object
-                    os.chdir( path_folder_zarr_output ) # to reduce the length of file path, change directory to the output folder before retrieving file paths of the chunks
-                    for e in glob.glob( '*.0' ) : # to reduce the size of file paths returned by glob, use relative path to retrieve the list of chunk files of the Zarr matrix of the current batch
-                        index_chunk = int( e.split( '.0', 1 )[ 0 ] ) # retrieve the integer index of the chunk
-                        os.rename( e, path_folder_ramtx_sparse_mtx + str( index_chunk + int_num_chunks_written_to_ramtx ) + '.0' ) # simply rename the chunk to transfer stored values
+                        # retrieve index data of the current batch
+                        arr_index = pd.read_csv( path_file_index_output, header = None, sep = '\t' ).values.astype( int ) # convert to integer dtype
+                        arr_index[ :, 1 : ] += int_num_chunks_written_to_ramtx * int_num_records_in_a_chunk_of_mtx_sparse # match the chunk boundary. if there are empty rows in the chunks currently written to ramtx, these empty rows will be considered as rows containing records, so that Zarr matrix written for a batch can be easily transferred by simply renaming the chunk files
+                        za_mtx_sparse_index.set_orthogonal_selection( arr_index[ :, 0 ], arr_index[ :, 1 : ] ) # update the index of the entries of the current batch
 
-                    # retrieve index data of the current batch
-                    arr_index = pd.read_csv( path_file_index_output, header = None, sep = '\t' ).values.astype( int ) # convert to integer dtype
-                    arr_index[ :, 1 : ] += int_num_chunks_written_to_ramtx * int_num_records_in_a_chunk_of_mtx_sparse # match the chunk boundary. if there are empty rows in the chunks currently written to ramtx, these empty rows will be considered as rows containing records, so that Zarr matrix written for a batch can be easily transferred by simply renaming the chunk files
-                    za_mtx_sparse_index.set_orthogonal_selection( arr_index[ :, 0 ], arr_index[ :, 1 : ] ) # update the index of the entries of the current batch
+                        # update the number of chunks written to RAMtx Zarr matrix object
+                        ns[ 'int_num_chunks_written_to_ramtx' ] += int_num_chunks_written_for_a_batch
 
-                    # update the number of chunks written to RAMtx Zarr matrix object
-                    ns[ 'int_num_chunks_written_to_ramtx' ] += int_num_chunks_written_for_a_batch
-
-                    # delete temporary files and folders
-                    shutil.rmtree( path_folder_zarr_output )
-                    os.remove( path_file_index_output )
+                        # delete temporary files and folders
+                        shutil.rmtree( path_folder_zarr_output )
+                        os.remove( path_file_index_output )
+                        
+                        ns[ 'l_res_sparse' ][ ns[ 'index_batch_waiting_to_be_written_sparse' ] ] = None # remove the result from the list of batch outputs
+                        ns[ 'index_batch_waiting_to_be_written_sparse' ] += 1 # start waiting for the next batch to be completed
                 
             # transform the values of the RAMtx using multiple processes
-            bk.Multiprocessing_Batch( rtx.batch_generator( ax.filter, int_num_entries_for_each_weight_calculation_batch, int_total_weight_for_each_batch, int_min_num_entries_in_a_batch_if_weight_not_available = int_min_num_entries_in_a_batch_if_weight_not_available, int_chunk_size_for_checking_boundary = chunks_dense[ 0 ] if flag_dense_ramtx_output else None ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) # create batch considering chunk boundaries
+            bk.Multiprocessing_Batch( rtx.batch_generator( ax.filter, int_num_entries_for_each_weight_calculation_batch, int_total_weight_for_each_batch, int_min_num_entries_in_a_batch_if_weight_not_available = int_min_num_entries_in_a_batch_if_weight_not_available, int_chunk_size_for_checking_boundary = chunks_dense[ 0 ] if flag_dense_ramtx_output else None, flag_return_index_batch = True ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) # create batch considering chunk boundaries # return batch index to allow combining sparse matrix in an ascending order.
 
             # remove temp folder
             shutil.rmtree( path_folder_temp )
@@ -6301,7 +6324,7 @@ class RamData( ) :
     #         del self.ft.meta.dict[ name_col_mean ]
         if not flag_name_col_variance_already_loaded : 
             del self.ft.meta.dict[ name_col_variance ]
-    def identify_highly_variable_features( self, name_layer = 'normalized_log1p', int_num_highly_variable_features = 2000, float_min_mean = 0.01, float_min_variance = 0.01, name_col_filter = 'filter_normalized_log1p_highly_variable', flag_show_graph = True, coords_for_sampling = range( 0, 1000000 ) ) :
+    def identify_highly_variable_features( self, name_layer = 'normalized_log1p', int_num_highly_variable_features = 2000, float_min_mean = 0.01, float_min_variance = 0.01, name_col_filter = 'filter_normalized_log1p_highly_variable', flag_show_graph = True ) :
         """ # 2022-06-07 22:53:55 
         identify highly variable features
         learns mean-variable relationship from the given data, and calculate residual variance to identify highly variable features.
@@ -6370,36 +6393,93 @@ class RamData( ) :
         (2) identify of highly variable features
         """
         # reset the feature filter prior to retrieve the metadata of all features
+        ba = self.ft.all( ) if self.ft.filter is None else self.ft.filter # retrieve filter
+        
+        # filter using variance
         self.ft.filter = None
-        
-        # retrieve a filter of features that satisfy the conditions
-        ba = self.ft.AND( self.ft.meta[ 'normalized_log1p_variance' ] > float_min_variance, self.ft.meta[ 'normalized_log1p_mean' ] > float_min_mean )
-
-        # set default threshold for highly_variable_feature_score
-        float_min_score_highly_variable = 0
-        # select the specified number of features if 'int_num_highly_variable_features' is given
-        if int_num_highly_variable_features is None :
-            self.ft.filter = ba # set feature filter for retrieving highly_variable_feature_score for only the genes satisfying the thresholds.
-
-            # retrieve highly variable scores and set the threshold based on the 'int_num_highly_variable_features'
-            arr = self.ft.meta[ 'normalized_log1p__float_score_highly_variable_feature_from_mean' ]
-            arr.sort( )
-            float_min_score_highly_variable = arr[ - int_num_highly_variable_features ] if len( arr ) >= int_num_highly_variable_features else arr[ 0 ] # retrieve threshold (if the number of available features are less than 'int_num_highly_variable_features', use all genes.
-
-            # reset feature filter prior to the identification of highly variable features.
-            self.ft.filter = None
-        
-        # identify highly variable features satisfying all conditions    
-        ba = self.ft.AND( ba, self.ft.meta[ 'normalized_log1p__float_score_highly_variable_feature_from_mean' ] > float_min_score_highly_variable ) 
-        self.ft.meta[ name_col_filter ] = ba # save the feature filter as a metadata
+        ba = self.ft.AND( ba, self.ft.meta[ name_col_for_variance ] > float_min_variance ) 
         self.ft.filter = ba
+        
+        # calculate a threshold for highly variable score
+        arr_scores = self.ft.meta[ f'{name_layer}__float_score_highly_variable_feature_from_mean' ]
+        float_min_score_highly_variable = arr_scores[ np.lexsort( ( self.ft.meta[ name_col_for_mean ], arr_scores ) )[ - int_num_highly_variable_features ] ]
+        del arr_scores
+        
+        # filter using highly variable score
+        self.ft.filter = None
+        ba = self.ft.AND( ba, self.ft.meta[ f'{name_layer}__float_score_highly_variable_feature_from_mean' ] > float_min_score_highly_variable ) 
+        self.ft.filter = ba
+        self.ft.save_filter( name_col_filter ) # save the feature filter as a metadata
+    ''' function for fast exploratory analysis '''
+    def prepare_dimension_reduction_from_raw( self, name_layer_raw = 'raw', name_layer_out = 'normalized_log1p_scaled', int_num_highly_variable_features = 2000, dict_kw_hv = { 'float_min_mean' : 0.01, 'float_min_variance' : 0.01, 'name_col_filter' : 'filter_normalized_log1p_highly_variable' } ) :
+        """ # 2022-08-01 21:15:57 
 
-        # discard cells that does not contain data for the identified highly variable features
-        self.summarize( 'normalized_log1p', 'barcode', 'sum' ) # calculate the total expression values for the selected highly variable genes for each barcode
-        self.bc.filter = None # reset barcode filter prior to the identification of valid barcodes (that contains valid expression data for the selected set of highly variable features).
-        ba = self.bc.meta[ 'normalized_log1p_sum' ] > 0 # filter out barcodes with no expression for the selected highly variable genes, since these will not be clustered properly and consumes extra memory and running time.
-        self.bc.meta[ name_col_filter, : ] = ba # save the barcode filter as a metadata
-        self.bc.filter = ba
+        a method designed for fast exploratory analysis of the raw data, removing unncessary layer building operations as much as possible.
+
+        'name_layer_raw' : the name of the layer containing 'raw' count data
+        'name_layer_out' : the name of the layer that will contain the log-normalized, scale gene expression data in a 'sparse_for_querying_barcodes' ramtx mode of only the highly variable genes, selected by the current filter settings, 'int_num_highly_variable_features', and 'dict_kw_hv' arguments. data will be scaled and capped according to 'max_value' arguments
+        """
+        self.summarize( name_layer_raw, 'barcode', 'sum' )
+
+        # filter cells
+        self.bc.filter = ( self.bc.all( ) if self.bc.filter is None else self.bc.filter ) & BA.to_bitarray( self.bc.meta[ f'{name_layer_raw}_sum' ] > min_counts ) & BA.to_bitarray( self.bc.meta[ f'{name_layer_raw}_num_nonzero_values' ] > min_features )
+        self.bc.save_filter( 'filtered_barcodes' ) # save filter for later analysis
+
+        # retrieve total raw count data for normalization
+        self.bc.meta.load_as_dict( f'{name_layer_raw}_sum' )
+        dict_count = self.bc.meta.dict[ f'{name_layer_raw}_sum' ] # retrieve total counts for each barcode as a dictionary
+
+        # retrieve the total number of barcodes
+        int_total_num_barcodes = self.bc.meta.n_rows
+
+        def func( self, int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value ) : # normalize count data of a single feature containing (possibly) multiple barcodes
+            """ # 2022-07-06 23:58:38 
+            """
+            # perform normalization in-place
+            for i, e in enumerate( arr_int_entries_of_axis_not_for_querying.astype( int ) ) : # iterate through barcodes
+                arr_value[ i ] = arr_value[ i ] / dict_count[ e ] # perform normalization using the total count data for each barcode
+            arr_value *= int_total_count_target
+
+            # perform log1p transformation 
+            arr_value = np.log10( arr_value + 1 )
+
+            # calculate deviation
+            int_num_records = len( arr_value ) # retrieve the number of records of the current entry
+            dict_summary = { 'normalized_log1p_sum' : np.sum( arr_value ) if int_num_records > 30 else sum( arr_value ) } # if an input array has more than 30 elements, use np.sum to calculate the sum
+            dict_summary[ 'normalized_log1p_mean' ] = dict_summary[ 'normalized_log1p_sum' ] / int_total_num_barcodes # calculate the mean
+            arr_dev = ( arr_value - dict_summary[ 'normalized_log1p_mean' ] ) ** 2 # calculate the deviation
+            dict_summary[ 'normalized_log1p_deviation' ] = np.sum( arr_dev ) if int_num_records > 30 else sum( arr_dev )
+            dict_summary[ 'normalized_log1p_variance' ] = dict_summary[ 'normalized_log1p_deviation' ] / ( int_total_num_barcodes - 1 ) if int_total_num_barcodes > 1 else np.nan
+            return dict_summary    
+
+        # calculate the metric for identifying highly variable genes
+        self.summarize( name_layer_raw, 'feature', func )
+
+        # identify highly variable genes
+        self.identify_highly_variable_features( name_layer = f'{name_layer_raw}_normalized_log1p', int_num_highly_variable_features = int_num_highly_variable_features, flag_show_graph = True, ** dict_kw_hv )
+
+        # retrieve variance
+        self.ft.meta.load_as_dict( f'{name_layer_raw}_normalized_log1p_variance' )
+        dict_var = self.ft.meta.dict[ f'{name_layer_raw}_normalized_log1p_variance' ] # retrieve total counts for each barcode as a dictionary
+
+        # write log-normalized, scaled data for the selected highly variable features
+        def func( self, int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value ) : 
+            """ # 2022-07-06 23:58:38 
+            """
+            # perform normalization 
+            arr_value *= int_total_count_target / dict_count[ int_entry_of_axis_for_querying ] # perform normalization using the total count data for each barcode
+
+            # perform log1p transformation 
+            arr_value = np.log10( arr_value + 1 )
+
+            # perform scaling in-place
+            for i, e in enumerate( arr_int_entries_of_axis_not_for_querying.astype( int ) ) : # iterate through features
+                arr_value[ i ] = arr_value[ i ] / dict_var[ e ] ** 0.5
+            arr_value[ arr_value > max_value ] = max_value # capping values above 'max_value'
+
+            # return results
+            return int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value
+        self.apply( name_layer_raw, name_layer_out, func, [ [ 'dense', 'sparse_for_querying_barcodes' ] ] )
     ''' utility functions for filter '''
     def change_filter( self, name_col_filter = None, name_col_filter_bc = None, name_col_filter_ft = None ) :
         """ # 2022-07-16 17:27:58 
@@ -6439,7 +6519,7 @@ class RamData( ) :
         # save filters
         self.bc.save_filter( name_col_filter_bc ) # bc
         self.ft.save_filter( name_col_filter_ft ) # ft
-    ''' memory-efficient demension reduction/clustering functions '''
+    ''' memory-efficient dimension reduction/clustering functions '''
     def pca( self, name_layer = 'normalized_log1p', prefix_name_col = 'pca_', int_num_components = 50, int_num_barcodes_in_ipca_batch = 1000, name_col_filter = 'filter_normalized_log1p_highly_variable', float_prop_subsampling = 1, name_col_filter_subsampled = 'filter_subsampling_for_pca', flag_ipca_whiten = False, name_model = 'ipca', int_num_threads = 3, flag_show_graph = True ) :
         """ # 2022-07-18 15:09:57 
         Perform incremental PCA in a very memory-efficient manner.
