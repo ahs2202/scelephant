@@ -27,7 +27,7 @@ import sklearn.cluster as skc # K-means
 # define version
 _version_ = '0.0.3'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-08-01 20:38:44'
+_last_modified_time_ = '2022-08-03 00:38:44'
 
 """ # 2022-07-21 10:35:42  realease note
 
@@ -69,7 +69,13 @@ below is a short description about the different types of ramtx objects:
 
 RamData.apply has been implemented
 RAMtx.__getitem__ function has been improved to allow read data respecting chunk boundaries
-RAMtx.batch_generator
+RAMtx.batch_generator now respect chunk boundaries when creating batches
+
+# 2022-08-03 00:39:12 
+wrote a method in RamData for fast exploratory analysis of count data stored in dense, which enables normalizations/scaling of highly/variable genes of 200k single-cell data in 3~4 minutes from the count data
+now ZarrDataFrame supports multi-dimensional data as a 'column'
+also, mask, coordinate array, and orthogonal selections (all methods supported by Zarr) is also supported in ZarrDataFrame.
+
 """
 
 ''' previosuly written for biobookshelf '''
@@ -3371,7 +3377,7 @@ class ShelveContainer( ) :
         """ # 2022-07-14 21:37:28 
         """
         return f"<shelve-backed namespace: {self.keys}>"
-    
+
 ''' a class for Zarr-based DataFrame object '''
 class ZarrDataFrame( ) :
     """ # 2022-07-22 02:05:09 
@@ -3386,7 +3392,8 @@ class ZarrDataFrame( ) :
     
     # 2022-07-04 10:40:14 implement handling of categorical series inputs/categorical series output. Therefore, convertion of ZarrDataFrame categorical data to pandas categorical data should occurs only when dataframe was given as input/output is in dataframe format.
     # 2022-07-04 10:40:20 also, implement a flag-based switch for returning series-based outputs
-    # 2022-07-20 22:29:41 : mask functionality was added
+    # 2022-07-20 22:29:41 : masking functionality was added for the analysis of remote, read-only ZarrDataFrame
+    # 2022-08-02 02:17:32 : will enable the use of multi-dimensional data as the 'column'. the primary axis of the data should be same as the length of ZarrDataFrame (the number of rows when no filter is active). By default, the chunking will be only available along the primary axis.
     
     === arguments ===
     'path_folder_zdf' : a folder to store persistant zarr dataframe.
@@ -3462,7 +3469,7 @@ class ZarrDataFrame( ) :
         self._str_invalid_char = '! @#$%^&*()-=+`~:;[]{}\|,<.>/?' + '"' + "'" if self._dict_metadata[ 'flag_enforce_name_col_with_only_valid_characters' ] else '/' # linux file system does not allow the use of linux'/' character in the folder/file name
         
         # initialize loaded data
-        self._loaded_data = dict( )
+        self._loaded_data = dict( ) # containing filtered data (if filter is active) or unfiltered data (if filter is not active)
         
         # initialize temp folder
         self._initialize_temp_folder_( )
@@ -3473,6 +3480,22 @@ class ZarrDataFrame( ) :
             
         # initialize attribute storing columns as dictionaries
         self.dict = dict( )
+    @property
+    def int_num_rows_in_a_chunk( self ) :
+        """ # 2022-08-02 13:01:53 
+        return the length of chunk in the primary axis
+        """
+        return self._dict_metadata[ 'int_num_rows_in_a_chunk' ]
+    @int_num_rows_in_a_chunk.setter
+    def int_num_rows_in_a_chunk( self, val ) :
+        """ # 2022-08-02 13:01:53 
+        setting the length of chunk in the primary axis
+        """
+        self._dict_metadata[ 'int_num_rows_in_a_chunk' ] = val
+        self._save_metadata_( ) # save metadata
+        # update the settings of the mask, if available.
+        if self._mask is not None :
+            self.int_num_rows_in_a_chunk = val
     @property
     def metadata( self ) :
         ''' # 2022-07-21 02:38:31 
@@ -3549,32 +3572,134 @@ class ZarrDataFrame( ) :
         # set filter of mask
         if hasattr( self, '_mask' ) and self._mask is not None : # propagate filter change to the mask ZDF
             self._mask.filter = ba_filter
+    def get_column_metadata( self, name_col ) :
+        """ # 2022-08-02 11:21:24 
+        get metadata of a given column
+        """
+        if name_col in self : # if the current column is valid
+            # if mask is available return the metadata from the mask
+            if self._mask is not None and name_col in self._mask : # if the column is available in the mask
+                return self._mask.get_column_metadata( name_col = name_col )
+            
+            # read metadata
+            za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'r' ) # read data from the Zarr object
+            dict_col_metadata = za.attrs[ 'dict_col_metadata' ] # retrieve metadata of the current column
+            return dict_col_metadata
+    def initialize_column( self, name_col, dtype = np.float64, shape_not_primary_axis = ( ), chunks = ( ), categorical_values = None ) : 
+        """ # 2022-08-02 11:24:20 
+        initialize columns with a given shape and given dtype
+        'dtype' : initialize the column with this 'dtype'
+        'shape_not_primary_axis' : initialize the column with this shape excluding the dimension of the primary axis. if an empty tuple or None is given, a 1D array will be initialized. 
+                for example, for ZDF with length 100, 
+                'shape_not_primary_axis' = ( ) will lead to creation of zarr object of (100,)
+                'shape_not_primary_axis' = ( 10, 10 ) will lead to creation of zarr object of (100, 10, 10)
+                
+        'chunks' : chunk size of the zarr object. length of the chunk along the primary axis can be skipped, which will be replaced by 'int_num_rows_in_a_chunk' of the current ZarrDataFrame attribute
+        'categorical_values' : if 'categorical_values' has been given, set the column as a column containing categorical data
+        """
+        # hand over to mask if mask is available
+        if self._mask is not None : # if mask is available, save new data to the mask # overwriting on the mask
+            self._mask.initialize_column( name_col, dtype = dtype, shape_not_primary_axis = shape_not_primary_axis, chunks = chunks, categorical_values = categorical_values )
+            return
+        
+        if self._n_rows_unfiltered is None : # if length of zdf has not been set, exit
+            return
+                
+        if name_col not in self : # if the column does not exists in the current ZarrDataFrame
+            # check whether the given name_col contains invalid characters(s)
+            for char_invalid in self._str_invalid_char :
+                if char_invalid in name_col :
+                    raise TypeError( f"the character '{char_invalid}' cannot be used in 'name_col'. Also, the 'name_col' cannot contains the following characters: {self._str_invalid_char}" )
+            
+            # compose metadata
+            dict_col_metadata = { 'flag_categorical' : False } # set a default value for 'flag_categorical' metadata attribute
+            dict_col_metadata[ 'flag_filtered' ] = self.filter is not None # mark the column containing filtered data
+            
+            # initialize a column containing categorical data
+            if categorical_values is not None : # if 'categorical_values' has been given
+                dict_col_metadata[ 'flag_categorical' ] = True # set metadata for categorical datatype
+                set_value_unique = set( categorical_values ) # retrieve a set of unique values
+                # handle when np.nan value exist 
+                if np.nan in set_value_unique : # when np.nan value was detected
+                    if 'flag_contains_nan' not in dict_col_metadata : # update metadata
+                        dict_col_metadata[ 'flag_contains_nan' ] = True # mark that the column contains np.nan values
+                    set_value_unique.remove( np.nan ) # removes np.nan from the category
+
+                if 'l_value_unique' not in dict_col_metadata :
+                    l_value_unique = list( set_value_unique ) # retrieve a list of unique values # can contain mixed types (int, float, str)
+                    dict_col_metadata[ 'l_value_unique' ] = list( str( e ) for e in l_value_unique ) # update metadata # convert entries to string (so that all values with mixed types can be interpreted as strings)
+                else :
+                    set_value_unique_previously_set = set( dict_col_metadata[ 'l_value_unique' ] )
+                    l_value_unique = dict_col_metadata[ 'l_value_unique' ] + list( val for val in list( set_value_unique ) if val not in set_value_unique_previously_set ) # extend 'l_value_unique'
+                    dict_col_metadata[ 'l_value_unique' ] = l_value_unique # update metadata
+                
+                # retrieve appropriate datatype for encoding unique categorical values
+                int_min_number_of_bits = int( np.ceil( math.log2( len( l_value_unique ) ) ) ) + 1 # since signed int will be used, an additional bit is required to encode the data
+                if int_min_number_of_bits <= 8 :
+                    dtype = np.int8
+                elif int_min_number_of_bits <= 16 :
+                    dtype = np.int16
+                else :
+                    dtype = np.int32
+                    
+            # initialize the zarr objects
+            path_folder_col = f"{self._path_folder_zdf}{name_col}/"
+            shape = tuple( [ self._n_rows_unfiltered ] + list( shape_not_primary_axis ) ) # compose 'shape' of the zarr object
+            chunks = tuple( chunks ) if len( chunks ) == len( shape ) else tuple( [ self.int_num_rows_in_a_chunk ] + list( chunks ) ) # compose 'chunks' of the zarr object
+            assert len( chunks ) == len( shape ) # the length of chunks and shape should be the same
+            za = zarr.open( path_folder_col, mode = 'w', shape = shape, chunks = chunks, dtype = dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object if the object does not exist.
+            
+            # write metadata
+            za.attrs[ 'dict_col_metadata' ] = dict_col_metadata
+
+            # update zdf metadata
+            self._dict_metadata[ 'columns' ].add( name_col )
+            self._save_metadata_( )
     def __getitem__( self, args ) :
-        ''' # 2022-07-22 02:03:32 
+        ''' # 2022-08-02 23:40:47 
         retrieve data of a column.
         partial read is allowed through indexing (slice/integer index/boolean mask/bitarray is supported)
-        when a filter is active, the filtered data will be cached in the temporary directory as a Zarr object and will be retrieved in subsequent accesses
         if mask is set, retrieve data from the mask if the column is available in the mask. 
         also, when the 'flag_use_mask_for_caching' setting is active, use mask for caching data from source data (possibly remote source).
         '''
         """
         1) parse arguments
+        
+        'name_col' : the name of the column
+        'coords' : coordinates/slice/mask for the primary axis
+        'coords_rest' : coordinates/slices for axis other than the primary axis
         """
         # initialize indexing
-        flag_indexing = False # a boolean flag indicating whether an indexing is active
+        flag_indexing_primary_axis = False # a boolean flag indicating whether an indexing is active
         flag_coords_in_bool_mask = False
+        flag_coords_in_coordinate_arrays = False
         # parse arguments
-        if isinstance( args, tuple ) :
-            flag_indexing = True # update the flag
-            name_col, coords = args # parse the args
+        if isinstance( args, tuple ) and args[ 1 ] is not None  : # when indexing on the primary axis is active
+            flag_indexing_primary_axis = True # update the flag
+            # parse the args
+            if len( args ) == 2 :
+                name_col, coords, coords_rest = args[ 0 ], args[ 1 ], None 
+            elif len( args ) > 2 :
+                name_col, coords, coords_rest = args[ 0 ], args[ 1 ], args[ 2 : ]
             # detect boolean mask
             flag_coords_in_bool_mask = bk.BA.detect_boolean_mask( coords )
             # convert boolean masks to np.ndarray object
             if flag_coords_in_bool_mask :
-                coords = bk.BA.convert_mask_to_array( coords )
-        else :
-            # when indexing is not active
-            name_col, coords = args, slice( None, None, None ) # retrieve all data if only 'name_col' is given
+                # handle np.ndarray mask
+                if isinstance( coords, np.ndarray ) and coords.dtype != bool :
+                    coords = coords.astype( bool ) # change dtype
+                else : # handle other masks
+                    coords = bk.BA.convert_mask_to_array( coords )
+            elif isinstance( coords, tuple ) : # if a tuple is given as coords, assumes it contains a list of coordinate arrays
+                flag_coords_in_coordinate_arrays = True
+        else : 
+            # when indexing on the primary axis is not active
+            coords = slice( None, None, None ) if self.filter is None else bk.BA.to_array( self.filter ) # retrieve selection filter for the primary axis according to the self.filter
+            if isinstance( args, tuple ) : # if indexing in non-primary axis is active
+                name_col, coords_rest = args[ 0 ], args[ 2 : ]
+            else : # only column name was given
+                name_col, coords_rest = args, None 
+        flag_indexing_in_non_primary_axis = coords_rest is not None # a flag indicating indexing in non-primary axis is active
 
         """
         2) retrieve data
@@ -3587,43 +3712,50 @@ class ZarrDataFrame( ) :
             if name_col in self._mask : # if 'name_col' is available in the mask, retrieve data from the mask.
                 return self._mask[ args ]
         if name_col in self : # if name_col is valid
-            if name_col in self._loaded_data and not flag_indexing : # if a loaded data is available and indexing is not active, return the cached data
-                return self._loaded_data[ name_col ]
-            else : # in other cases, read the data from Zarr object
-                if self.filter is None or flag_indexing : # if filter is not active or indexing is active, open a Zarr object containing all data
-                    za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'r' ) # read data from the Zarr object
-                else : # if filter is active and indexing is not active
-                    flag_is_cache_available = False # initialize a flag
-                    if self._path_folder_temp is not None : # when mode is not read-only
-                        path_folder_temp_zarr = f"{self._path_folder_temp}{name_col}/" # retrieve path of cached zarr object containing filtered data
-                        if zarr_exists( path_folder_temp_zarr ) : # if a cache is available
-                            za = zarr.open( path_folder_temp_zarr, mode = 'r' ) # open the cached Zarr object containing filtered data
-                            flag_is_cache_available = True # update the flag
-                    if not flag_is_cache_available : # if a cache is not available, retrieve filtered data and write a cache to disk
-                        za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'r' ) # read data from the Zarr object
-                        za = za.get_mask_selection( bk.BA.to_array( self.filter ) ) # retrieve filtered data as np.ndarray
-                        if self._path_folder_temp is not None :
-                            za_cached = zarr.open( path_folder_temp_zarr, 'w', shape = ( self._n_rows_after_applying_filter, ), chunks = ( self._dict_metadata[ 'int_num_rows_in_a_chunk' ], ), dtype = za.dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # open a new Zarr object for caching # overwriting existing data # use the same dtype as the parent dtype
-                            za_cached[ : ] = za # save the filtered data for caching
-                values = za[ coords ] if not flag_coords_in_bool_mask or isinstance( za, np.ndarray ) else za.get_mask_selection( coords ) # retrieve data using the 'get_mask_selection' method if 'flag_coords_in_bool_mask' is True and 'za' is not np.ndarray # when indexing is not active, coords = slice( None, None, None )
+            if name_col in self._loaded_data and not flag_indexing_primary_axis : # if a loaded data (filtered/unfiltered, according to the self.filter) is available and indexing is not active, return the cached data
+                """ if (filtered), preloaded data is available """
+                data = self._loaded_data[ name_col ] # retrieve memory-cached data
+                return data[ :, coords_rest ] if flag_indexing_in_non_primary_axis else data # return a subset of result if 'flag_indexing_in_non_primary_axis' is True
+            else : 
+                """ read data from zarr object """
+                
+                # open the zarr object
+                za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'r' ) 
+                
+                if flag_coords_in_bool_mask and isinstance( coords, np.ndarray ) and za.shape == coords.shape :
+                    # use mask selection
+                    values = za.get_mask_selection( coords )
+                elif flag_coords_in_coordinate_arrays :
+                    # coordinate array selection
+                    values = za.get_coordinate_selection( coords )
+                else :
+                    # use orthogonal selection as a default
+                    values = za.get_orthogonal_selection( tuple( [ coords ] + list( coords_rest ) ) ) if flag_indexing_in_non_primary_axis else za.get_orthogonal_selection( coords )
                 
                 # check whether the current column contains categorical data
-                l_value_unique = self.get_categories( name_col )
+                l_value_unique = self.get_categories( name_col ) # non-categorical data will get an empty list
                 if len( l_value_unique ) == 0 or self._flag_retrieve_categorical_data_as_integers : # handle non-categorical data
                     return values
-                else : # handle categorical data
-                    values_decoded = np.zeros( len( values ), dtype = object ) # initialize decoded values
-                    for i in range( len( values ) ) :
-                        values_decoded[ i ] = l_value_unique[ values[ i ] ] if values[ i ] >= 0 else np.nan # convert integer representations to its original string values # -1 (negative integers) encodes np.nan
-                    return values_decoded
+                else : # decode categorical data
+                    values = values.astype( object ) # prepare data for storing categorical data
+                    # perform decoding 
+                    for t_coord, val in np.ndenumerate( values ) :
+                        values[ t_coord ] = l_value_unique[ x ] if x >= 0 else np.nan # convert integer representations to its original string values # -1 (negative integers) encodes np.nan
+                    return values
     def __setitem__( self, args, values ) :
-        ''' # 2022-07-20 23:23:47 
+        ''' # 2022-08-02 23:40:57 
         save/update a column at indexed positions.
         when a filter is active, only active entries will be saved/updated automatically.
         boolean mask/integer arrays/slice indexing is supported. However, indexing will be applied to the original column with unfiltered rows (i.e., when indexing is active, filter will be ignored)
         if mask is set, save data to the mask
         
         automatically detect dtype of the input array/list, including that of categorical data (all string data will be interpreted as categorical data). when the original dtype and dtype inferred from the updated values are different, an error will occur.
+        
+        # 2022-08-03 00:32:19 multi-dimensional data 'columns' is now supported. now complex selection approach can be used to set/view values of a given column as shown below
+        
+        zdf[ 'new_col', ( [ 0, 1, 2 ], [ 0, 0, 1 ] ) ] = [ 'three', 'new', 'values' ] # coordinate selection when a TUPLE is given
+        zdf[ 'new_col', : 10 ] = np.arange( 1000 ).reshape( ( 10, 100 ) ) # orthogonal selection 
+        
         '''
         """
         1) parse arguments
@@ -3632,20 +3764,37 @@ class ZarrDataFrame( ) :
             return 
         
         # initialize indexing
-        flag_indexing = False # a boolean flag indicating whether an indexing is active
+        flag_indexing_primary_axis = False # a boolean flag indicating whether an indexing is active
         flag_coords_in_bool_mask = False
+        flag_coords_in_coordinate_arrays = False
         # parse arguments
-        if isinstance( args, tuple ) :
-            flag_indexing = True # update the flag
-            name_col, coords = args # parse the args
+        if isinstance( args, tuple ) and args[ 1 ] is not None  : # when indexing on the primary axis is active
+            flag_indexing_primary_axis = True # update the flag
+            # parse the args
+            if len( args ) == 2 :
+                name_col, coords, coords_rest = args[ 0 ], args[ 1 ], None 
+            elif len( args ) > 2 :
+                name_col, coords, coords_rest = args[ 0 ], args[ 1 ], args[ 2 : ]
             # detect boolean mask
             flag_coords_in_bool_mask = bk.BA.detect_boolean_mask( coords )
             # convert boolean masks to np.ndarray object
             if flag_coords_in_bool_mask :
-                coords = bk.BA.convert_mask_to_array( coords )
-        else :
-            name_col, coords = args, slice( None, None, None ) # retrieve all data if only 'name_col' is given
-
+                # handle np.ndarray mask
+                if isinstance( coords, np.ndarray ) and coords.dtype != bool :
+                    coords = coords.astype( bool ) # change dtype
+                else : # handle other masks
+                    coords = bk.BA.convert_mask_to_array( coords )
+            elif isinstance( coords, tuple ) : # if a tuple is given as coords, assumes it contains a list of coordinate arrays
+                flag_coords_in_coordinate_arrays = True
+        else : 
+            # when indexing on the primary axis is not active
+            coords = slice( None, None, None ) if self.filter is None else bk.BA.to_array( self.filter ) # retrieve selection filter for the primary axis according to the self.filter
+            if isinstance( args, tuple ) : # if indexing in non-primary axis is active
+                name_col, coords_rest = args[ 0 ], args[ 2 : ]
+            else : # only column name was given
+                name_col, coords_rest = args, None 
+        flag_indexing_in_non_primary_axis = coords_rest is not None # a flag indicating indexing in non-primary axis is active
+        
         # check whether the given name_col contains invalid characters(s)
         for char_invalid in self._str_invalid_char :
             if char_invalid in name_col :
@@ -3654,7 +3803,7 @@ class ZarrDataFrame( ) :
         """
         2) set data
         """
-        # if mask is available, save new data/modify existing data to the mask
+        # if mask is available, save new data/modify existing data to the mask # overwriting on the mask
         if self._mask is not None : # if mask is available, save new data to the mask
             if name_col in self and name_col not in self._mask : # if the 'name_col' exists in the current ZarrDataFrame and not in mask, copy the column to the mask
                 zarr_copy( f"{self._path_folder_zdf}{name_col}/", f"{self._mask._path_folder_zdf}{name_col}/" ) # copy zarr object from the source to the mask
@@ -3664,57 +3813,66 @@ class ZarrDataFrame( ) :
         if self._flag_is_read_only : # if current store is read-only (and mask is not set), exit
             return # exit
         
-        # ❤️❤️❤️ implement 'broadcasting'; when a single value is given, the value will be copied to all rows.
+        """
+        retrieve metadata and infer dtypes
+        """
+        # define zarr object directory
+        path_folder_col = f"{self._path_folder_zdf}{name_col}/" # compose the output folder
+        # retrieve/initialize metadata
+        flag_col_already_exists = zarr_exists( path_folder_col ) # retrieve a flag indicating that the column already exists
+        if flag_col_already_exists :
+            ''' read settings from the existing columns '''
+            za = zarr.open( path_folder_col, 'a' ) # open Zarr object
+            dict_col_metadata = za.attrs[ 'dict_col_metadata' ] # load previous written metadata
+            
+            # retrieve dtype
+            dtype = za.dtype
+        else :
+            ''' create a metadata of the new column '''
+            dict_col_metadata = { 'flag_categorical' : False } # set a default value for 'flag_categorical' metadata attribute
+            dict_col_metadata[ 'flag_filtered' ] = self.filter is not None # mark the column containing filtered data
+            
+            # infer the data type of input values
+            # if values is numpy.ndarray, use the dtype of the array
+            if isinstance( values, np.ndarray ) :
+                dtype = values.dtype
+            # if values is not numpy.ndarray or the dtype is object datatype, use the type of the data returned by the type( ) python function.
+            if not isinstance( values, np.ndarray ) or dtype is np.dtype( 'O' ) : 
+                dtype = type( values[ 0 ] )
+                # handle the case when the first element is np.nan
+                if dtype is float and values[ 0 ] is np.nan :
+                    # examine the values and set the dtype to string if at least one value is string
+                    for e in values : 
+                        if type( e ) is str :
+                            dtype = str
+                            break
+                            
+            # update the length of zdf if it has not been set.
+            if self._n_rows_unfiltered is None : # if a valid information about the number of rows is available
+                self._dict_metadata[ 'int_num_rows' ] = len( values ) # retrieve the length of the primary axis
+                self._save_metadata_( ) # save metadata
+        
+        """ convert data to np.ndarray """
         # retrieve data values from the 'values' 
         if isinstance( values, bitarray ) :
             values = bk.BA.to_array( values ) # retrieve boolean values from the input bitarray
         if isinstance( values, pd.Series ) :
             values = values.values
-        # retrieve data type of values
-        # if values is numpy.ndarray, use the dtype of the array
-        if isinstance( values, np.ndarray ) :
-            dtype = values.dtype
-        # if values is not numpy.ndarray or the dtype is object datatype, use the type of the data returned by the type( ) python function.
-        if not isinstance( values, np.ndarray ) or dtype is np.dtype( 'O' ) : 
-            dtype = type( values[ 0 ] )
-            # handle the case when the first element is np.nan
-            if dtype is float and values[ 0 ] is np.nan :
-                # examine the values and set the dtype to string if at least one value is string
-                for e in values : 
-                    if type( e ) is str :
-                        dtype = str
-                        break
         # convert values that is not numpy.ndarray to numpy.ndarray object (for the consistency of the loaded_data)
         if not isinstance( values, np.ndarray ) :
             values = np.array( values, dtype = object if dtype is str else dtype ) # use 'object' dtype when converting values to a numpy.ndarray object if dtype is 'str'
-        
-        # check whether the number of values is valid
-        int_num_values = len( values )
-        if self.n_rows is not None : # if a valid information about the number of rows is available
-            # check the number of rows of the current Zdf (after applying filter, if a filter is available)
-#             assert int_num_values == self.n_rows
-            pass # currently validality will not be checked # implemented in the future ❤️❤️❤️
-        else :
-            self._dict_metadata[ 'int_num_rows' ] = int_num_values # record the number of rows of the dataframe
-            self._save_metadata_( ) # save metadata
-        
-        # define zarr object directory
-        path_folder_col = f"{self._path_folder_zdf}{name_col}/" # compose the output folder
-        # retrieve/initialize metadata
-        flag_col_already_exists = os.path.exists( path_folder_col ) # retrieve a flag indicating that the column already exists
-        if flag_col_already_exists :
-            za = zarr.open( path_folder_col, 'a' ) # open Zarr object
-            dict_col_metadata = za.attrs[ 'dict_col_metadata' ] # load previous written metadata
-        else :
-            dict_col_metadata = { 'flag_categorical' : False } # set a default value for 'flag_categorical' metadata attribute
-            dict_col_metadata[ 'flag_filtered' ] = self.filter is not None # mark the column containing filtered data
+            
+        # retrieve shape and chunk sizes of the object
+        shape = tuple( [ self._n_rows_unfiltered ] + list( values.shape )[ 1 : ] )
+        chunks = tuple( [ self._dict_metadata[ 'int_num_rows_in_a_chunk' ] ] + list( values.shape )[ 1 : ] )
         
         # write categorical data
         if dtype is str and self._dict_metadata[ 'flag_store_string_as_categorical' ] : # storing categorical data            
             # compose metadata of the column
             dict_col_metadata[ 'flag_categorical' ] = True # set metadata for categorical datatype
             
-            set_value_unique = set( values ) # retrieve a set of unique values
+            ''' retrieve unique values for categorical data '''
+            set_value_unique = set( e[ 1 ] for e in np.ndenumerate( values ) ) # retrieve a set of unique values in the input array
             # handle when np.nan value exist 
             if np.nan in set_value_unique : # when np.nan value was detected
                 if 'flag_contains_nan' not in dict_col_metadata : # update metadata
@@ -3739,7 +3897,7 @@ class ZarrDataFrame( ) :
                 dtype = np.int32
             
             # open Zarr object representing the current column
-            za = zarr.open( path_folder_col, mode = 'a', synchronizer = zarr.ThreadSynchronizer( ) ) if os.path.exists( path_folder_col ) else zarr.open( path_folder_col, mode = 'w', shape = ( self._n_rows_unfiltered, ), chunks = ( self._dict_metadata[ 'int_num_rows_in_a_chunk' ], ), dtype = dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object if the object does not exist.
+            za = zarr.open( path_folder_col, mode = 'a', synchronizer = zarr.ThreadSynchronizer( ) ) if zarr_exists( path_folder_col ) else zarr.open( path_folder_col, mode = 'w', shape = shape, chunks = chunks, dtype = dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object if the object does not exist.
             
             # if dtype changed from the previous zarr object, re-write the entire Zarr object with changed dtype. (this will happens very rarely, and will not significantly affect the performance)
             if dtype != za.dtype : # dtype should be larger than za.dtype if they are not equal (due to increased number of bits required to encode categorical data)
@@ -3753,30 +3911,28 @@ class ZarrDataFrame( ) :
             
             # encode data
             dict_encode_category = dict( ( e, i ) for i, e in enumerate( l_value_unique ) ) # retrieve a dictionary encoding value to integer representation of the value
-            values_encoded = np.array( list( dict_encode_category[ value ] if value in dict_encode_category else -1 for value in values ), dtype = dtype ) # retrieve encoded values # np.nan will be encoded as -1 values
-            if self._flag_retrieve_categorical_data_as_integers : # if 'self._flag_retrieve_categorical_data_as_integers' is True, use integer representation of values for caching
-                values = values_encoded
             
-            # write data 
-            if self.filter is None or flag_indexing : # when filter is not set or indexing is active
-                if flag_coords_in_bool_mask : # indexing with mask
-                    za.set_mask_selection( coords, values_encoded )  # save partial data 
-                else : # indexing with slice or integer coordinates
-                    za[ coords ] = values_encoded # write encoded data
-            else : # when filter is present and indexing is not active
-                za.set_mask_selection( bk.BA.to_array( self.filter ), values_encoded )  # save filtered data 
-                
-        else : # storing non-categorical data
-            za = zarr.open( path_folder_col, mode = 'a', synchronizer = zarr.ThreadSynchronizer( ) ) if os.path.exists( path_folder_col ) else zarr.open( path_folder_col, mode = 'w', shape = ( self._n_rows_unfiltered, ), chunks = ( self._dict_metadata[ 'int_num_rows_in_a_chunk' ], ), dtype = dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object if the object does not exist.
+            # perform encoding 
+            values_encoded = np.zeros_like( values, dtype = dtype ) # initialize encoded values
+            for t_coord, val in np.ndenumerate( values ) :
+                values_encoded[ t_coord ] = dict_encode_category[ val ] if val in dict_encode_category else -1 # encode strings into integer representations # -1 (negative integers) encodes np.nan
             
-            # write data
-            if self.filter is None or flag_indexing : # when filter is not set or indexing is active
-                if flag_coords_in_bool_mask : # indexing with mask
-                    za.set_mask_selection( coords, values )  # write data 
-                else : # indexing with slice or integer coordinates
-                    za[ coords ] = values # write data
-            else : # when filter is present
-                za.set_mask_selection( bk.BA.to_array( self.filter ), values ) # save filtered data 
+            if not self._flag_retrieve_categorical_data_as_integers : # if 'self._flag_retrieve_categorical_data_as_integers' is True, use integer representation of values for caching
+                values_encoded = values
+            
+        # open zarr object and write data
+        za = zarr.open( path_folder_col, mode = 'a', synchronizer = zarr.ThreadSynchronizer( ) ) if zarr_exists( path_folder_col ) else zarr.open( path_folder_col, mode = 'w', shape = shape, chunks = chunks, dtype = dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object if the object does not exist.
+        
+        
+        if flag_coords_in_bool_mask and isinstance( coords, np.ndarray ) and za.shape == coords.shape : 
+            # use mask selection
+            za.set_mask_selection( coords, values )
+        elif flag_coords_in_coordinate_arrays :
+            # coordinate array selection
+            za.set_coordinate_selection( coords, values )
+        else :
+            # use orthogonal selection as a default
+            za.set_orthogonal_selection( tuple( [ coords ] + list( coords_rest ) ), values ) if flag_indexing_in_non_primary_axis else za.set_orthogonal_selection( coords, values )
             
         # save column metadata
         za.attrs[ 'dict_col_metadata' ] = dict_col_metadata
@@ -3786,12 +3942,12 @@ class ZarrDataFrame( ) :
             self._dict_metadata[ 'columns' ].add( name_col )
             self._save_metadata_( )
         
-        # if indexing was used to partially update the data, remove the cache, because it can cause in consistency
-        if flag_indexing and name_col in self._loaded_data :
+        # if indexing was used to partially update the data, remove the cache, because it can cause inconsistency
+        if flag_indexing_primary_axis and name_col in self._loaded_data :
             del self._loaded_data[ name_col ]
         # add data to the loaded data dictionary (object cache) if 'self._flag_load_data_after_adding_new_column' is True and indexing was not used
-        if self._flag_load_data_after_adding_new_column and not flag_indexing : 
-            self._loaded_data[ name_col ] = values
+        if self._flag_load_data_after_adding_new_column and not flag_indexing_primary_axis : 
+            self._loaded_data[ name_col ] = values_before_encoding if dict_col_metadata[ 'flag_categorical' ] else values
     def __delitem__( self, name_col ) :
         ''' # 2022-06-20 21:57:38 
         remove the column from the memory and the object on disk
@@ -3873,6 +4029,10 @@ class ZarrDataFrame( ) :
         for columns with categorical data, return categories. if the column contains non-categorical data, return an empty list
         """
         if name_col in self : # if the current column is valid
+            # if the column is available in the mask, return the result of the mask
+            if self._mask is not None and name_col in self._mask :
+                return self._mask.get_categories( name_col = name_col )
+            
             za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'r' ) # read data from the Zarr object
             dict_col_metadata = za.attrs[ 'dict_col_metadata' ] # retrieve metadata of the current column
             if dict_col_metadata[ 'flag_categorical' ] : # if the current column contains categorical data
@@ -3974,7 +4134,7 @@ class ZarrDataFrame( ) :
                 dict_data[ int_index_row ] = val
             del values
             self.dict[ name_col ] = dict_data # add column loaded as a dictionary to the cache    
-            
+    
 ''' a class for accessing Zarr-backed count matrix data (RAMtx, Random-Access matrix) '''
 class RAMtx( ) :
     """ # 2022-07-31 00:50:03 
@@ -5900,7 +6060,7 @@ class RamData( ) :
                 path_folder_ramtx_dense = f"{path_folder_layer_new}dense/"
                 os.makedirs( path_folder_ramtx_dense, exist_ok = True ) # create the output ramtx object folder
                 path_folder_ramtx_dense_mtx = f"{path_folder_ramtx_dense}matrix.zarr/" # retrieve the folder path of the output RAMtx Zarr matrix object.
-                assert not os.path.exists( path_folder_ramtx_dense_mtx ) # output zarr object should NOT exists!
+                # assert not os.path.exists( path_folder_ramtx_dense_mtx ) # output zarr object should NOT exists!
                 za_mtx_dense = zarr.open( path_folder_ramtx_dense_mtx, mode = 'w', shape = ( rtx._int_num_barcodes, rtx._int_num_features ), chunks = chunks_dense, dtype = dtype_dense_mtx, synchronizer = zarr.ThreadSynchronizer( ) ) # use the same chunk size of the current RAMtx
             """ %% SPARSE %% """
             if flag_sparse_ramtx_output : # if sparse output is present
@@ -5908,8 +6068,8 @@ class RamData( ) :
                 path_folder_ramtx_sparse = f"{path_folder_layer_new}{mode_sparse}/"
                 os.makedirs( path_folder_ramtx_sparse, exist_ok = True ) # create the output ramtx object folder
                 path_folder_ramtx_sparse_mtx = f"{path_folder_ramtx_sparse}matrix.zarr/" # retrieve the folder path of the output RAMtx Zarr matrix object.
-                assert not os.path.exists( path_folder_ramtx_sparse_mtx ) # output zarr object should NOT exists!
-                assert not os.path.exists( f'{path_folder_ramtx_sparse}matrix.index.zarr' ) # output zarr object should NOT exists!
+                # assert not os.path.exists( path_folder_ramtx_sparse_mtx ) # output zarr object should NOT exists!
+                # assert not os.path.exists( f'{path_folder_ramtx_sparse}matrix.index.zarr' ) # output zarr object should NOT exists!
                 za_mtx_sparse = zarr.open( path_folder_ramtx_sparse_mtx, mode = 'w', shape = ( rtx._int_num_records, 2 ), chunks = ( int_num_of_records_in_a_chunk_zarr_matrix, 2 ), dtype = dtype_sparse_mtx, synchronizer = zarr.ThreadSynchronizer( ) ) # use the same chunk size of the current RAMtx
                 za_mtx_sparse_index = zarr.open( f'{path_folder_ramtx_sparse}matrix.index.zarr', mode = 'w', shape = ( rtx.len_axis_for_querying, 2 ), chunks = ( int_num_of_entries_in_a_chunk_zarr_matrix_index, 2 ), dtype = dtype_sparse_mtx_index, synchronizer = zarr.ThreadSynchronizer( ) ) # use the same dtype and chunk size of the current RAMtx
                 
@@ -6411,13 +6571,18 @@ class RamData( ) :
         self.ft.filter = ba
         self.ft.save_filter( name_col_filter ) # save the feature filter as a metadata
     ''' function for fast exploratory analysis '''
-    def prepare_dimension_reduction_from_raw( self, name_layer_raw = 'raw', name_layer_out = 'normalized_log1p_scaled', int_num_highly_variable_features = 2000, dict_kw_hv = { 'float_min_mean' : 0.01, 'float_min_variance' : 0.01, 'name_col_filter' : 'filter_normalized_log1p_highly_variable' } ) :
+    def prepare_dimension_reduction_from_raw( self, name_layer_raw = 'raw', name_layer_out = 'normalized_log1p_scaled', min_counts = 500, min_features = 100, int_total_count_target = 10000, int_num_highly_variable_features = 2000, max_value = 10, dict_kw_hv = { 'float_min_mean' : 0.01, 'float_min_variance' : 0.01, 'name_col_filter' : 'filter_normalized_log1p_highly_variable' } ) :
         """ # 2022-08-01 21:15:57 
 
         a method designed for fast exploratory analysis of the raw data, removing unncessary layer building operations as much as possible.
 
         'name_layer_raw' : the name of the layer containing 'raw' count data
         'name_layer_out' : the name of the layer that will contain the log-normalized, scale gene expression data in a 'sparse_for_querying_barcodes' ramtx mode of only the highly variable genes, selected by the current filter settings, 'int_num_highly_variable_features', and 'dict_kw_hv' arguments. data will be scaled and capped according to 'max_value' arguments
+        
+        'int_total_count_target' : total count target for normalization
+        'min_counts' = 500, 'min_features' = 100 : for barcode filtering
+        'int_num_highly_variable_features' : the number of highly variable genes to retrieve
+        'max_value' = 10 : capping at this value after scaling
         """
         self.summarize( name_layer_raw, 'barcode', 'sum' )
 
