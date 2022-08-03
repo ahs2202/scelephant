@@ -9,7 +9,6 @@ import anndata
 import scanpy
 import shelve # for persistent database (key-value based database)
 import sklearn as skl
-from pynndescent import NNDescent # for fast approximate kNN search
 
 from numba import jit # for speed up
 
@@ -24,10 +23,14 @@ import pgzip
 import scipy.spatial.distance as dist # for distance metrics calculation
 import sklearn.cluster as skc # K-means
 
+# for fast approximate kNN search
+import pynndescent 
+import hnswlib
+
 # define version
 _version_ = '0.0.3'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-08-03 00:38:44'
+_last_modified_time_ = '2022-08-03 22:59:47'
 
 """ # 2022-07-21 10:35:42  realease note
 
@@ -2943,27 +2946,27 @@ def create_ramtx_from_mtx( path_folder_mtx_10x_input, path_folder_output, mode =
     path_folder_temp = f"{path_folder_output}temp_{UUID( )}/"
     os.makedirs( path_folder_temp, exist_ok = True )
     
-    """
-    construct RAMTx (Zarr) matrix
-    """
-    if mode.lower( ) == 'dense' : # build dense ramtx based on the setting.
-        create_zarr_from_mtx( path_file_input_mtx, f'{path_folder_output}matrix.zarr', int_buffer_size = int_buffer_size, chunks_dense = chunks_dense, dtype_mtx = dtype_dense_mtx, int_num_workers_for_writing_ramtx = int_num_threads_for_chunking )
-    else : # build sparse ramtx
-        flag_mtx_sorted_by_id_feature = 'feature' in mode # retrieve a flag whether to sort ramtx by id_feature or id_barcode. 
-        # open persistent zarr arrays to store matrix and matrix index
-        za_mtx = zarr.open( f'{path_folder_output}matrix.zarr', mode = 'w', shape = ( int_num_records, 2 ), chunks = ( int_num_of_records_in_a_chunk_zarr_matrix, 2 ), dtype = dtype_sparse_mtx ) # each mtx record will contains two values instead of three values for more compact storage 
-        za_mtx_index = zarr.open( f'{path_folder_output}matrix.index.zarr', mode = 'w', shape = ( int_num_features if flag_mtx_sorted_by_id_feature else int_num_barcodes, 2 ), chunks = ( int_num_of_entries_in_a_chunk_zarr_matrix_index, 2 ), dtype = dtype_sparse_mtx_index ) # max number of matrix index entries is 'int_num_records' of the input matrix. this will be resized # dtype of index should be np.float64 to be compatible with Zarr.js, since Zarr.js currently does not support np.int64...
-        # build RAMtx matrix from the input matrix file
-        sort_mtx( path_file_input_mtx, int_num_records_in_a_chunk = int_num_records_in_a_chunk, int_buffer_size = int_buffer_size, compresslevel = compresslevel, flag_dtype_is_float = flag_dtype_is_float, flag_mtx_sorted_by_id_feature = flag_mtx_sorted_by_id_feature, int_num_threads_for_chunking = int_num_threads_for_chunking, int_num_threads_for_writing = int_num_threads_for_writing, int_max_num_input_files_for_each_merge_sort_worker = int_max_num_input_files_for_each_merge_sort_worker, int_num_chunks_to_combine_before_concurrent_merge_sorting = int_num_chunks_to_combine_before_concurrent_merge_sorting, za_mtx = za_mtx, za_mtx_index = za_mtx_index )
+#     """
+#     construct RAMTx (Zarr) matrix
+#     """
+#     if mode.lower( ) == 'dense' : # build dense ramtx based on the setting.
+#         create_zarr_from_mtx( path_file_input_mtx, f'{path_folder_output}matrix.zarr', int_buffer_size = int_buffer_size, chunks_dense = chunks_dense, dtype_mtx = dtype_dense_mtx, int_num_workers_for_writing_ramtx = int_num_threads_for_chunking )
+#     else : # build sparse ramtx
+#         flag_mtx_sorted_by_id_feature = 'feature' in mode # retrieve a flag whether to sort ramtx by id_feature or id_barcode. 
+#         # open persistent zarr arrays to store matrix and matrix index
+#         za_mtx = zarr.open( f'{path_folder_output}matrix.zarr', mode = 'w', shape = ( int_num_records, 2 ), chunks = ( int_num_of_records_in_a_chunk_zarr_matrix, 2 ), dtype = dtype_sparse_mtx ) # each mtx record will contains two values instead of three values for more compact storage 
+#         za_mtx_index = zarr.open( f'{path_folder_output}matrix.index.zarr', mode = 'w', shape = ( int_num_features if flag_mtx_sorted_by_id_feature else int_num_barcodes, 2 ), chunks = ( int_num_of_entries_in_a_chunk_zarr_matrix_index, 2 ), dtype = dtype_sparse_mtx_index ) # max number of matrix index entries is 'int_num_records' of the input matrix. this will be resized # dtype of index should be np.float64 to be compatible with Zarr.js, since Zarr.js currently does not support np.int64...
+#         # build RAMtx matrix from the input matrix file
+#         sort_mtx( path_file_input_mtx, int_num_records_in_a_chunk = int_num_records_in_a_chunk, int_buffer_size = int_buffer_size, compresslevel = compresslevel, flag_dtype_is_float = flag_dtype_is_float, flag_mtx_sorted_by_id_feature = flag_mtx_sorted_by_id_feature, int_num_threads_for_chunking = int_num_threads_for_chunking, int_num_threads_for_writing = int_num_threads_for_writing, int_max_num_input_files_for_each_merge_sort_worker = int_max_num_input_files_for_each_merge_sort_worker, int_num_chunks_to_combine_before_concurrent_merge_sorting = int_num_chunks_to_combine_before_concurrent_merge_sorting, za_mtx = za_mtx, za_mtx_index = za_mtx_index )
     
     """
     prepare data for the axes (features/barcodes)
     """
     ''' write sorted barcodes and features files to zarr objects'''
     for name_axis, int_num_entries in zip( [ 'barcodes', 'features' ], [ int_num_barcodes, int_num_features ] ) : # retrieve a flag whether the entry was used for sorting.
-        flat_axis_initialized = False # initialize the flag to False 
+        flag_axis_initialized = False # initialize the flag to False 
         for index_chunk, df in enumerate( pd.read_csv( f"{path_folder_mtx_10x_input}{name_axis}.tsv.gz", sep = '\t', header = None, chunksize = int_num_of_entries_in_a_chunk_metadata ) ) : # read chunk by chunk
-            if not flat_axis_initialized :
+            if not flag_axis_initialized :
                 l_col = list( f"{name_axis}_{i}" for i in range( len( df.columns ) ) ) # name the columns using 0-based indices
                 
                 # write zarr object for random access of string representation of features/barcodes
@@ -2978,7 +2981,7 @@ def create_ramtx_from_mtx( path_folder_mtx_10x_input, path_folder_output, mode =
                 za_str_chunks = zarr.group( path_folder_str_chunks )
                 za_str_chunks.attrs[ 'dict_metadata' ] = { 'int_num_entries' : int_num_entries, 'int_num_of_entries_in_a_chunk' : int_num_of_entries_in_a_chunk_metadata } # write essential metadata for str.chunks
                 
-                flat_axis_initialized = True # set the flag to True
+                flag_axis_initialized = True # set the flag to True
                 
             values = df.values # retrieve values
             
@@ -3084,6 +3087,7 @@ def create_ramdata_from_mtx( path_folder_mtx_10x_input, path_folder_ramdata_outp
         'verbose' : verbose, 
         'flag_debugging' : flag_debugging
     }
+    
     # compose processes 
     l_p = [ ]
     for mode in set_modes : 
@@ -3420,7 +3424,7 @@ class ZarrDataFrame( ) :
     'flag_is_read_only' : read-only status of the storage
     'flag_use_mask_for_caching' : use mask for not only storing modifications, but also save retrieved data from (remote) sources for faster access. this behavior can be turned on/off at any time
     """
-    def __init__( self, path_folder_zdf, df = None, int_num_rows = None, int_num_rows_in_a_chunk = 10000, ba_filter = None, flag_enforce_name_col_with_only_valid_characters = False, flag_store_string_as_categorical = True, flag_retrieve_categorical_data_as_integers = False, flag_load_data_after_adding_new_column = True, mode = 'a', path_folder_mask = None, flag_is_read_only = False, flag_use_mask_for_caching = True ) :
+    def __init__( self, path_folder_zdf, df = None, int_num_rows = None, int_num_rows_in_a_chunk = 10000, ba_filter = None, flag_enforce_name_col_with_only_valid_characters = False, flag_store_string_as_categorical = True, flag_retrieve_categorical_data_as_integers = False, flag_load_data_after_adding_new_column = True, mode = 'a', path_folder_mask = None, flag_is_read_only = False, flag_use_mask_for_caching = True, verbose = True ) :
         """ # 2022-07-20 10:50:23 
         """
         # handle path
@@ -3437,6 +3441,7 @@ class ZarrDataFrame( ) :
         self._flag_retrieve_categorical_data_as_integers = flag_retrieve_categorical_data_as_integers
         self._flag_load_data_after_adding_new_column = flag_load_data_after_adding_new_column
         self._ba_filter = None # initialize the '_ba_filter' attribute
+        self.verbose = verbose
         self.filter = ba_filter
         
         # open or initialize zdf and retrieve associated metadata
@@ -3740,10 +3745,10 @@ class ZarrDataFrame( ) :
                     values = values.astype( object ) # prepare data for storing categorical data
                     # perform decoding 
                     for t_coord, val in np.ndenumerate( values ) :
-                        values[ t_coord ] = l_value_unique[ x ] if x >= 0 else np.nan # convert integer representations to its original string values # -1 (negative integers) encodes np.nan
+                        values[ t_coord ] = l_value_unique[ val ] if val >= 0 else np.nan # convert integer representations to its original string values # -1 (negative integers) encodes np.nan
                     return values
     def __setitem__( self, args, values ) :
-        ''' # 2022-08-02 23:40:57 
+        ''' # 2022-08-03 21:45:02 
         save/update a column at indexed positions.
         when a filter is active, only active entries will be saved/updated automatically.
         boolean mask/integer arrays/slice indexing is supported. However, indexing will be applied to the original column with unfiltered rows (i.e., when indexing is active, filter will be ignored)
@@ -3826,8 +3831,9 @@ class ZarrDataFrame( ) :
             dict_col_metadata = za.attrs[ 'dict_col_metadata' ] # load previous written metadata
             
             # retrieve dtype
-            dtype = za.dtype
+            dtype = str if dict_col_metadata[ "flag_categorical" ] else za.dtype # dtype of cetegorical data columns should be str
         else :
+            dtype = None # define default dtype
             ''' create a metadata of the new column '''
             dict_col_metadata = { 'flag_categorical' : False } # set a default value for 'flag_categorical' metadata attribute
             dict_col_metadata[ 'flag_filtered' ] = self.filter is not None # mark the column containing filtered data
@@ -3836,14 +3842,20 @@ class ZarrDataFrame( ) :
             # if values is numpy.ndarray, use the dtype of the array
             if isinstance( values, np.ndarray ) :
                 dtype = values.dtype
+                
             # if values is not numpy.ndarray or the dtype is object datatype, use the type of the data returned by the type( ) python function.
             if not isinstance( values, np.ndarray ) or dtype is np.dtype( 'O' ) : 
-                dtype = type( values[ 0 ] )
-                # handle the case when the first element is np.nan
-                if dtype is float and values[ 0 ] is np.nan :
-                    # examine the values and set the dtype to string if at least one value is string
-                    for e in values : 
-                        if type( e ) is str :
+                
+                # extract the first entry from the array
+                val = values
+                while hasattr( val, '__iter__' ) and not isinstance( val, str ) :
+                    val = next( val.__iter__() ) # get the first element of the current array
+                dtype = type( val )
+                
+                # check whether the array contains strings with np.nan values
+                if dtype is float and val is np.nan :
+                    for t_coord, val in np.ndenumerate( values ) : # np.ndenumerate can handle nexted lists
+                        if type( val ) is str :
                             dtype = str
                             break
                             
@@ -3866,6 +3878,7 @@ class ZarrDataFrame( ) :
         shape = tuple( [ self._n_rows_unfiltered ] + list( values.shape )[ 1 : ] )
         chunks = tuple( [ self._dict_metadata[ 'int_num_rows_in_a_chunk' ] ] + list( values.shape )[ 1 : ] )
         
+        # print( shape, chunks, dtype, self._dict_metadata[ 'flag_store_string_as_categorical' ] )
         # write categorical data
         if dtype is str and self._dict_metadata[ 'flag_store_string_as_categorical' ] : # storing categorical data            
             # compose metadata of the column
@@ -3873,6 +3886,7 @@ class ZarrDataFrame( ) :
             
             ''' retrieve unique values for categorical data '''
             set_value_unique = set( e[ 1 ] for e in np.ndenumerate( values ) ) # retrieve a set of unique values in the input array
+            
             # handle when np.nan value exist 
             if np.nan in set_value_unique : # when np.nan value was detected
                 if 'flag_contains_nan' not in dict_col_metadata : # update metadata
@@ -3901,7 +3915,8 @@ class ZarrDataFrame( ) :
             
             # if dtype changed from the previous zarr object, re-write the entire Zarr object with changed dtype. (this will happens very rarely, and will not significantly affect the performance)
             if dtype != za.dtype : # dtype should be larger than za.dtype if they are not equal (due to increased number of bits required to encode categorical data)
-                print( f'{za.dtype} will be changed to {dtype}' )
+                if self.verbose :
+                    print( f'{za.dtype} will be changed to {dtype}' )
                 path_folder_col_new = f"{self._path_folder_zdf}{name_col}_{UUID( )}/" # compose the new output folder
                 za_new = zarr.open( path_folder_col_new, mode = 'w', shape = ( self._n_rows_unfiltered, ), chunks = ( self._dict_metadata[ 'int_num_rows_in_a_chunk' ], ), dtype = dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object using the new dtype
                 za_new[ : ] = za[ : ] # copy the data 
@@ -3913,16 +3928,13 @@ class ZarrDataFrame( ) :
             dict_encode_category = dict( ( e, i ) for i, e in enumerate( l_value_unique ) ) # retrieve a dictionary encoding value to integer representation of the value
             
             # perform encoding 
-            values_encoded = np.zeros_like( values, dtype = dtype ) # initialize encoded values
-            for t_coord, val in np.ndenumerate( values ) :
-                values_encoded[ t_coord ] = dict_encode_category[ val ] if val in dict_encode_category else -1 # encode strings into integer representations # -1 (negative integers) encodes np.nan
-            
-            if not self._flag_retrieve_categorical_data_as_integers : # if 'self._flag_retrieve_categorical_data_as_integers' is True, use integer representation of values for caching
-                values_encoded = values
+            values_before_encoding = values
+            values = np.zeros_like( values_before_encoding, dtype = dtype ) # initialize encoded values
+            for t_coord, val in np.ndenumerate( values_before_encoding ) :
+                values[ t_coord ] = dict_encode_category[ val ] if val in dict_encode_category else -1 # encode strings into integer representations # -1 (negative integers) encodes np.nan
             
         # open zarr object and write data
         za = zarr.open( path_folder_col, mode = 'a', synchronizer = zarr.ThreadSynchronizer( ) ) if zarr_exists( path_folder_col ) else zarr.open( path_folder_col, mode = 'w', shape = shape, chunks = chunks, dtype = dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object if the object does not exist.
-        
         
         if flag_coords_in_bool_mask and isinstance( coords, np.ndarray ) and za.shape == coords.shape : 
             # use mask selection
@@ -4137,7 +4149,7 @@ class ZarrDataFrame( ) :
     
 ''' a class for accessing Zarr-backed count matrix data (RAMtx, Random-Access matrix) '''
 class RAMtx( ) :
-    """ # 2022-07-31 00:50:03 
+    """ # 2022-08-03 00:55:22 
     This class represent a random-access mtx format for memory-efficient exploration of extremely large single-cell transcriptomics/genomics data.
     This class use a count matrix data stored in a random read-access compatible format, called RAMtx, enabling exploration of a count matrix with hundreds of millions cells with hundreds of millions of features.
     Also, the RAMtx format is supports multi-processing, and provide convenient interface for parallel processing of single-cell data
@@ -4715,7 +4727,7 @@ class RAMtx( ) :
             yield ( ns[ 'index_batch' ], ns[ 'l_int_entry_current_batch' ] ) if flag_return_index_batch else ns[ 'l_int_entry_current_batch' ] # return a batch
 ''' a class for representing axis of RamData (barcodes/features) '''
 class RamDataAxis( ) :
-    """ # 2022-07-16 23:56:47 
+    """ # 2022-08-03 00:55:04 
     a memory-efficient container of features/barcodes and associated metadata for a given RamData object.
     
     'path_folder' : a folder containing the axis
@@ -4749,14 +4761,14 @@ class RamDataAxis( ) :
         self._dict_kw_view = dict_kw_view
         self.dict_change = None # initialize view
     def _convert_to_bitarray( self, ba_filter ) :
-        ''' # 2022-06-28 20:01:25 
+        ''' # 2022-08-03 02:21:21 
         handle non-None filter objects and convert these formats to the bitarray filter object
         '''
         assert self.int_num_entries == len( ba_filter )
 
         ''' handle non-bitarray input types '''
         # handle when a list type has been given (convert it to np.ndarray)
-        if isinstance( ba_filter, list ) :
+        if isinstance( ba_filter, list ) or ( isinstance( ba_filter, np.ndarray ) and ba_filter.dtype != bool ) : # change to target dtype
             ba_filter = np.array( ba_filter, dtype = bool )
         # handle when a numpy ndarray has been given (convert it to bitarray)
         if isinstance( ba_filter, np.ndarray ) :
@@ -5061,8 +5073,9 @@ class RamDataAxis( ) :
         
         'flag_return_valid_entries_in_the_currently_active_layer' : return bitarray filter containing only the active entries in the current layer 
         """
-        if flag_return_valid_entries_in_the_currently_active_layer and self._ramdata.layer is not None and self._ramdata.layer.get_ramtx( flag_is_for_querying_features = self._name_axis == 'features' ) is not None : # if RamData has an active layer and 'flag_return_valid_entries_in_the_currently_active_layer' setting is True, return bitarray where entries with valid count data is marked as '1' # if valid ramtx data is available
-            ba = self._ramdata.layer.get_ramtx( flag_is_for_querying_features = self._name_axis == 'features' ).ba_active_entries
+        rtx = self._ramdata.layer.get_ramtx( flag_is_for_querying_features = self._name_axis == 'features' ) # retrieve associated ramtx object
+        if flag_return_valid_entries_in_the_currently_active_layer and self._ramdata.layer is not None and rtx is not None : # if RamData has an active layer and 'flag_return_valid_entries_in_the_currently_active_layer' setting is True, return bitarray where entries with valid count data is marked as '1' # if valid ramtx data is available
+            ba = rtx.ba_active_entries
         else :
             # if layer is empty or 'flag_return_valid_entries_in_the_currently_active_layer' is False, just return a bitarray filled with '1'
             ba = bitarray( self.int_num_entries )
@@ -5177,7 +5190,7 @@ class RamDataAxis( ) :
         """
         if name_col_filter is not None : # if a given filter name is valid
             if self.filter is not None : # if a filter is active in the current 'Axis'
-                self.meta[ name_col_filter, : ] = self.filter # save filter to the storage
+                self.meta[ name_col_filter, : ] = bk.BA.to_array( self.filter ) # save filter to the storage
     def subsample( self, float_prop_subsampling = 1 ) :
         """ # 2022-07-16 17:12:19 
         subsample active entries in the current filter (or all the active entries with valid data) using the proportion of subsampling ratio 'float_prop_subsampling'
@@ -5401,8 +5414,6 @@ class RamDataLayer( ) :
                 return self[ mode ]
         if self.verbose :
             print( f"ramtx for querying {'features' if flag_is_for_querying_features else 'barcodes'} efficiently is not available for layer {self.name}, containing the following modes: {self.modes}" )
-        if self.verbose :
-            print( f"current layer {self.name} does not contain any valid ramtx objects for the query" )
         return None
     def __getitem__( self, mode ) :
         """ # 2022-07-30 18:44:49 
@@ -5413,7 +5424,7 @@ class RamDataLayer( ) :
 
 ''' class for storing RamData '''
 class RamData( ) :
-    """ # 2022-07-21 23:32:59 
+    """ # 2022-08-03 00:55:14 
     This class provides frameworks for single-cell transcriptomic/genomic data analysis, utilizing RAMtx data structures, which is backed by Zarr persistant arrays.
     Extreme lazy loading strategies used by this class allows efficient parallelization of analysis of single cell data with minimal memory footprint, loading only essential data required for analysis. 
     
@@ -5667,7 +5678,7 @@ class RamData( ) :
         
         # compose filters from the queried entries
         ba_entry_bc, l_str_bc, ba_entry_ft, l_str_ft = self.compose_filters( l_entry_bc = l_entry_bc, l_entry_ft = l_entry_ft, flag_use_str_repr_bc = flag_use_str_repr_bc, flag_use_str_repr_ft = flag_use_str_repr_ft )
-
+        
         # retrieve ramtx for retrieving data
         rtx = self.layer.select_ramtx( ba_entry_bc, ba_entry_ft )
         
@@ -6685,7 +6696,7 @@ class RamData( ) :
         self.bc.save_filter( name_col_filter_bc ) # bc
         self.ft.save_filter( name_col_filter_ft ) # ft
     ''' memory-efficient dimension reduction/clustering functions '''
-    def pca( self, name_layer = 'normalized_log1p', prefix_name_col = 'pca_', int_num_components = 50, int_num_barcodes_in_ipca_batch = 1000, name_col_filter = 'filter_normalized_log1p_highly_variable', float_prop_subsampling = 1, name_col_filter_subsampled = 'filter_subsampling_for_pca', flag_ipca_whiten = False, name_model = 'ipca', int_num_threads = 3, flag_show_graph = True ) :
+    def pca( self, name_layer = 'normalized_log1p', prefix_name_col = 'pca_', int_num_components = 50, int_num_barcodes_in_ipca_batch = 50000, name_col_filter = 'filter_normalized_log1p_highly_variable', float_prop_subsampling = 1, name_col_filter_subsampled = 'filter_subsampling_for_pca', flag_ipca_whiten = False, name_model = 'ipca', int_num_threads = 3, flag_show_graph = True ) :
         """ # 2022-07-18 15:09:57 
         Perform incremental PCA in a very memory-efficient manner.
         the resulting incremental PCA model will be saved in the RamData.ns database.
@@ -6709,13 +6720,16 @@ class RamData( ) :
         # check the validility of the input arguments
         if name_layer not in self.layers :
             if self.verbose :
-                print( f"[ERROR] [RamData.summarize] invalid argument 'name_layer' : '{name_layer}' does not exist." )
+                print( f"[ERROR] [RamData.pca] invalid argument 'name_layer' : '{name_layer}' does not exist." )
             return -1 
         # set layer
         self.layer = name_layer
 
         # retrieve RAMtx object (sorted by barcodes) to summarize # retrieve 'Barcode' Axis object
-        rtx, ax = self.layer._ramtx_barcodes, self.bc
+        rtx, ax = self.layer.get_ramtx( flag_is_for_querying_features = False ), self.bc
+        if rtx is None :
+            if self.verbose :
+                print( f"[ERROR] [RamData.pca] valid ramtx object is not available in the '{self.layer.name}' layer" )
 
         # set filters for PCA calculation
         if name_col_filter is not None :
