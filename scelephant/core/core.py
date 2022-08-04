@@ -30,7 +30,7 @@ import hnswlib
 # define version
 _version_ = '0.0.3'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-08-03 22:59:47'
+_last_modified_time_ = '2022-08-05 01:53:13'
 
 """ # 2022-07-21 10:35:42  realease note
 
@@ -78,6 +78,10 @@ RAMtx.batch_generator now respect chunk boundaries when creating batches
 wrote a method in RamData for fast exploratory analysis of count data stored in dense, which enables normalizations/scaling of highly/variable genes of 200k single-cell data in 3~4 minutes from the count data
 now ZarrDataFrame supports multi-dimensional data as a 'column'
 also, mask, coordinate array, and orthogonal selections (all methods supported by Zarr) is also supported in ZarrDataFrame.
+
+# 2022-08-05 01:53:22 
+RAMtx.batch_generator was modified so that for dense matrix, appropriate batch that does not overwhelm the system memory
+RamData.apply was modified to allow synchronization across processes. it is a bit slow than writing chunks by chunk, but consums far less memory.
 
 """
 
@@ -2946,18 +2950,18 @@ def create_ramtx_from_mtx( path_folder_mtx_10x_input, path_folder_output, mode =
     path_folder_temp = f"{path_folder_output}temp_{UUID( )}/"
     os.makedirs( path_folder_temp, exist_ok = True )
     
-#     """
-#     construct RAMTx (Zarr) matrix
-#     """
-#     if mode.lower( ) == 'dense' : # build dense ramtx based on the setting.
-#         create_zarr_from_mtx( path_file_input_mtx, f'{path_folder_output}matrix.zarr', int_buffer_size = int_buffer_size, chunks_dense = chunks_dense, dtype_mtx = dtype_dense_mtx, int_num_workers_for_writing_ramtx = int_num_threads_for_chunking )
-#     else : # build sparse ramtx
-#         flag_mtx_sorted_by_id_feature = 'feature' in mode # retrieve a flag whether to sort ramtx by id_feature or id_barcode. 
-#         # open persistent zarr arrays to store matrix and matrix index
-#         za_mtx = zarr.open( f'{path_folder_output}matrix.zarr', mode = 'w', shape = ( int_num_records, 2 ), chunks = ( int_num_of_records_in_a_chunk_zarr_matrix, 2 ), dtype = dtype_sparse_mtx ) # each mtx record will contains two values instead of three values for more compact storage 
-#         za_mtx_index = zarr.open( f'{path_folder_output}matrix.index.zarr', mode = 'w', shape = ( int_num_features if flag_mtx_sorted_by_id_feature else int_num_barcodes, 2 ), chunks = ( int_num_of_entries_in_a_chunk_zarr_matrix_index, 2 ), dtype = dtype_sparse_mtx_index ) # max number of matrix index entries is 'int_num_records' of the input matrix. this will be resized # dtype of index should be np.float64 to be compatible with Zarr.js, since Zarr.js currently does not support np.int64...
-#         # build RAMtx matrix from the input matrix file
-#         sort_mtx( path_file_input_mtx, int_num_records_in_a_chunk = int_num_records_in_a_chunk, int_buffer_size = int_buffer_size, compresslevel = compresslevel, flag_dtype_is_float = flag_dtype_is_float, flag_mtx_sorted_by_id_feature = flag_mtx_sorted_by_id_feature, int_num_threads_for_chunking = int_num_threads_for_chunking, int_num_threads_for_writing = int_num_threads_for_writing, int_max_num_input_files_for_each_merge_sort_worker = int_max_num_input_files_for_each_merge_sort_worker, int_num_chunks_to_combine_before_concurrent_merge_sorting = int_num_chunks_to_combine_before_concurrent_merge_sorting, za_mtx = za_mtx, za_mtx_index = za_mtx_index )
+    """
+    construct RAMTx (Zarr) matrix
+    """
+    if mode.lower( ) == 'dense' : # build dense ramtx based on the setting.
+        create_zarr_from_mtx( path_file_input_mtx, f'{path_folder_output}matrix.zarr', int_buffer_size = int_buffer_size, chunks_dense = chunks_dense, dtype_mtx = dtype_dense_mtx, int_num_workers_for_writing_ramtx = int_num_threads_for_chunking )
+    else : # build sparse ramtx
+        flag_mtx_sorted_by_id_feature = 'feature' in mode # retrieve a flag whether to sort ramtx by id_feature or id_barcode. 
+        # open persistent zarr arrays to store matrix and matrix index
+        za_mtx = zarr.open( f'{path_folder_output}matrix.zarr', mode = 'w', shape = ( int_num_records, 2 ), chunks = ( int_num_of_records_in_a_chunk_zarr_matrix, 2 ), dtype = dtype_sparse_mtx ) # each mtx record will contains two values instead of three values for more compact storage 
+        za_mtx_index = zarr.open( f'{path_folder_output}matrix.index.zarr', mode = 'w', shape = ( int_num_features if flag_mtx_sorted_by_id_feature else int_num_barcodes, 2 ), chunks = ( int_num_of_entries_in_a_chunk_zarr_matrix_index, 2 ), dtype = dtype_sparse_mtx_index ) # max number of matrix index entries is 'int_num_records' of the input matrix. this will be resized # dtype of index should be np.float64 to be compatible with Zarr.js, since Zarr.js currently does not support np.int64...
+        # build RAMtx matrix from the input matrix file
+        sort_mtx( path_file_input_mtx, int_num_records_in_a_chunk = int_num_records_in_a_chunk, int_buffer_size = int_buffer_size, compresslevel = compresslevel, flag_dtype_is_float = flag_dtype_is_float, flag_mtx_sorted_by_id_feature = flag_mtx_sorted_by_id_feature, int_num_threads_for_chunking = int_num_threads_for_chunking, int_num_threads_for_writing = int_num_threads_for_writing, int_max_num_input_files_for_each_merge_sort_worker = int_max_num_input_files_for_each_merge_sort_worker, int_num_chunks_to_combine_before_concurrent_merge_sorting = int_num_chunks_to_combine_before_concurrent_merge_sorting, za_mtx = za_mtx, za_mtx_index = za_mtx_index )
     
     """
     prepare data for the axes (features/barcodes)
@@ -4206,7 +4210,7 @@ class RAMtx( ) :
         self.ba_filter_features = ramdata.ft.filter if ramdata is not None else None
         self.ba_filter_barcodes = ramdata.bc.filter if ramdata is not None else None
         
-        self.is_sparse = self.mode != 'dense' # retrieve a flag indicating whether ramtx is dense
+        self._is_sparse = self.mode != 'dense' # retrieve a flag indicating whether ramtx is dense
         if self.is_sparse :
             self._is_for_querying_features = self._dict_metadata[ 'flag_ramtx_sorted_by_id_feature' ] # for sparse matrix, this attribute is fixed
             # open Zarr object containing matrix and matrix indices
@@ -4215,6 +4219,11 @@ class RAMtx( ) :
         else :
             self.is_for_querying_features = is_for_querying_features # set this attribute
             self._za_mtx = zarr.open( f'{self._path_folder_ramtx}matrix.zarr', 'r' )
+    @property
+    def is_sparse( self ) :
+        """ # 2022-08-04 13:59:15 
+        """
+        return self._is_sparse
     @property
     def mode( self ) :
         """ # 2022-07-30 20:13:32 
@@ -4228,49 +4237,142 @@ class RAMtx( ) :
         return ( None if self._flag_is_read_only else self._path_folder_ramtx ) if self._path_folder_ramtx_mask is None else self._path_folder_ramtx_mask
     @property
     def ba_active_entries( self ) :
-        """ # 2022-07-31 00:46:44 
+        """ # 2022-08-04 23:42:23 
         return a bitarray filter of the indexed axis where all the entries with valid count data is marked '1'
         """
-        if not self.is_sparse :
-            # currently not implemented
-            # raise NotImplementedError( 'not supported for dense' )
-            # if current ramtx is dense ramtx, assumes all entries are active
-            ba = bitarray( self.len_axis_for_querying )
-            ba.setall( 1 )
-            return ba
-        else : # when entry counts are available (sparse ramtx)
-            # internal settings
+        # retrieve axis of current ramtx
+        axis = 'features' if self.is_for_querying_features else 'barcodes'
+        
+        # skip if result is already available
+        flag_available = False # initialize
+        for path_folder in [ self._path_folder_ramtx, self._path_folder_ramtx_modifiable ] :
+            if path_folder is not None and zarr_exists( f'{path_folder}matrix.{axis}.active_entries.zarr/' ) :
+                path_folder_zarr = f"{path_folder}matrix.{axis}.active_entries.zarr/" # define an existing zarr object path
+                flag_available = True
+        if not flag_available and self._path_folder_ramtx_modifiable is not None : # if zarr object does not exists and modifiable ramtx path is available
+            # try constructing the zarr object 
+            path_folder_zarr = f"{self._path_folder_ramtx_modifiable}matrix.{axis}.active_entries.zarr/" # define zarr object path
+            self.survey_number_of_records_for_each_entry( ) # survey the number of records for each entry using default settings
+            if not zarr_exists( path_folder_zarr ) : # if the zarr object still does not exists
+                # create a full bitarray mask as a fall back
+                ba = bitarray( self.len_axis_for_querying )
+                ba.setall( 1 )
+                return ba
+            
+        za = zarr.open( path_folder_zarr, mode = 'r', synchronizer = zarr.ThreadSynchronizer( ) ) # open zarr object of the current RAMtx object
+        ba = bk.BA.to_bitarray( za[ : ] ) # return the boolean array of active entries as a bitarray object
+
+        # if metadata of the number of active entries is not available, update the metadata
+        if 'n_active_entries' in self._dict_metadata :
+            self._n_active_entries = ba.count( ) # calculate the number of active entries
+
+            # update metadata
+            self._dict_metadata[ 'n_active_entries' ] = self._n_active_entries 
+            self._save_metadata_( )
+
+        # return the mask
+        return ba
+    def survey_number_of_records_for_each_entry( self, axes = [ 'barcodes', 'features' ], int_num_chunks_in_a_batch_for_index_of_sparse_matrix = 100, int_total_number_of_values_in_a_batch_for_dense_matrix = 100000000, int_size_chunk = 1000, flag_ignore_dense = True ) :
+        """ # 2022-08-04 13:49:57 
+        survey the number of records for each entry in the existing axis
+        'axes' : a list of axes to use for surveying the number of records for each entry
+        'flag_ignore_dense' : if True, does not survey the dense ramtx.
+        """
+        if self.is_sparse :
             int_num_chunks_in_a_batch = 100 # 'int_num_chunks_in_a_batch' : the number of chunks in a batch. increasing this number will increase the memory consumption
 
-            try :
-                za = zarr.open( f'{self._path_folder_ramtx}matrix.index.active_entries.zarr/', mode = 'r', synchronizer = zarr.ThreadSynchronizer( ) ) # open zarr object of the current RAMtx object
-            except : # if the zarr object (cache) is not available
-                # if the boolean array of the active entries is not available
-                if self._path_folder_ramtx_modifiable is None : # if modifiable RAMtx object does not exist
-                    za = ( self._za_mtx_index[ :, 1 ] - self._za_mtx_index[ :, 0 ] ) > 0 # retrieve mask without chunking
-                else :
-                    # if modifiable RAMtx object is available, using zarr object, retrieve mask chunk by chunk
-                    int_size_chunk = self._za_mtx_index.chunks[ 0 ] # retrieve the size of the chunk
-                    za = zarr.open( f"{self._path_folder_ramtx_modifiable}matrix.index.active_entries.zarr/", mode = 'w', shape = ( self.len_axis_for_querying, ), chunks = ( int_size_chunk * int_num_chunks_in_a_batch, ), dtype = bool, synchronizer = zarr.ThreadSynchronizer( ) ) # the size of the chunk will be 100 times of the chunk used for matrix index, since the dtype is boolean
-                    len_axis_for_querying = self.len_axis_for_querying
-                    int_pos_start = 0
-                    int_num_entries_to_retrieve = int( int_size_chunk * int_num_chunks_in_a_batch )
-                    while int_pos_start < len_axis_for_querying :
-                        sl = slice( int_pos_start, int_pos_start + int_num_entries_to_retrieve )
-                        za[ sl ] = ( self._za_mtx_index[ sl ][ :, 1 ] - self._za_mtx_index[ sl ][ :, 0 ] ) > 0 # active entry is defined by finding entries with at least one count record
-                        int_pos_start += int_num_entries_to_retrieve # update the position
-
-            ba = bk.BA.to_bitarray( za[ : ] ) # return the boolean array of active entries as a bitarray object
-
-            # if metadata of the number of active entries is not available, update the metadata
-            if 'n_active_entries' in self._dict_metadata :
-                self._n_active_entries = ba.count( ) # calculate the number of active entries
-
-                # update metadata
-                self._dict_metadata[ 'n_active_entries' ] = self._n_active_entries 
-                self._save_metadata_( )
-
-            return ba
+        # for each axis 
+        for axis in axes :  
+            # check validity of the axis name
+            if axis not in { 'barcodes', 'features' } :
+                continue
+            flag_axis_is_barcode = axis == 'barcodes'
+            # skip if result is already available
+            flag_res_already_available = False # initialize
+            for path_folder in [ self._path_folder_ramtx, self._path_folder_ramtx_modifiable ] :
+                if path_folder is not None and zarr_exists( f'{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/' ) :
+                    flag_res_already_available = True
+                    break
+            if flag_res_already_available :
+                continue
+                
+            # if no modifiable ramtx object is available, exit
+            if self._path_folder_ramtx_modifiable is None :
+                continue
+            
+            # if the sparse matrix not for querying with the current axis, continue
+            if self.is_sparse and axis not in mode : 
+                continue
+            
+            # ignore dense ramtx object if 'flag_ignore_dense' is True
+            if flag_ignore_dense and not self.is_sparse :
+                continue
+            
+            # perform survey
+            len_axis = self._int_num_barcodes if flag_axis_is_barcode else self._int_num_features # retrieve the length of the axis
+            
+            # open zarr objects
+            za = zarr.open( f'{self._path_folder_ramtx_modifiable}matrix.{axis}.number_of_records_for_each_entry.zarr/', mode = 'w', shape = ( len_axis, ), chunks = ( int_size_chunk, ), dtype = np.float64, synchronizer = zarr.ThreadSynchronizer( ) ) # open zarr object of the current RAMtx object
+            za_bool = zarr.open( f"{self._path_folder_ramtx_modifiable}matrix.{axis}.active_entries.zarr/", mode = 'w', shape = ( len_axis, ), chunks = ( int_size_chunk, ), dtype = bool, synchronizer = zarr.ThreadSynchronizer( ) ) # open zarr object of the current RAMtx object
+            
+            # start worker
+            def __write_result( pipe_receiver ) :
+                """ # 2022-08-04 22:54:22 
+                write survey results as zarr objects
+                """
+                while True :
+                    l_r = pipe_receiver.recv( )
+                    if l_r is None :
+                        break
+                    for r in l_r :
+                        sl, arr_num_records = r
+                        za[ sl ] = arr_num_records # save the number of records 
+                        za_bool[ sl ] = arr_num_records > 0 # active entry is defined by finding entries with at least one count record
+                        del arr_num_records
+            pipe_sender, pipe_receiver = mp.Pipe( )
+            p = mp.Process( target = __write_result, args = ( pipe_receiver, ) )
+            p.start( )
+            l_buffer = [ ]
+            int_size_buffer = 20
+            
+            if self.is_sparse : # survey for sparse matrix
+                # internal settings
+                int_num_chunks_in_a_batch = 25 # 'int_num_chunks_in_a_batch' : the number of chunks in a batch. increasing this number will increase the memory consumption
+                
+                # surveying on the axis of the sparse matrix
+                int_num_entries_processed = 0
+                int_num_entries_to_retrieve = int( self._za_mtx_index.chunks[ 0 ] * int_num_chunks_in_a_batch )
+                while int_num_entries_processed < len_axis :
+                    sl = slice( int_num_entries_processed, int_num_entries_processed + int_num_entries_to_retrieve )
+                    arr_num_records = self._za_mtx_index[ sl ][ :, 1 ] - self._za_mtx_index[ sl ][ :, 0 ] # retrieve the number of records
+                    int_num_entries_processed += int_num_entries_to_retrieve # update the position
+                    # flush buffer
+                    l_buffer.append( ( sl, arr_num_records ) )
+                    if len( l_buffer ) >= int_size_buffer :
+                        pipe_sender.send( l_buffer ) # send result to worker
+                        l_buffer = [ ]
+                    del arr_num_records
+            else : # survey for dense matrix
+                # internal settings
+                int_num_entries_processed = 0
+                int_num_entries_to_retrieve = int( np.ceil( 100000000 / self._za_mtx.shape[ 1 if flag_axis_is_barcode else 0 ] ) ) # retrieve length of the other axis
+                
+                while int_num_entries_processed < len_axis :
+                    sl = slice( int_num_entries_processed, int_num_entries_processed + int_num_entries_to_retrieve )
+                    arr_num_records = ( ( self._za_mtx.get_orthogonal_selection( sl ).T if flag_axis_is_barcode else self._za_mtx.get_orthogonal_selection( ( slice( None, None ), sl ) ) ) > 0 ).sum( axis = 0 )
+                    int_num_entries_processed += int_num_entries_to_retrieve # update the position
+                    # flush buffer
+                    l_buffer.append( ( sl, arr_num_records ) )
+                    if len( l_buffer ) >= int_size_buffer :
+                        pipe_sender.send( l_buffer ) # send result to worker
+                        l_buffer = [ ]
+                    del arr_num_records
+            # flush the buffer
+            if len( l_buffer ) >= int_size_buffer :
+                pipe_sender.send( l_buffer ) # send result to worker
+            # dismiss the worker
+            pipe_sender.send( None )
+            p.join( )
     def _save_metadata_( self ) :
         ''' # 2022-07-31 00:40:33 
         a method for saving metadata to the disk 
@@ -4342,6 +4444,12 @@ class RAMtx( ) :
         retrieve number of elements of the indexed axis
         '''
         return self._int_num_features if self.is_for_querying_features else self._int_num_barcodes
+    @property
+    def len_axis_not_for_querying( self ) :
+        ''' # 2022-06-23 09:08:44 
+        retrieve number of elements of the not indexed axis
+        '''
+        return self._int_num_barcodes if self.is_for_querying_features else self._int_num_features
     @property
     def axis_for_querying( self ) :
         """
@@ -4648,17 +4756,18 @@ class RAMtx( ) :
         n_bc, n_ft = ( self._int_num_barcodes, self._int_num_features ) if self._ramdata is None else ( self._ramdata.bc.meta.n_rows, self._ramdata.ft.meta.n_rows ) # detect whether the current RAMtx has been attached to a RamData and retrieve the number of barcodes and features accordingly
         X = scipy.sparse.csr_matrix( scipy.sparse.coo_matrix( ( arr_value, ( arr_int_barcode, arr_int_feature ) ), shape = ( n_bc, n_ft ) ) ) # convert count data to a sparse matrix
         return X # return the composed sparse matrix 
-    def batch_generator( self, ba = None, int_num_entries_for_each_weight_calculation_batch = 1000, int_total_weight_for_each_batch = 1000000, int_min_num_entries_in_a_batch_if_weight_not_available = 2000, int_chunk_size_for_checking_boundary = 2000, flag_return_index_batch = False ) :
-        ''' # 2022-08-01 19:20:30 
+    def batch_generator( self, ba = None, int_num_entries_for_each_weight_calculation_batch = 1000, int_total_weight_for_each_batch = 10000000, int_chunk_size_for_checking_boundary = None, flag_return_index_batch = False, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = True ) :
+        ''' # 2022-08-05 00:56:07 
         generate batches of list of integer indices of the active entries in the given bitarray 'ba'. 
         Each bach has the following characteristics:
             monotonous: active entries in a batch are in an increasing order
-            balanced: the total weight of a batch is around (but not exactly) 'int_total_weight_for_each_batch'
+            the total number of records of a batch is around (but not exactly) 'int_total_weight_for_each_batch'
         
         'ba' : (default None) if None is given, self.ba_active_entries bitarray will be used.
-        'int_min_num_entries_in_a_batch_if_weight_not_available' : for some reason (e.g. when ramtx is dense and yet the number of entries for each axis has not been calculated), return this number of entries in a batch
-        'int_chunk_size_for_checking_boundary' : if this argument is given, each batch will respect the chunk boundary of the given chunk size so that different batches share the same 'chunk'.
+        'int_chunk_size_for_checking_boundary' : if this argument is given, each batch will respect the chunk boundary of the given chunk size so that different batches share the same 'chunk'. setting this argument will override 'int_total_weight_for_each_batch' argument
         'flag_return_index_batch' : if True, return 'index_batch' together with 'batch'
+        'int_total_weight_for_each_batch' : total number of records in a batch. 
+        'flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx'
         '''
         # set defaule arguments
         if ba is None :
@@ -4669,22 +4778,25 @@ class RAMtx( ) :
         # a namespace that can safely shared between functions
         ns = { 'int_accumulated_weight_current_batch' : 0, 'l_int_entry_current_batch' : [ ], 'l_int_entry_for_weight_calculation_batch' : [ ], 'index_chunk_end' : None, 'index_batch' : 0 } # initialize 'index_batch'
         
-        # internal setting
-        flag_weight_not_available = not self.is_sparse # currently, weights will be not available for dense matrix
+        # check if pre-calculated weights are available
+        axis = 'features' if self.is_for_querying_features else 'barcodes' # retrieve axis of current ramtx
+        flag_weight_available = False # initialize
+        for path_folder in [ self._path_folder_ramtx, self._path_folder_ramtx_modifiable ] :
+            if path_folder is not None and zarr_exists( f'{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/' ) :
+                path_folder_zarr_weight = f"{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/" # define an existing zarr object path
+                flag_weight_available = True
+                za_weight = zarr.open( path_folder_zarr_weight ) # open zarr object containing weights if available
         
         def find_batch( ) :
-            """ # 2022-07-03 22:11:06 
+            """ # 2022-08-05 00:56:12 
             retrieve indices of the current 'weight_current_batch', calculate weights, and yield a batch
             """
             ''' retrieve weights '''
-            if flag_weight_not_available : # if weight is not available
-                arr_weight = np.full( len( ns[ 'l_int_entry_for_weight_calculation_batch' ] ), int_total_weight_for_each_batch / int_min_num_entries_in_a_batch_if_weight_not_available ) # use a constant weight as a fallback
-            else : # if weight is available
+            if flag_weight_available and ( self.mode != 'dense' or not flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ) : # if weight is available
                 # load weight for the batch
-                st, en = self._za_mtx_index.get_orthogonal_selection( ns[ 'l_int_entry_for_weight_calculation_batch' ] ).T # retrieve start and end coordinates of the entries
-                arr_weight = en - st # calculate weight for each entry
-                del st, en
-            
+                arr_weight = za_weight.get_orthogonal_selection( ns[ 'l_int_entry_for_weight_calculation_batch' ] ) # retrieve weights
+            else : # if weight is not available
+                arr_weight = np.full( len( ns[ 'l_int_entry_for_weight_calculation_batch' ] ), self.len_axis_not_for_querying ) # if weight is not available, assumes all records are available (number of entries in non-indexed axis) for each entry
             ''' search for batch '''
             for int_entry, weight in zip( ns[ 'l_int_entry_for_weight_calculation_batch' ], arr_weight ) :
                 if ns[ 'index_chunk_end' ] is not None and ns[ 'index_chunk_end' ] != int_entry // int_chunk_size_for_checking_boundary : # if the chunk boundary has been set and the boundary has reached
@@ -5440,7 +5552,7 @@ class RamData( ) :
     ==== AnnDataContainer ====
     'flag_enforce_name_adata_with_only_valid_characters' : enforce valid characters in the name of AnnData
     """
-    def __init__( self, path_folder_ramdata, name_layer = 'raw', int_num_cpus = 64, int_num_cpus_for_fetching_data = 5, dtype_of_feature_and_barcode_indices = np.int32, dtype_of_values = np.float64, int_index_str_rep_for_barcodes = 0, int_index_str_rep_for_features = 1, mode = 'a', path_folder_ramdata_mask = None, dict_kw_zdf = { 'flag_retrieve_categorical_data_as_integers' : False, 'flag_load_data_after_adding_new_column' : True, 'flag_enforce_name_col_with_only_valid_characters' : True }, dict_kw_view = { 'float_min_proportion_of_active_entries_in_an_axis_for_using_array' : 0.1, 'dtype' : np.int32 }, flag_enforce_name_adata_with_only_valid_characters = True, verbose = True, flag_debugging = False ) :
+    def __init__( self, path_folder_ramdata, name_layer = 'raw', int_num_cpus = 64, int_num_cpus_for_fetching_data = 1, dtype_of_feature_and_barcode_indices = np.int32, dtype_of_values = np.float64, int_index_str_rep_for_barcodes = 0, int_index_str_rep_for_features = 1, mode = 'a', path_folder_ramdata_mask = None, dict_kw_zdf = { 'flag_retrieve_categorical_data_as_integers' : False, 'flag_load_data_after_adding_new_column' : True, 'flag_enforce_name_col_with_only_valid_characters' : True }, dict_kw_view = { 'float_min_proportion_of_active_entries_in_an_axis_for_using_array' : 0.1, 'dtype' : np.int32 }, flag_enforce_name_adata_with_only_valid_characters = True, verbose = True, flag_debugging = False ) :
         """ # 2022-07-21 23:32:54 
         """
         # handle input object paths
@@ -5748,7 +5860,7 @@ class RamData( ) :
             path_folder_temp = f"{path_folder}temp_{UUID( )}/"
             os.makedirs( path_folder_temp, exist_ok = True ) # create the temporary folder
             return path_folder_temp # return the path to the temporary folder
-    def summarize( self, name_layer, axis, summarizing_func, int_num_threads = None, flag_overwrite_columns = True, int_num_entries_for_each_weight_calculation_batch = 2000, int_total_weight_for_each_batch = 2000000 ) :
+    def summarize( self, name_layer, axis, summarizing_func, int_num_threads = None, flag_overwrite_columns = True, int_num_entries_for_each_weight_calculation_batch = 2000, int_total_weight_for_each_batch = 10000000 ) :
         ''' # 2022-07-20 23:40:02 
         this function summarize entries of the given axis (0 = barcode, 1 = feature) using the given function
         
@@ -5919,7 +6031,7 @@ class RamData( ) :
         
         # remove temp folder
         shutil.rmtree( path_folder_temp )
-    def apply( self, name_layer, name_layer_new, func = None, mode_instructions = 'sparse_for_querying_features', path_folder_ramdata_output = None, dtype_of_row_and_col_indices = np.int32, dtype_of_value = np.float64, int_num_threads = None, int_num_entries_for_each_weight_calculation_batch = 1000, int_total_weight_for_each_batch = 1000000, int_min_num_entries_in_a_batch_if_weight_not_available = 2000, int_num_of_records_in_a_chunk_zarr_matrix = 20000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, chunks_dense = ( 2000, 1000 ), dtype_dense_mtx = np.float64, dtype_sparse_mtx = np.float64, dtype_sparse_mtx_index = np.float64 ) :
+    def apply( self, name_layer, name_layer_new, func = None, mode_instructions = 'sparse_for_querying_features', path_folder_ramdata_output = None, dtype_of_row_and_col_indices = np.int32, dtype_of_value = np.float64, int_num_threads = None, int_num_entries_for_each_weight_calculation_batch = 1000, int_total_weight_for_each_batch = 10000000, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = True, int_num_of_records_in_a_chunk_zarr_matrix = 20000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, chunks_dense = ( 2000, 1000 ), dtype_dense_mtx = np.float64, dtype_sparse_mtx = np.float64, dtype_sparse_mtx_index = np.float64 ) :
         ''' # 2022-08-01 10:39:43 
         this function apply a function and/or filters to the records of the given data, and create a new data object with 'name_layer_new' as its name.
         
@@ -5984,6 +6096,8 @@ class RamData( ) :
         'dtype_of_row_and_col_indices', 'dtype_of_value' : the dtype of the output matrix
         int_num_of_records_in_a_chunk_zarr_matrix = 20000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, chunks_dense = ( 2000, 1000 ) : determines the chunk size of the output ramtx objects
         dtype_dense_mtx = np.float64, dtype_sparse_mtx = np.float64, dtype_sparse_mtx_index = np.float64 : determines the output dtype
+        
+        'int_num_entries_for_each_weight_calculation_batch', 'int_total_weight_for_each_batch', 'flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx' : for batch generation. please refer to 'RAMtx.batch_generator'
 
         =================
         input attributes 
@@ -6064,7 +6178,7 @@ class RamData( ) :
             # create a temporary folder
             path_folder_temp = f'{path_folder_layer_new}temp_{UUID( )}/'
             os.makedirs( path_folder_temp, exist_ok = True )
-
+            
             ''' initialize output ramtx objects '''
             """ %% DENSE %% """
             if flag_dense_ramtx_output : # if dense output is present
@@ -6072,7 +6186,8 @@ class RamData( ) :
                 os.makedirs( path_folder_ramtx_dense, exist_ok = True ) # create the output ramtx object folder
                 path_folder_ramtx_dense_mtx = f"{path_folder_ramtx_dense}matrix.zarr/" # retrieve the folder path of the output RAMtx Zarr matrix object.
                 # assert not os.path.exists( path_folder_ramtx_dense_mtx ) # output zarr object should NOT exists!
-                za_mtx_dense = zarr.open( path_folder_ramtx_dense_mtx, mode = 'w', shape = ( rtx._int_num_barcodes, rtx._int_num_features ), chunks = chunks_dense, dtype = dtype_dense_mtx, synchronizer = zarr.ThreadSynchronizer( ) ) # use the same chunk size of the current RAMtx
+                path_file_lock_mtx_dense = f'{path_folder_layer_new}lock_{UUID( )}.sync' # define path to locks for parallel processing with multiple processes
+                za_mtx_dense = zarr.open( path_folder_ramtx_dense_mtx, mode = 'w', shape = ( rtx._int_num_barcodes, rtx._int_num_features ), chunks = chunks_dense, dtype = dtype_dense_mtx, synchronizer = zarr.ProcessSynchronizer( path_file_lock_mtx_dense ) ) # use the same chunk size of the current RAMtx
             """ %% SPARSE %% """
             if flag_sparse_ramtx_output : # if sparse output is present
                 mode_sparse = f"sparse_for_querying_{'features' if rtx.is_for_querying_features else 'barcodes'}"
@@ -6081,6 +6196,7 @@ class RamData( ) :
                 path_folder_ramtx_sparse_mtx = f"{path_folder_ramtx_sparse}matrix.zarr/" # retrieve the folder path of the output RAMtx Zarr matrix object.
                 # assert not os.path.exists( path_folder_ramtx_sparse_mtx ) # output zarr object should NOT exists!
                 # assert not os.path.exists( f'{path_folder_ramtx_sparse}matrix.index.zarr' ) # output zarr object should NOT exists!
+                # define path to locks for parallel processing with multiple processes
                 za_mtx_sparse = zarr.open( path_folder_ramtx_sparse_mtx, mode = 'w', shape = ( rtx._int_num_records, 2 ), chunks = ( int_num_of_records_in_a_chunk_zarr_matrix, 2 ), dtype = dtype_sparse_mtx, synchronizer = zarr.ThreadSynchronizer( ) ) # use the same chunk size of the current RAMtx
                 za_mtx_sparse_index = zarr.open( f'{path_folder_ramtx_sparse}matrix.index.zarr', mode = 'w', shape = ( rtx.len_axis_for_querying, 2 ), chunks = ( int_num_of_entries_in_a_chunk_zarr_matrix_index, 2 ), dtype = dtype_sparse_mtx_index, synchronizer = zarr.ThreadSynchronizer( ) ) # use the same dtype and chunk size of the current RAMtx
                 
@@ -6209,7 +6325,7 @@ class RamData( ) :
                         ns[ 'index_batch_waiting_to_be_written_sparse' ] += 1 # start waiting for the next batch to be completed
                 
             # transform the values of the RAMtx using multiple processes
-            bk.Multiprocessing_Batch( rtx.batch_generator( ax.filter, int_num_entries_for_each_weight_calculation_batch, int_total_weight_for_each_batch, int_min_num_entries_in_a_batch_if_weight_not_available = int_min_num_entries_in_a_batch_if_weight_not_available, int_chunk_size_for_checking_boundary = chunks_dense[ 0 ] if flag_dense_ramtx_output else None, flag_return_index_batch = True ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) # create batch considering chunk boundaries # return batch index to allow combining sparse matrix in an ascending order.
+            bk.Multiprocessing_Batch( rtx.batch_generator( ax.filter, int_num_entries_for_each_weight_calculation_batch, int_total_weight_for_each_batch, flag_return_index_batch = True ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) # create batch considering chunk boundaries # return batch index to allow combining sparse matrix in an ascending order.
 
             # remove temp folder
             shutil.rmtree( path_folder_temp )
@@ -6217,6 +6333,7 @@ class RamData( ) :
             ''' export ramtx settings '''
             """ %% DENSE %% """
             if flag_dense_ramtx_output : # if dense output is present
+                shutil.rmtree( path_file_lock_mtx_dense ) # delete file system locks
                 root = zarr.group( path_folder_ramtx_dense )
                 root.attrs[ 'dict_metadata' ] = { 
                     'mode' : 'dense',
@@ -6345,7 +6462,7 @@ class RamData( ) :
         if flag_new_layer_added_to_the_current_ramdata and not flag_update_a_layer :
             self.layers.add( name_layer_new )
             self._save_metadata_( )
-    def subset( self, path_folder_ramdata_output, l_name_layer = [ ], int_num_threads = None, flag_simultaneous_processing_of_paired_ramtx = True, int_num_entries_for_each_weight_calculation_batch = 1000, int_total_weight_for_each_batch = 1000000 ) :
+    def subset( self, path_folder_ramdata_output, l_name_layer = [ ], int_num_threads = None, flag_simultaneous_processing_of_paired_ramtx = True, int_num_entries_for_each_weight_calculation_batch = 1000, int_total_weight_for_each_batch = 10000000 ) :
         ''' # 2022-07-05 23:20:02 
         this function will create a new RamData object on disk by creating a subset of the current RamData according to the current filters
 
@@ -6598,7 +6715,7 @@ class RamData( ) :
         self.summarize( name_layer_raw, 'barcode', 'sum' )
 
         # filter cells
-        self.bc.filter = ( self.bc.all( ) if self.bc.filter is None else self.bc.filter ) & BA.to_bitarray( self.bc.meta[ f'{name_layer_raw}_sum' ] > min_counts ) & BA.to_bitarray( self.bc.meta[ f'{name_layer_raw}_num_nonzero_values' ] > min_features )
+        self.bc.filter = ( self.bc.all( ) if self.bc.filter is None else self.bc.filter ) & BA.to_bitarray( self.bc.meta[ f'{name_layer_raw}_sum', : ] > min_counts ) & BA.to_bitarray( self.bc.meta[ f'{name_layer_raw}_num_nonzero_values', : ] > min_features )
         self.bc.save_filter( 'filtered_barcodes' ) # save filter for later analysis
 
         # retrieve total raw count data for normalization
