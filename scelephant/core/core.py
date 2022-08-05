@@ -30,7 +30,7 @@ import hnswlib
 # define version
 _version_ = '0.0.3'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-08-05 01:53:13'
+_last_modified_time_ = '2022-08-05 17:40:46'
 
 """ # 2022-07-21 10:35:42  realease note
 
@@ -82,6 +82,9 @@ also, mask, coordinate array, and orthogonal selections (all methods supported b
 # 2022-08-05 01:53:22 
 RAMtx.batch_generator was modified so that for dense matrix, appropriate batch that does not overwhelm the system memory
 RamData.apply was modified to allow synchronization across processes. it is a bit slow than writing chunks by chunk, but consums far less memory.
+
+# 2022-08-05 17:24:17 
+improved RamData.__getitem__ method to set obsm and varm properties in the returned AnnData object
 
 """
 
@@ -4099,12 +4102,12 @@ class ZarrDataFrame( ) :
                 continue
             del self[ name_col ] # delete element from the current object
     def get_df( self, * l_name_col ) :
-        """ # 2022-07-02 09:22:40 
+        """ # 2022-08-05 13:54:36 
         get dataframe of a given list of columns, and empty the cache
         """
-        set_name_col = set( l_name_col ) # convert 'l_name_col' to set
+        set_name_col = set( e for e in l_name_col if isinstance( e, str ) and e in self ) # convert 'l_name_col' to set # use only hashable strings
         self.unload( * list( name_col for name_col in self if name_col not in set_name_col ) ) # drop the columns that do not belonging to 'l_name_col'
-        self.load( * l_name_col ) # load the given list of columns
+        self.load( * set_name_col ) # load the given list of columns
         df = self.df # retrieve dataframe
         self.unload( ) # empty the cache
         return df
@@ -4301,7 +4304,7 @@ class RAMtx( ) :
                 continue
             
             # if the sparse matrix not for querying with the current axis, continue
-            if self.is_sparse and axis not in mode : 
+            if self.is_sparse and axis not in self.mode : 
                 continue
             
             # ignore dense ramtx object if 'flag_ignore_dense' is True
@@ -4368,7 +4371,7 @@ class RAMtx( ) :
                         l_buffer = [ ]
                     del arr_num_records
             # flush the buffer
-            if len( l_buffer ) >= int_size_buffer :
+            if len( l_buffer ) > 0 :
                 pipe_sender.send( l_buffer ) # send result to worker
             # dismiss the worker
             pipe_sender.send( None )
@@ -5762,13 +5765,17 @@ class RamData( ) :
         
         return ba_entry_bc, l_str_bc, ba_entry_ft, l_str_ft # return composed filters and mapped string representations (if available)
     def __getitem__( self, args ) :
-        ''' # 2022-07-16 17:10:01 
+        ''' # 2022-08-05 17:18:47 
         please include 'str' in 'barcode_column' and 'feature_column' in order to use string representations in the output AnnData object
         
         possible usages:
         
         [ name_layer, barcode_index, barcode_column, feature_index, feature_column ]
         [ barcode_index, barcode_column, feature_index, feature_column ]
+        'barcode_column' and 'feature_column' can include multi-dimensional data 
+        for example, 
+            [ 'str', { 'X_pca' : slice( 0, 10 ), 'X_umap', : None } ] as 'barcode_column' will include X_umap and X_pca in obsm in the resulting anndata object
+            [ 'str', { 'X_pca' : slice( 0, 10 ), { 'X_umap' } ] as 'barcode_column' will also include X_umap and X_pca in obsm in the resulting anndata object
         '''
         assert isinstance( args, tuple ) # more than one arguments should be given
         # if the first argument appears to be 'name_layer', load the layer and drop the argument
@@ -5817,6 +5824,16 @@ class RamData( ) :
         adata = anndata.AnnData( obs = df_obs, var = df_var ) # in anndata.X, row = barcode, column = feature # set obs and var with integer index values
         adata.X = X # add count data
         del X
+        # add obsm/varm
+        for ax, name_attr, l in zip( [ self.ft, self.bc ], [ 'varm', 'obsm' ], [ l_col_ft, l_col_bc ] ) :
+            for e in l :
+                if isinstance( e, set ) : # retrieve all data in the secondary axis
+                    for name_col in e :
+                        getattr( adata, name_attr )[ name_col ] = ax.meta[ name_col ]
+                elif isinstance( e, dict ) : # indexing through secondary axis
+                    for name_col in e :
+                        getattr( adata, name_attr )[ name_col ] = ax.meta[ name_col ] if e[ name_col ] is None else ax.meta[ name_col, None, e[ name_col ] ] # if e[ name_col ] is None, load all data on the secondary axis
+        
 
         # restore the filters once the data retrieval has been completed
         self.bc.filter = ba_filter_bc_backup
@@ -6813,14 +6830,14 @@ class RamData( ) :
         self.bc.save_filter( name_col_filter_bc ) # bc
         self.ft.save_filter( name_col_filter_ft ) # ft
     ''' memory-efficient dimension reduction/clustering functions '''
-    def pca( self, name_layer = 'normalized_log1p', prefix_name_col = 'pca_', int_num_components = 50, int_num_barcodes_in_ipca_batch = 50000, name_col_filter = 'filter_normalized_log1p_highly_variable', float_prop_subsampling = 1, name_col_filter_subsampled = 'filter_subsampling_for_pca', flag_ipca_whiten = False, name_model = 'ipca', int_num_threads = 3, flag_show_graph = True ) :
-        """ # 2022-07-18 15:09:57 
+    def pca( self, name_layer = 'normalized_log1p', name_col = 'X_pca', int_num_components = 50, int_num_barcodes_in_ipca_batch = 50000, name_col_filter = 'filter_normalized_log1p_highly_variable', float_prop_subsampling = 1, name_col_filter_subsampled = 'filter_subsampling_for_pca', flag_ipca_whiten = False, name_model = 'ipca', int_num_threads = 3, flag_show_graph = True ) :
+        """ # 2022-08-05 10:45:15 
         Perform incremental PCA in a very memory-efficient manner.
         the resulting incremental PCA model will be saved in the RamData.ns database.
         
         arguments:
         'name_layer' : name of the data source layer (the layer from which gene expression data will be retrieved for the barcodes)
-        'prefix_name_col' : a prefix for the 'name_col' of the columns that will be added to Axis.meta ZDF.
+        'name_col' : 'name_col' of the PCA data that will be added to Axis.meta ZDF.
         'name_col_filter' : the name of 'feature'/'barcode' Axis metadata column to retrieve selection filter for highly-variable-features. (default: None) if None is given, current feature filter (if it has been set) will be used as-is. if a valid filter is given, filter WILL BE CHANGED.
         'name_col_filter_subsampled' : the name of 'feature'/'barcode' Axis metadata column to retrieve or save mask containing subsampled barcodes. if 'None' is given and 'float_prop_subsampling' is below 1 (i.e. subsampling will be used), the subsampling filter generated for retrieving gene expression data of selected barcodes will not be saved.
         'int_num_components' : number of PCA components.
@@ -6903,7 +6920,7 @@ class RamData( ) :
             if self.verbose : # report
                 print( f'fit completed for {int_num_of_previously_returned_entries + 1}-{int_num_of_previously_returned_entries + int_num_retrieved_entries} barcodes' )
         # fit iPCA using multiple processes
-        bk.Multiprocessing_Batch( ax.batch_generator( int_num_entries_for_batch = int_num_barcodes_in_ipca_batch, flag_return_the_number_of_previously_returned_entries = True ), process_batch, post_process_batch = post_process_batch, int_num_threads = max( min( int_num_threads, 5 ), 2 ), int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) # number of threads for multi-processing is 2 ~ 5 # generate batch with fixed number of barcodes
+        bk.Multiprocessing_Batch( ax.batch_generator( int_num_entries_for_batch = int_num_barcodes_in_ipca_batch, flag_return_the_number_of_previously_returned_entries = True ), process_batch, post_process_batch = post_process_batch, int_num_threads = max( min( int_num_threads, 4 ), 2 ), int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) # number of threads for multi-processing is 2 ~ 5 # generate batch with fixed number of barcodes
         # report
         if self.verbose :
             print( 'fit completed' )
@@ -6920,9 +6937,6 @@ class RamData( ) :
         """
         2) Transform Data
         """
-        # initialize metadata columns 
-        l_name_col_component = list( f"{prefix_name_col}{i}" for i in range( int_num_components ) ) # retrieve name_col for the transformed PCA data
-
         # define functions for multiprocessing step
         def process_batch( batch, pipe_to_main_process ) :
             ''' # 2022-07-13 22:18:22 
@@ -6943,13 +6957,11 @@ class RamData( ) :
             X_transformed = ipca.transform( X ) # perform PCA transformation
             del X
 
-            # iterate through components
-            for i, arr_component in enumerate( X_transformed.T ) :
-                # update the components for the barcodes of the current batch
-                ax.meta[ l_name_col_component[ i ], l_int_entry_current_batch ] = arr_component
+            # update the PCA components for the barcodes of the current batch
+            ax.meta[ name_col, l_int_entry_current_batch ] = X_transformed
 
         # transform values using iPCA using multiple processes
-        bk.Multiprocessing_Batch( ax.batch_generator( int_num_entries_for_batch = int_num_barcodes_in_ipca_batch, flag_return_the_number_of_previously_returned_entries = True ), process_batch, post_process_batch = post_process_batch, int_num_threads = max( min( int_num_threads, 5 ), 2 ), int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) # number of threads for multi-processing is 2 ~ 5 # generate batch with fixed number of barcodes
+        bk.Multiprocessing_Batch( ax.batch_generator( int_num_entries_for_batch = int_num_barcodes_in_ipca_batch, flag_return_the_number_of_previously_returned_entries = True ), process_batch, post_process_batch = post_process_batch, int_num_threads = max( min( int_num_threads, 4 ), 2 ), int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) # number of threads for multi-processing is 2 ~ 5 # generate batch with fixed number of barcodes
 
         # destroy the view
         self.destroy_view( )
@@ -6966,56 +6978,7 @@ class RamData( ) :
             bk.MATPLOTLIB_basic_configuration( x_label = 'principal components', y_label = 'explained variance ratio', title = 'PCA result', show_grid = True )
         
         return ipca # return the model
-    def get_array( self, axis = 'barcode', prefix_name_col = 'pca_', int_num_components = 50, name_col_filter = None, l_int_entries = None ) :
-        """ # 2022-07-15 19:59:11 
-        Retrieve array data for the 'int_num_components' number of components with 'prefix_name_col' prefix for the currently active filters (if filters have been set).
-        if 'l_int_entries' is given, the entries specified by 'l_int_entries' will be retrieved
-        
-        'axis' : axis to retrieve array data { 'barcode', 0 } for 'barcode' axis and { 'feature', 1 } for 'feature' axis
-        'prefix_name_col' : name of columns in the 'barcode' Axis metadata containing PCA components. please refer to RamData.pca function
-        'name_col_filter' : the name of 'feature'/'barcode' Axis metadata column to retrieve selection filter for highly-variable-features. (default: None) if None is given, current feature filter (if it has been set) will be used as-is. if a valid filter is given, filter WILL BE CHANGED.
-        'l_int_entries' : to retrieve data of a specific entries, use this argument to pass the list of integer representations of the entries. filter (if it is active) will not be applied
-        """
-        # retrieve Axis object based on the 'axis' argument.
-        ax = self.bc if axis in { 'barcode', 0 } else self.ft
-
-        # set appropriate filters
-        self.change_filter( name_col_filter )
-        
-        # survey the maximum number of available PCA components
-        int_num_available_components = 0
-        for i in range( int_num_components ) :
-            name_col = f"{prefix_name_col}{i}"
-            if name_col in ax.meta :
-                int_num_available_components = i + 1
-
-        # correct the 'int_num_components' to use based on the maximum number of available PCA dimensions
-        int_num_components = min( int_num_components, int_num_available_components )
-
-        # initialize the array 
-        arr_data = np.zeros( ( ax.meta.n_rows if l_int_entries is None else len( l_int_entries ), int_num_components ) )
-
-        # retrieve PCA transformed data
-        for i in range( int_num_components ) :
-            name_col = f"{prefix_name_col}{i}"
-            if self.verbose :
-                print( f"retrieving {name_col}" )
-            arr_data[ :, i ] = ax.meta[ name_col ] if l_int_entries is None else ax.meta[ name_col, l_int_entries ] # retrieve data of specific entries if 'l_int_entries' is given
-
-        # return retrieved PCA components
-        return arr_data
-    def get_pca( self, prefix_name_col = 'pca_', int_num_components = 50, name_col_filter = None, l_int_entries = None ) :
-        """ # 2022-07-14 10:01:59 
-        a convenient wrapper of 'RamData.get_array' function
-        Retrieve PCA data for the 'int_num_components' number of components with 'prefix_name_col' prefix for the currently active filters (if filters have been set).
-        if 'l_int_entries' is given, the entries specified by 'l_int_entries' will be retrieved
-        
-        'prefix_name_col' : name of columns in the 'barcode' Axis metadata containing PCA components. please refer to RamData.pca function
-        'name_col_filter' : the name of 'feature'/'barcode' Axis metadata column to retrieve selection filter for highly-variable-features. (default: None) if None is given, current feature filter (if it has been set) will be used as-is. if a valid filter is given, filter WILL BE CHANGED.
-        'l_int_entries' : to retrieve data of a specific entries, use this argument to pass the list of integer representations of the entries. filter (if it is active) will not be applied
-        """
-        return self.get_array( axis = 'barcode', prefix_name_col = prefix_name_col, int_num_components = int_num_components, name_col_filter = name_col_filter, l_int_entries = l_int_entries )
-    def umap( self, prefix_name_col_pca = 'pca_', int_num_components_pca = 20, prefix_name_col_umap = 'umap_', int_num_components_umap = 2, int_num_barcodes_in_pumap_batch = 20000, name_col_filter = 'filter_normalized_log1p_highly_variable', float_prop_subsampling = 1, name_col_filter_subsampled = 'filter_subsampling_for_umap', name_pumap_model = 'pumap', name_pumap_model_new = 'pumap' ) :
+    def umap( self, name_col_pca = 'X_pca', int_num_components_pca = 20, name_col_umap = 'X_umap', int_num_components_umap = 2, int_num_barcodes_in_pumap_batch = 20000, name_col_filter = 'filter_normalized_log1p_highly_variable', float_prop_subsampling = 1, name_col_filter_subsampled = 'filter_subsampling_for_umap', name_pumap_model = 'pumap', name_pumap_model_new = 'pumap' ) :
         """ # 2022-07-16 22:23:46 
         Perform Parametric UMAP to embed cells in reduced dimensions for a scalable analysis of single-cell data
         Parametric UMAP has several advantages over non-parametric UMAP (conventional UMAP), which are 
@@ -7026,9 +6989,9 @@ class RamData( ) :
 
         arguments:
         'name_layer' : name of the data source layer
-        'prefix_name_col_pca' : a prefix for the 'name_col' of the columns containing PCA transformed values.
+        'name_col_pca' : 'name_col' of the columns containing PCA transformed values.
         'int_num_components_pca' : number of PCA components to use as inputs for Parametric UMAP learning
-        'prefix_name_col_umap' : a prefix for the 'name_col' of the columns containing UMAP transformed values.
+        'name_col_umap' : 'name_col' of the columns containing UMAP transformed values.
         'int_num_components_umap' : number of output UMAP components. (default: 2)
         'int_num_barcodes_in_pumap_batch' : number of barcodes in a batch for Parametric UMAP model update.
         'name_col_filter' : the name of 'feature'/'barcode' Axis metadata column to retrieve selection filter for highly-variable-features. (default: None) if None is given, current feature filter (if it has been set) will be used as-is. if a valid filter is given, filter WILL BE CHANGED.
@@ -7084,7 +7047,7 @@ class RamData( ) :
             if int_num_entries_current_batch < int_num_barcodes_in_pumap_batch and int_num_of_previously_returned_entries > 0 :
                 continue
             # train parametric UMAP model
-            pumap_embedder.fit( self.get_pca( prefix_name_col = prefix_name_col_pca, int_num_components = int_num_components_pca, l_int_entries = l_int_entry_current_batch ) ) 
+            pumap_embedder.fit( self.bc.meta[ name_col_pca, l_int_entry_current_batch, : int_num_components_pca ] ) 
             if self.verbose : # report
                 print( f'training completed for {int_num_of_previously_returned_entries + 1}-{int_num_of_previously_returned_entries + int_num_entries_current_batch} barcodes' )
 
@@ -7100,18 +7063,13 @@ class RamData( ) :
         """
         2) Transform Data
         """
-        # initialize metadata columns 
-        l_name_col_component = list( f"{prefix_name_col_umap}{i}" for i in range( int_num_components_umap ) ) # retrieve name_col for the transformed components
-
         # iterate through batches
         for int_num_of_previously_returned_entries, l_int_entry_current_batch in ax.batch_generator( int_num_entries_for_batch = int_num_barcodes_in_pumap_batch, flag_return_the_number_of_previously_returned_entries = True ) :
             # retrieve UMAP embedding of barcodes of the current batch
-            X_transformed = pumap_embedder.transform( self.get_pca( prefix_name_col = prefix_name_col_pca, int_num_components = int_num_components_pca, l_int_entries = l_int_entry_current_batch ) ) 
+            X_transformed = pumap_embedder.transform( self.bc.meta[ name_col_pca, l_int_entry_current_batch, : int_num_components_pca ] ) 
 
-            # iterate through components
-            for i, arr_component in enumerate( X_transformed.T ) :
-                # update the components for the barcodes of the current batch
-                ax.meta[ l_name_col_component[ i ], l_int_entry_current_batch ] = arr_component
+            # update the components for the barcodes of the current batch
+            ax.meta[ name_col_umap, l_int_entry_current_batch ] = X_transformed
 
         # save Parametric UMAP object after training 
         if name_pumap_model_new is not None and self._mode != 'r' and self._path_folder_ramdata_local is not None : # if 'name_pumap_model_new' has been given, 'mode' is not 'r', and local RamData path is available
@@ -7123,18 +7081,7 @@ class RamData( ) :
             pumap_embedder.save( path_model ) # save model
 
         return pumap_embedder # return the model
-    def get_umap( self, prefix_name_col = 'umap_', int_num_components = 2, name_col_filter = None, l_int_entries = None ) :
-        """ # 2022-07-14 10:01:59 
-        a convenient wrapper of 'RamData.get_array' function
-        Retrieve PCA data for the 'int_num_components' number of components with 'prefix_name_col' prefix for the currently active filters (if filters have been set).
-        if 'l_int_entries' is given, the entries specified by 'l_int_entries' will be retrieved
-        
-        'prefix_name_col' : name of columns in the 'barcode' Axis metadata containing PCA components. please refer to RamData.pca function
-        'name_col_filter' : the name of 'feature'/'barcode' Axis metadata column to retrieve selection filter for highly-variable-features. (default: None) if None is given, current feature filter (if it has been set) will be used as-is. if a valid filter is given, filter WILL BE CHANGED.
-        'l_int_entries' : to retrieve data of a specific entries, use this argument to pass the list of integer representations of the entries. filter (if it is active) will not be applied
-        """
-        return self.get_array( axis = 'barcode', prefix_name_col = prefix_name_col, int_num_components = int_num_components, name_col_filter = name_col_filter, l_int_entries = l_int_entries )
-    def hdbscan( self, name_model = 'hdbscan', min_cluster_size = 30, min_samples = 30, prefix_name_col_umap = 'umap_', int_num_components_umap = 2, name_col_hdbscan = 'hdbscan', flag_reanalysis_of_previous_clustering_result = False, cut_distance = 0.15, flag_use_pynndescent = True, int_num_threads = 10, int_num_barcodes_in_cluster_label_prediction_batch = 10000, name_col_filter = 'filter_normalized_log1p_highly_variable', float_prop_subsampling_for_clustering = 0.2, name_col_filter_subsampled_for_clustering = 'filter_hdbscan_subsampling_for_clustering', float_prop_subsampling_for_cluster_label_prediction = 0.2, flag_draw_graph = True, dict_kw_scatter = { 's' : 10, 'linewidth' : 0, 'alpha' : 0.05 }, flag_no_prediction = True ) :
+    def hdbscan( self, name_model = 'hdbscan', min_cluster_size = 30, min_samples = 30, name_col_umap = 'X_umap', int_num_components_umap = 2, name_col_hdbscan = 'hdbscan', flag_reanalysis_of_previous_clustering_result = False, cut_distance = 0.15, flag_use_pynndescent = True, int_num_threads = 10, int_num_barcodes_in_cluster_label_prediction_batch = 10000, name_col_filter = 'filter_normalized_log1p_highly_variable', float_prop_subsampling_for_clustering = 0.2, name_col_filter_subsampled_for_clustering = 'filter_hdbscan_subsampling_for_clustering', float_prop_subsampling_for_cluster_label_prediction = 0.2, flag_draw_graph = True, dict_kw_scatter = { 's' : 10, 'linewidth' : 0, 'alpha' : 0.05 }, flag_no_prediction = True ) :
         """ # 2022-07-21 10:34:43 
         Perform HDBSCAN with subsampling for a scalable analysis of single-cell data
 
@@ -7142,7 +7089,7 @@ class RamData( ) :
         arguments:
         'name_model' : name of the model saved/will be saved in RamData.ns database. if the model already exists, 'flag_recluster' 'cut_distance', and 'min_cluster_size' arguments will become active.
         'min_cluster_size', 'min_samples' : arguments for HDBSCAN method. please refer to the documentation of HDBSCAN (https://hdbscan.readthedocs.io/)
-        'prefix_name_col_umap' : a prefix for the 'name_col' of the columns containing UMAP transformed values.
+        'name_col_umap' : a prefix for the 'name_col' of the columns containing UMAP transformed values.
         'int_num_components_umap' : number of output UMAP components to use for clustering (default: 2)
         'flag_reanalysis_of_previous_clustering_result' : if 'flag_reanalysis_of_previous_clustering_result' is True and 'name_model' exists in the RamData.ns database, use the hdbscan model saved in the database to re-analyze the previous hierarchical DBSCAN clustering result. 'cut_distance' and 'min_cluster_size' arguments can be used to re-analyze the clustering result and retrieve more fine-grained/coarse-grained cluster labels (for more info., please refer to hdbscan.HDBSCAN.single_linkage_tree_.get_clusters docstring). To perform hdbscan from the start, change name_model to a new name or delete the model from RamData.ns database
         'cut_distance' and 'min_cluster_size' : arguments for the re-analysis of the clustering result for retrieving more fine-grained/coarse-grained cluster labels (for more info., please refer to hdbscan.HDBSCAN.single_linkage_tree_.get_clusters docstring). 
@@ -7193,7 +7140,7 @@ class RamData( ) :
         2) Train Model with/without subsampling of barcodes, and retrieve cluster labels
         """
         # initialize
-        embedded_for_training = self.get_umap( prefix_name_col = prefix_name_col_umap, int_num_components = int_num_components_umap ) # retrieve embedded barcodes (with/without subsampling)
+        embedded_for_training = self.bc.meta[ name_col_umap, None, : int_num_components_umap ] # retrieve embedded barcodes (with/without subsampling)
 
         if name_model in self.ns : # if 'name_model' exists in the database, use the previously computed clustering results
             clusterer = self.ns[ name_model ] # retrieve previously saved model
@@ -7267,7 +7214,7 @@ class RamData( ) :
                 # parse the received batch
                 int_num_of_previously_returned_entries, l_int_entry_current_batch = batch 
 
-                embedded_for_prediction = self.get_umap( prefix_name_col = prefix_name_col_umap, int_num_components = int_num_components_umap, l_int_entries = l_int_entry_current_batch ) # retrieve umap embedding from ax.meta ZDF for the current batch
+                embedded_for_prediction = self.bc.meta[ name_col_umap, l_int_entry_current_batch, : int_num_components_umap ] # retrieve umap embedding from ax.meta ZDF for the current batch
                 arr_cluster_label_predicted = np.zeros( len( embedded_for_prediction ), dtype = int ) # initialize 'arr_cluster_label_predicted'
                 arr_cluster_label_predicted = find_cluster_labels_of_nearest_neighbors( embedded_for_training, arr_cluster_label, embedded_for_prediction, arr_cluster_label_predicted ) # find cluster lables of embedded barcodes using nearest neighbors
                 del embedded_for_prediction
