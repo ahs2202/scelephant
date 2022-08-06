@@ -1,4 +1,5 @@
 # core
+import typing # import typing
 from biobookshelf.main import *
 from biobookshelf import *
 import biobookshelf as bk
@@ -10,6 +11,10 @@ import scanpy
 import shelve # for persistent database (key-value based database)
 import sklearn as skl
 
+import tarfile # tar.gz
+import requests # download from url 
+import shutil
+
 from numba import jit # for speed up
 
 # dimension reduction / clustering
@@ -17,7 +22,7 @@ import umap.parametric_umap as pumap # parametric UMAP
 import hdbscan # for clustering
 
 # for fast gzip compression/decompression
-import pgzip
+import pgzip # - deprecated
 
 # might not be used
 import scipy.spatial.distance as dist # for distance metrics calculation
@@ -30,7 +35,7 @@ import hnswlib
 # define version
 _version_ = '0.0.3'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-08-05 17:40:46'
+_last_modified_time_ = '2022-08-06 22:24:14'
 
 """ # 2022-07-21 10:35:42  realease note
 
@@ -85,6 +90,12 @@ RamData.apply was modified to allow synchronization across processes. it is a bi
 
 # 2022-08-05 17:24:17 
 improved RamData.__getitem__ method to set obsm and varm properties in the returned AnnData object
+
+# 2022-08-05 17:42:03 
+RamData dimension reduction methods were re-structured
+
+# 2022-08-06 22:24:19 
+RamData.pca was split into RamData.train_pca and RamData.apply_pca
 
 """
 
@@ -2185,6 +2196,47 @@ def Convert_MTX_10X_to_RamData( path_folder_mtx_10x_input, path_folder_ramdata_o
         'layers' : [ name_layer ],
         'version' : _version_,
     }
+    
+''' methods for handling tar.gz file '''
+def tar_create( path_file_output, path_folder_input ) :
+    ''' # 2022-08-05 21:07:53 
+    create tar.gz file
+    
+    'path_file_output' : output tar.gz file
+    'path_folder_input' : input folder for creation of a tar.gz file
+    '''
+    with tarfile.open( path_file_output, "w:gz" ) as tar :
+        tar.add( path_folder_input, arcname = os.path.basename( path_folder_input ) )
+def tar_extract( path_file_input, path_folder_output ) :
+    ''' # 2022-08-05 21:07:53 
+    extract tar.gz file
+    
+    'path_file_output' : output tar.gz file
+    'path_folder_input' : input folder for creation of a tar.gz file
+    '''
+    with tarfile.open( path_file_input, "r:gz" ) as tar :
+        tar.extractall( path_folder_output )
+
+''' methods for handling remote file '''
+def http_response_code( url ) :
+    """ # 2022-08-05 22:27:27 
+    check http response code
+    """
+    status_code = None # by default, 'status_code' is None
+    try:
+        r = requests.head( url )
+        status_code = r.status_code # record the status header
+    except requests.ConnectionError:
+        status_code = None
+    return status_code
+def download_file( url, path_file_local ) :
+    """ # 2022-08-05 22:14:30 
+    download file from the remote location to the local directory
+    """
+    with requests.get( url, stream = True ) as r :
+        with open( local_filename, 'wb' ) as f :
+            shutil.copyfileobj( r.raw, f )
+
 ''' memory-efficient methods for creating RAMtx/RamData object '''
 # latest 2022-07-28 11:31:12 
 # implementation using pipe (~3 times more efficient)
@@ -3028,7 +3080,7 @@ def create_ramtx_from_mtx( path_folder_mtx_10x_input, path_folder_output, mode =
     with open( path_file_flag_completion, 'w' ) as file :
         file.write( TIME_GET_timestamp( True ) )
 def create_ramdata_from_mtx( path_folder_mtx_10x_input, path_folder_ramdata_output, set_modes = { 'dense' }, name_layer = 'raw', int_num_records_in_a_chunk = 10000000, int_buffer_size = 300, compresslevel = 6, flag_dtype_is_float = False, int_num_threads_for_chunking = 5, int_num_threads_for_writing = 1, int_max_num_input_files_for_each_merge_sort_worker = 8, int_num_chunks_to_combine_before_concurrent_merge_sorting = 8, dtype_dense_mtx = np.uint32, dtype_sparse_mtx = np.float64, dtype_sparse_mtx_index = np.float64, int_num_of_records_in_a_chunk_zarr_matrix = 20000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, chunks_dense = ( 2000, 1000 ), int_num_of_entries_in_a_chunk_metadata = 1000, flag_multiprocessing = True, verbose = False, flag_debugging = False ) :
-    """ # 2022-07-30 15:06:08 
+    """ # 2022-08-05 21:41:07 
     sort a given mtx file in a very time- and memory-efficient manner, and create sparse (sorted by barcode/feature).
     when 'type' == 'dense', create a dense ramtx object in the given output folder without sorting the input mtx file in the given axis ('flag_mtx_sorted_by_id_feature')
     
@@ -3119,6 +3171,7 @@ def create_ramdata_from_mtx( path_folder_mtx_10x_input, path_folder_ramdata_outp
         'int_num_features' : int_num_features,
         'int_num_barcodes' : int_num_barcodes,
         'layers' : [ name_layer ],
+        'models' : dict( ),
         'version' : _version_,
     }
     # write layer metadata
@@ -3721,6 +3774,7 @@ class ZarrDataFrame( ) :
         if self._mask is not None : # if mask is available
             if self.flag_use_mask_for_caching and name_col not in self._mask : # if 'flag_use_mask_for_caching' option is active and the column is not available in the mask, copy the column from the source to the mask
                 zarr_copy( f"{self._path_folder_zdf}{name_col}/", f"{self._mask._path_folder_zdf}{name_col}/" ) # copy zarr object from the source to the mask
+                self._mask._add_column( name_col ) # manually add column label to the mask
             if name_col in self._mask : # if 'name_col' is available in the mask, retrieve data from the mask.
                 return self._mask[ args ]
         if name_col in self : # if name_col is valid
@@ -3819,6 +3873,7 @@ class ZarrDataFrame( ) :
         if self._mask is not None : # if mask is available, save new data to the mask
             if name_col in self and name_col not in self._mask : # if the 'name_col' exists in the current ZarrDataFrame and not in mask, copy the column to the mask
                 zarr_copy( f"{self._path_folder_zdf}{name_col}/", f"{self._mask._path_folder_zdf}{name_col}/" ) # copy zarr object from the source to the mask
+                self._mask._add_column( name_col ) # manually add column label to the mask
             self._mask[ args ] = values # set values to the mask
             return # exit
     
@@ -3995,7 +4050,7 @@ class ZarrDataFrame( ) :
     def __repr__( self ) :
         """ # 2022-07-20 23:00:15 
         """
-        return f"<ZarrDataFrame object stored at {self._path_folder_zdf}\n\twith the following columns: {sorted( self._dict_metadata[ 'columns' ] )}>"
+        return f"<ZarrDataFrame object{'' if self._n_rows_unfiltered is None else ' containing '}{'' if self.filter is None else f'{self.n_rows}/'}{'' if self._n_rows_unfiltered is None else f'{self._n_rows_unfiltered} rows'} stored at {self._path_folder_zdf}\n\twith the following columns: {sorted( self._dict_metadata[ 'columns' ] )}>"
     @property
     def columns( self ) :
         ''' # 2022-07-20 23:01:48 
@@ -4033,6 +4088,13 @@ class ZarrDataFrame( ) :
         else :
             df = pd.DataFrame( index = arr_index ) # build an empty dataframe using the integer indices
         return df
+    def _add_column( self, name_col ) :
+        """ # 2022-08-06 13:28:42 
+        a semi-private method for adding column label to the metadata of the current ZarrDataFrame (not added to the metadata of the mask)
+        """
+        if name_col not in self :
+            self._dict_metadata[ 'columns' ].add( name_col )
+            self._save_metadata_( )
     def _save_metadata_( self ) :
         ''' # 2022-07-20 10:31:39 
         save metadata of the current ZarrDataFrame
@@ -4153,7 +4215,52 @@ class ZarrDataFrame( ) :
                 dict_data[ int_index_row ] = val
             del values
             self.dict[ name_col ] = dict_data # add column loaded as a dictionary to the cache    
-    
+    def get_zarr( self, name_col ) :
+        """ # 2022-08-06 11:29:58 
+        get multiprocessing-enabled (with filesystem-lock) zarr object of the given column. 
+        
+        
+        """
+        # the column should exist
+        if name_col not in self :
+            if self.verbose :
+                print( f'{name_col} not available in the current ZarrDataFrame, exiting' )
+            return
+        
+        if self._mask is not None : # if mask is available
+            if name_col not in self._mask : # if the column is not available in the mask, copy the column from the source to the mask
+                zarr_copy( f"{self._path_folder_zdf}{name_col}/", f"{self._mask._path_folder_zdf}{name_col}/" ) # copy zarr object from the source to the mask
+                self._mask._add_column( name_col ) # manually add column label to the mask
+            return self._mask.get_zarr( name_col ) # return the result of the mask object
+                
+        # define pathes
+        path_folder_lock = f"{self._path_folder_zdf}{name_col}_lock.sync/" # define path to locks for parallel processing with multiple processes
+        path_folder_zarr = f"{self._path_folder_zdf}{name_col}/"
+        
+        # if lock already exists, exit
+        if os.path.exists( path_folder_lock ) :
+            if self.verbose :
+                print( f'current column {name_col} appear to be used in another processes, exiting' )
+            return None, None
+            
+        # if mode == 'r', return read-only object
+        if self._mode == 'r' :
+            def __delete_nothing( ) :
+                """ # 2022-08-06 13:36:10 
+                place-holding dummy function
+                """
+                pass
+            return zarr.open( path_folder_zarr, 'r' ), __delete_nothing # when array is read-only, it is safe to read from multiple processes
+                
+        # open a zarr object, write-from-multiple-processes-enabled
+        za = zarr.open( path_folder_zarr, mode = 'a', synchronizer = zarr.ProcessSynchronizer( path_folder_lock ) ) # use the same chunk size of the current RAMtx
+
+        def __delete_locks( ) :
+            """ # 2022-08-06 13:20:57 
+            destroy the locks used for multiprocessing-enabled modification of a zarr object
+            """
+            shutil.rmtree( path_folder_lock )
+        return za, __delete_locks
 ''' a class for accessing Zarr-backed count matrix data (RAMtx, Random-Access matrix) '''
 class RAMtx( ) :
     """ # 2022-08-03 00:55:22 
@@ -4759,8 +4866,8 @@ class RAMtx( ) :
         n_bc, n_ft = ( self._int_num_barcodes, self._int_num_features ) if self._ramdata is None else ( self._ramdata.bc.meta.n_rows, self._ramdata.ft.meta.n_rows ) # detect whether the current RAMtx has been attached to a RamData and retrieve the number of barcodes and features accordingly
         X = scipy.sparse.csr_matrix( scipy.sparse.coo_matrix( ( arr_value, ( arr_int_barcode, arr_int_feature ) ), shape = ( n_bc, n_ft ) ) ) # convert count data to a sparse matrix
         return X # return the composed sparse matrix 
-    def batch_generator( self, ba = None, int_num_entries_for_each_weight_calculation_batch = 1000, int_total_weight_for_each_batch = 10000000, int_chunk_size_for_checking_boundary = None, flag_return_index_batch = False, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = True ) :
-        ''' # 2022-08-05 00:56:07 
+    def batch_generator( self, ba = None, int_num_entries_for_each_weight_calculation_batch = 1000, int_total_weight_for_each_batch = 10000000, int_chunk_size_for_checking_boundary = None, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = True ) :
+        ''' # 2022-08-05 23:37:03 
         generate batches of list of integer indices of the active entries in the given bitarray 'ba'. 
         Each bach has the following characteristics:
             monotonous: active entries in a batch are in an increasing order
@@ -4768,7 +4875,6 @@ class RAMtx( ) :
         
         'ba' : (default None) if None is given, self.ba_active_entries bitarray will be used.
         'int_chunk_size_for_checking_boundary' : if this argument is given, each batch will respect the chunk boundary of the given chunk size so that different batches share the same 'chunk'. setting this argument will override 'int_total_weight_for_each_batch' argument
-        'flag_return_index_batch' : if True, return 'index_batch' together with 'batch'
         'int_total_weight_for_each_batch' : total number of records in a batch. 
         'flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx'
         '''
@@ -4779,7 +4885,7 @@ class RAMtx( ) :
                 ba = self.ba_active_entries # if None is given, self.ba_active_entries bitarray will be used.
         # initialize
         # a namespace that can safely shared between functions
-        ns = { 'int_accumulated_weight_current_batch' : 0, 'l_int_entry_current_batch' : [ ], 'l_int_entry_for_weight_calculation_batch' : [ ], 'index_chunk_end' : None, 'index_batch' : 0 } # initialize 'index_batch'
+        ns = { 'int_accumulated_weight_current_batch' : 0, 'l_int_entry_current_batch' : [ ], 'l_int_entry_for_weight_calculation_batch' : [ ], 'index_chunk_end' : None, 'index_batch' : 0, 'int_num_of_previously_returned_entries' : 0 } # initialize 'index_batch'
         
         # check if pre-calculated weights are available
         axis = 'features' if self.is_for_querying_features else 'barcodes' # retrieve axis of current ramtx
@@ -4790,6 +4896,11 @@ class RAMtx( ) :
                 flag_weight_available = True
                 za_weight = zarr.open( path_folder_zarr_weight ) # open zarr object containing weights if available
         
+        def __compose_batch( ) :
+            """ # 2022-08-05 23:34:28 
+            compose batch from the values available in the namespace 'ns'
+            """
+            return { 'index_batch' : ns[ 'index_batch' ], 'l_int_entry_current_batch' : ns[ 'l_int_entry_current_batch' ], 'int_num_of_previously_returned_entries' : ns[ 'int_num_of_previously_returned_entries' ] }
         def find_batch( ) :
             """ # 2022-08-05 00:56:12 
             retrieve indices of the current 'weight_current_batch', calculate weights, and yield a batch
@@ -4803,9 +4914,10 @@ class RAMtx( ) :
             ''' search for batch '''
             for int_entry, weight in zip( ns[ 'l_int_entry_for_weight_calculation_batch' ], arr_weight ) :
                 if ns[ 'index_chunk_end' ] is not None and ns[ 'index_chunk_end' ] != int_entry // int_chunk_size_for_checking_boundary : # if the chunk boundary has been set and the boundary has reached
-                    yield ( ns[ 'index_batch' ], ns[ 'l_int_entry_current_batch' ] ) if flag_return_index_batch else ns[ 'l_int_entry_current_batch' ] # return a batch
+                    yield __compose_batch( ) # return a batch
                     # initialize the next batch
                     ns[ 'index_batch' ] += 1
+                    ns[ 'int_num_of_previously_returned_entries' ] += len( ns[ 'l_int_entry_current_batch' ] ) # update the total number of entries returned
                     ns[ 'l_int_entry_current_batch' ] = [ ] 
                     ns[ 'int_accumulated_weight_current_batch' ] = 0
                     ns[ 'index_chunk_end' ] = None
@@ -4819,9 +4931,10 @@ class RAMtx( ) :
                     if int_chunk_size_for_checking_boundary is not None : # when chunk boundary checking is active
                         ns[ 'index_chunk_end' ] = int_entry // int_chunk_size_for_checking_boundary # set the chunk boundary
                     else :
-                        yield ( ns[ 'index_batch' ], ns[ 'l_int_entry_current_batch' ] ) if flag_return_index_batch else ns[ 'l_int_entry_current_batch' ] # return a batch
+                        yield __compose_batch( ) # return a batch
                         # initialize the next batch
                         ns[ 'index_batch' ] += 1
+                        ns[ 'int_num_of_previously_returned_entries' ] += len( ns[ 'l_int_entry_current_batch' ] ) # update the total number of entries returned
                         ns[ 'l_int_entry_current_batch' ] = [ ] 
                         ns[ 'int_accumulated_weight_current_batch' ] = 0
                 
@@ -4839,7 +4952,7 @@ class RAMtx( ) :
             yield e
         # return the remaining int_entries as the last batch (if available)
         if len( ns[ 'l_int_entry_current_batch' ] ) > 0 :
-            yield ( ns[ 'index_batch' ], ns[ 'l_int_entry_current_batch' ] ) if flag_return_index_batch else ns[ 'l_int_entry_current_batch' ] # return a batch
+            yield __compose_batch( ) # return a batch
 ''' a class for representing axis of RamData (barcodes/features) '''
 class RamDataAxis( ) :
     """ # 2022-08-03 00:55:04 
@@ -5181,7 +5294,7 @@ class RamDataAxis( ) :
     def __repr__( self ) :
         """ # 2022-07-20 23:12:47 
         """
-        return f"<Axis'{self._name_axis}' available at {self._path_folder}\n\tavailable metadata columns are {sorted( self.meta.columns )}>"
+        return f"<Axis '{self._name_axis}' containing {'' if self.filter is None else f'{self.meta.n_rows}/'}{self.meta._n_rows_unfiltered} entries available at {self._path_folder}\n\tavailable metadata columns are {sorted( self.meta.columns )}>"
     def all( self, flag_return_valid_entries_in_the_currently_active_layer = True ) :
         """ # 2022-06-27 21:41:38  
         return bitarray filter with all entries marked 'active'
@@ -5304,8 +5417,8 @@ class RamDataAxis( ) :
         'name_col_filter' : name of the column of the metadata ZarrDataFrame that will contain the filter
         """
         if name_col_filter is not None : # if a given filter name is valid
-            if self.filter is not None : # if a filter is active in the current 'Axis'
-                self.meta[ name_col_filter, : ] = bk.BA.to_array( self.filter ) # save filter to the storage
+            self.meta[ name_col_filter, : ] = bk.BA.to_array( self.ba_active_entries ) # save filter to the storage # when a filter is not active, save filter of all active entries of the RAMtx
+                
     def subsample( self, float_prop_subsampling = 1 ) :
         """ # 2022-07-16 17:12:19 
         subsample active entries in the current filter (or all the active entries with valid data) using the proportion of subsampling ratio 'float_prop_subsampling'
@@ -5552,10 +5665,14 @@ class RamData( ) :
     'mode' : file mode. 'r' for read-only mode and 'a' for mode allowing modifications
     'path_folder_ramdata_mask' : the LOCAL file system path where the modifications of the RamData ('MASK') object will be saved and retrieved. If this attribute has been set, the given RamData in the the given 'path_folder_ramdata' will be used as READ-ONLY. For example, when RamData resides in the HTTP server, data is often read-only (data can be only fetched from the server, and not the other way around). However, by giving a local path through this argument, the read-only RamData object can be analyzed as if the RamData object can be modified. This is possible since all the modifications made on the input RamData will be instead written to the local RamData object 'mask' and data will be fetced from the local copy before checking the availability in the remote RamData object.
     
+    === batch generation ===
+    'int_num_entries_for_each_weight_calculation_batch' : the number of entries in a small batch for generating load-balanced batches.
+    'int_total_weight_for_each_batch' : the argument controlling total number of records to be processed in each batch (and thus for each process for parallelized works). it determines memory usage/operation efficiency. higher weight will lead to more memory usage but more operation efficiency, and vice versa
+
     ==== AnnDataContainer ====
     'flag_enforce_name_adata_with_only_valid_characters' : enforce valid characters in the name of AnnData
     """
-    def __init__( self, path_folder_ramdata, name_layer = 'raw', int_num_cpus = 64, int_num_cpus_for_fetching_data = 1, dtype_of_feature_and_barcode_indices = np.int32, dtype_of_values = np.float64, int_index_str_rep_for_barcodes = 0, int_index_str_rep_for_features = 1, mode = 'a', path_folder_ramdata_mask = None, dict_kw_zdf = { 'flag_retrieve_categorical_data_as_integers' : False, 'flag_load_data_after_adding_new_column' : True, 'flag_enforce_name_col_with_only_valid_characters' : True }, dict_kw_view = { 'float_min_proportion_of_active_entries_in_an_axis_for_using_array' : 0.1, 'dtype' : np.int32 }, flag_enforce_name_adata_with_only_valid_characters = True, verbose = True, flag_debugging = False ) :
+    def __init__( self, path_folder_ramdata, name_layer = 'raw', int_num_cpus = 64, int_num_cpus_for_fetching_data = 1, dtype_of_feature_and_barcode_indices = np.int32, dtype_of_values = np.float64, int_index_str_rep_for_barcodes = 0, int_index_str_rep_for_features = 1, int_num_entries_for_each_weight_calculation_batch = 2000, int_total_weight_for_each_batch = 10000000, mode = 'a', path_folder_ramdata_mask = None, dict_kw_zdf = { 'flag_retrieve_categorical_data_as_integers' : False, 'flag_load_data_after_adding_new_column' : True, 'flag_enforce_name_col_with_only_valid_characters' : True }, dict_kw_view = { 'float_min_proportion_of_active_entries_in_an_axis_for_using_array' : 0.1, 'dtype' : np.int32 }, flag_enforce_name_adata_with_only_valid_characters = True, verbose = True, flag_debugging = False ) :
         """ # 2022-07-21 23:32:54 
         """
         # handle input object paths
@@ -5576,6 +5693,8 @@ class RamData( ) :
         self._int_num_cpus_for_fetching_data = int_num_cpus_for_fetching_data
         self._dtype_of_feature_and_barcode_indices = dtype_of_feature_and_barcode_indices
         self._dtype_of_values = dtype_of_values
+        self.int_num_entries_for_each_weight_calculation_batch = int_num_entries_for_each_weight_calculation_batch
+        self.int_total_weight_for_each_batch = int_total_weight_for_each_batch
         
         ''' check read-only status of the given RamData '''
         try :
@@ -5583,9 +5702,9 @@ class RamData( ) :
             self._flag_is_read_only = False
         except :
             # if test zarr data cannot be written to the source, consider the given RamData object as read-only
-            self._flag_is_read_only = True
+            self._flag_is_read_only = True # indicates current RamData object is read-only (however, Mask can be give, and RamData can be modified by modifying the mask)
             if self._path_folder_ramdata_mask is None : # if mask is not given, automatically change the mode to 'r'
-                self._mode = 'r'
+                self._mode = 'r' # indicate current RamData cannot be modified
                 if self.verbose :
                     print( 'The current RamData object cannot be modified yet no mask location is given. Therefore, the current RamData object will be "read-only"' )
         
@@ -5606,6 +5725,9 @@ class RamData( ) :
         else : # initialize anndatacontainer and shelvecontainer in the memory using a dicitonary (a fallback)
             self.ad = dict( )
             self.ns = dict( )
+            
+        # 🔴🔴🔴 TEMP 🔴🔴🔴
+        self.models # add model attributes
     @property
     def metadata( self ) :
         """ # 2022-07-21 00:45:12 
@@ -5631,7 +5753,7 @@ class RamData( ) :
         ''' # 2022-07-21 00:45:03 
         a semi-private method for saving metadata to the disk 
         '''
-        if not self._flag_is_read_only : # update metadata only when the current RamData object is not read-only
+        if not self._mode == 'r' : # update metadata only when the current RamData object is not read-only
             if hasattr( self, '_dict_metadata' ) : # if metadata has been loaded
                 # convert 'columns' to list before saving attributes
                 temp = self._dict_metadata[ 'layers' ] # save the set as a temporary variable 
@@ -5694,7 +5816,7 @@ class RamData( ) :
         """ # 2022-07-20 00:38:24 
         display RamData
         """
-        return f"<{'' if not self._flag_is_read_only else '(read-only) '}RamData object ({'' if self.bc.filter is None else f'{self.bc.meta.n_rows}/'}{self.metadata[ 'int_num_barcodes' ]} barcodes X {'' if self.ft.filter is None else f'{self.ft.meta.n_rows}/'}{self.metadata[ 'int_num_features' ]} features" + ( '' if self.layer is None else f", {self.layer.int_num_records} records in the currently active layer '{self.layer.name}'" ) + f") stored at {self._path_folder_ramdata}{'' if self._path_folder_ramdata_mask is None else f' with local mask available at {self._path_folder_ramdata_mask}'}\n\twith the following layers : {self.layers}\n\t\tcurrent layer is '{self.layer.name}'>" # show the number of records of the current layer if available.
+        return f"<{'' if not self._mode == 'r' else '(read-only) '}RamData object ({'' if self.bc.filter is None else f'{self.bc.meta.n_rows}/'}{self.metadata[ 'int_num_barcodes' ]} barcodes X {'' if self.ft.filter is None else f'{self.ft.meta.n_rows}/'}{self.metadata[ 'int_num_features' ]} features" + ( '' if self.layer is None else f", {self.layer.int_num_records} records in the currently active layer '{self.layer.name}'" ) + f") stored at {self._path_folder_ramdata}{'' if self._path_folder_ramdata_mask is None else f' with local mask available at {self._path_folder_ramdata_mask}'}\n\twith the following layers : {self.layers}\n\t\tcurrent layer is '{self.layer.name}'>" # show the number of records of the current layer if available.
     def create_view( self ) :
         """  # 2022-07-06 21:17:56 
         create view of the RamData using the current filter settings (load dictionaries for coordinate conversion for filtered barcodes/features)
@@ -5848,7 +5970,7 @@ class RamData( ) :
         """ # 2022-07-21 00:07:23 
         return path of the ramdata that is modifiable based on the current RamData settings.
         if mask is given, path to the mask will be returned.
-        if current ramdata location is read-only, None will be returned.
+        if current ramdata location cannot be modified and no mask has been given, None will be returned.
         """
         if self._path_folder_ramdata_mask is not None : # if mask is given, use the mask
             return self._path_folder_ramdata_mask
@@ -5877,7 +5999,7 @@ class RamData( ) :
             path_folder_temp = f"{path_folder}temp_{UUID( )}/"
             os.makedirs( path_folder_temp, exist_ok = True ) # create the temporary folder
             return path_folder_temp # return the path to the temporary folder
-    def summarize( self, name_layer, axis, summarizing_func, int_num_threads = None, flag_overwrite_columns = True, int_num_entries_for_each_weight_calculation_batch = 2000, int_total_weight_for_each_batch = 10000000 ) :
+    def summarize( self, name_layer, axis, summarizing_func ) :
         ''' # 2022-07-20 23:40:02 
         this function summarize entries of the given axis (0 = barcode, 1 = feature) using the given function
         
@@ -5913,11 +6035,6 @@ class RamData( ) :
                             calculate the min and max values, and count the number of active barcodes/features (that were not indexed) for the entry of the indexed axis
                             
                             returns: 'count', 'max', 'min'
-                    
-        'int_num_threads' : the number of CPUs to use. by default, the number of CPUs set by the RamData attribute 'int_num_cpus' will be used.
-        'flag_overwrite_columns' : (Default: True) overwrite the columns of the output annotation dataframe of RamData.adata if columns with the same colume name exists
-        'int_num_entries_for_each_weight_calculation_batch' : number of entries to process for each batch for calculation of weights of each entries (weight = the number of unfiltered matrix records to process)
-        'int_total_weight_for_each_batch' : the total weight (minimum weight) for each batch for summary calculation
         
         =========
         outputs 
@@ -5925,7 +6042,7 @@ class RamData( ) :
         the summarized metrics will be added to appropriate dataframe attribute of the AnnData of the current RamData (self.adata.obs for axis = 0 and self.adata.var for axis = 1).
         the column names will be constructed as the following :
             f"{name_layer}_{key}"
-        if the column name already exist in the dataframe, the values of the columns will be overwritten (alternatively, a suffix of current datetime will be added to the column name, by setting 'flag_overwrite_columns' to False)
+        if the column name already exist in the dataframe, the values of the columns will be overwritten
         '''
         """
         1) Prepare
@@ -6014,10 +6131,12 @@ class RamData( ) :
             return - 1
         
         # define functions for multiprocessing step
-        def process_batch( l_int_entry_current_batch, pipe_to_main_process ) :
+        def process_batch( batch, pipe_to_main_process ) :
             ''' # 2022-05-08 13:19:07 
             summarize a given list of entries, and write summarized result as a tsv file, and return the path to the output file
             '''
+            l_int_entry_current_batch = batch[ 'l_int_entry_current_batch' ] # parse batch
+            
             # retrieve the number of index_entries
             int_num_entries_in_a_batch = len( l_int_entry_current_batch )
             
@@ -6044,11 +6163,11 @@ class RamData( ) :
             ax.meta.update( df, flag_use_index_as_integer_indices = True ) # update metadata using ZarrDataFrame method
             os.remove( path_file_result ) # remove the output file
         # summarize the RAMtx using multiple processes
-        bk.Multiprocessing_Batch( rtx.batch_generator( ax.filter, int_num_entries_for_each_weight_calculation_batch, int_total_weight_for_each_batch ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 )
+        bk.Multiprocessing_Batch( rtx.batch_generator( ax.filter, self.int_num_entries_for_each_weight_calculation_batch, self.int_total_weight_for_each_batch ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 )
         
         # remove temp folder
         shutil.rmtree( path_folder_temp )
-    def apply( self, name_layer, name_layer_new, func = None, mode_instructions = 'sparse_for_querying_features', path_folder_ramdata_output = None, dtype_of_row_and_col_indices = np.int32, dtype_of_value = np.float64, int_num_threads = None, int_num_entries_for_each_weight_calculation_batch = 1000, int_total_weight_for_each_batch = 10000000, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = True, int_num_of_records_in_a_chunk_zarr_matrix = 20000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, chunks_dense = ( 2000, 1000 ), dtype_dense_mtx = np.float64, dtype_sparse_mtx = np.float64, dtype_sparse_mtx_index = np.float64 ) :
+    def apply( self, name_layer, name_layer_new, func = None, mode_instructions = 'sparse_for_querying_features', path_folder_ramdata_output = None, dtype_of_row_and_col_indices = np.int32, dtype_of_value = np.float64, int_num_threads = None, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = True, int_num_of_records_in_a_chunk_zarr_matrix = 20000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, chunks_dense = ( 2000, 1000 ), dtype_dense_mtx = np.float64, dtype_sparse_mtx = np.float64, dtype_sparse_mtx_index = np.float64 ) :
         ''' # 2022-08-01 10:39:43 
         this function apply a function and/or filters to the records of the given data, and create a new data object with 'name_layer_new' as its name.
         
@@ -6114,8 +6233,6 @@ class RamData( ) :
         int_num_of_records_in_a_chunk_zarr_matrix = 20000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, chunks_dense = ( 2000, 1000 ) : determines the chunk size of the output ramtx objects
         dtype_dense_mtx = np.float64, dtype_sparse_mtx = np.float64, dtype_sparse_mtx_index = np.float64 : determines the output dtype
         
-        'int_num_entries_for_each_weight_calculation_batch', 'int_total_weight_for_each_batch', 'flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx' : for batch generation. please refer to 'RAMtx.batch_generator'
-
         =================
         input attributes 
         =================
@@ -6235,7 +6352,7 @@ class RamData( ) :
                 path_file_index_output_sparse = None
                 
                 # parse batch
-                index_batch, l_int_entry_current_batch = batch
+                index_batch, l_int_entry_current_batch = batch[ 'index_batch' ], batch[ 'l_int_entry_current_batch' ]
                 
                 # retrieve the number of index_entries
                 int_num_entries = len( l_int_entry_current_batch )
@@ -6342,7 +6459,7 @@ class RamData( ) :
                         ns[ 'index_batch_waiting_to_be_written_sparse' ] += 1 # start waiting for the next batch to be completed
                 
             # transform the values of the RAMtx using multiple processes
-            bk.Multiprocessing_Batch( rtx.batch_generator( ax.filter, int_num_entries_for_each_weight_calculation_batch, int_total_weight_for_each_batch, flag_return_index_batch = True ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) # create batch considering chunk boundaries # return batch index to allow combining sparse matrix in an ascending order.
+            bk.Multiprocessing_Batch( rtx.batch_generator( ax.filter, self.int_num_entries_for_each_weight_calculation_batch, self.int_total_weight_for_each_batch ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) # create batch considering chunk boundaries # return batch index to allow combining sparse matrix in an ascending order.
 
             # remove temp folder
             shutil.rmtree( path_folder_temp )
@@ -6829,13 +6946,135 @@ class RamData( ) :
         # save filters
         self.bc.save_filter( name_col_filter_bc ) # bc
         self.ft.save_filter( name_col_filter_ft ) # ft
+    ''' utility functions for saving/loading models '''
+    @property
+    def models( self ) :
+        """ # 2022-08-05 19:42:00 
+        show available models of the RamData
+        """
+        if 'models' not in self._dict_metadata :
+            self._dict_metadata[ 'models' ] = dict( )
+            self._save_metadata_( )
+        return self._dict_metadata[ 'models' ]
+    def load_model( self, name_model, type_model : typing.Literal[ 'ipca', 'pumap' ] ) :
+        """ # 2022-08-05 19:33:53 
+        load model from RamData
+        """
+        # if the model does not exists in the RamData, exit
+        if type_model not in self._dict_metadata[ 'models' ] :
+            return
+        if name_model not in self._dict_metadata[ 'models' ][ type_model ] :
+            return
+        
+        # load model only when modifiable ramdata exists (the model should be present in the local storage and should be in the 'modifiable' directory)
+        if self._path_folder_ramdata_modifiable is None :
+            return
+        
+        # define a folder for storage of models
+        path_folder_models = f"{self._path_folder_ramdata_modifiable}models/" # define a folder to save/load model
+        os.makedirs( path_folder_models, exist_ok = True )
+        
+        def __search_and_download_model_file( name_model_file ) :
+            """ # 2022-08-05 22:36:37 
+            check availability of models and download model file from the remote location where RamData is being hosted.
+            """
+            # paths
+            path_file_model = f"{self._path_folder_ramdata_modifiable}models/{name_model_file}" 
+            if os.path.exists( path_file_model ) : # if the model file exists, return True
+                return True
+            
+            # if file does not exists, try to download from the remote source
+            # if the current RamData does not appear to be hosted in the remote location, return None (no remote source to use)
+            if 'http' != self._path_folder_ramdata[ : 4 ] :
+                return 
+            path_file_model_remote = f"{self._path_folder_ramdata}models/{name_model_file}"
+
+            # if the model file appears to be not available from the remote source, return None (no remote file available)
+            if http_response_code( path_file_model_remote ) != 200 :
+                return None
+            # attempts to download the model file
+            download_file( path_file_model_remote, path_file_model )
+        
+        # load model
+        if type_model == 'ipca' :
+            # define path
+            name_model_file = f"{name_model}.ipca.pickle"
+            path_file_model = f"{path_folder_models}{name_model_file}"
+            
+            # download the model file
+            __search_and_download_model_file( name_model_file )
+            
+            # exit if the file does not exists
+            if not os.path.exists( path_file_model ) :
+                return 
+                
+            model = PICKLE_Read( path_file_model )
+        elif type_model == 'pumap' :
+            # define paths
+            name_model_file = f"{name_model}.pumap.tar.gz"
+            path_prefix_model = f"{path_folder_models}{name_model}.pumap"
+            path_file_model = path_prefix_model + '.tar.gz'
+            
+            # download the model file
+            __search_and_download_model_file( name_model_file )
+            
+            # exit if the file does not exists
+            if not os.path.exists( path_file_model ) :
+                return 
+            
+            # extract tar.gz
+            if not os.path.exists( path_prefix_model ) : # if the model has not been extracted from the tar.gz archive
+                tar_extract( path_file_model, path_prefix_model ) # extract tar.gz file of pumap object
+            model = pumap.load_ParametricUMAP( path_prefix_model ) # load pumap model
+        return model # return loaded model
+    def save_model( self, model, name_model : str, type_model : typing.Literal[ 'ipca', 'pumap' ] ) :
+        """ # 2022-08-05 19:44:23 
+        save model to RamData
+        
+        'model' : input model 
+        'name_model' : the name of the model. if the same type of model with the same model name already exists, it will be overwritten
+        'type_model' : the type of models. currently [ 'ipca', 'pumap' ], for PCA transformation and UMAP embedding, are supported
+        """
+        # save model only when mode != 'r'
+        if self._mode == 'r' :
+            return
+        # save model only when modifiable ramdata exists
+        if self._path_folder_ramdata_modifiable is None :
+            return
+        
+        # define a folder for storage of models
+        path_folder_models = f"{self._path_folder_ramdata_modifiable}models/" # define a folder to save/load model
+        os.makedirs( path_folder_models, exist_ok = True )
+        
+        # save model
+        if type_model == 'ipca' :
+            path_file_model = f"{path_folder_models}{name_model}.ipca.pickle"
+            PICKLE_Write( path_file_model, model )
+        elif type_model == 'pumap' :
+            path_prefix_model = f"{path_folder_models}{name_model}.pumap"
+            path_file_model = path_prefix_model + '.tar.gz'
+            model.save( path_prefix_model )
+            tar_create( path_file_model, path_prefix_model ) # create tar.gz file of pumap object for efficient retrieval and download
+        int_file_size = os.path.getsize( path_file_model ) # retrieve file size of the saved model
+        
+        # update metadata
+        if type_model not in self._dict_metadata[ 'models' ] :
+            self._dict_metadata[ 'models' ][ type_model ] = dict( )
+        self._dict_metadata[ 'models' ][ type_model ][ name_model ] = int_file_size # record file size of the model # add model to the metadata
+        self._save_metadata_( ) # save metadata
+        
+        # report result
+        if self.verbose :
+            print( f"{name_model}.{type_model} model saved." )
+        return int_file_size # return the number of bytes written
     ''' memory-efficient dimension reduction/clustering functions '''
-    def pca( self, name_layer = 'normalized_log1p', name_col = 'X_pca', int_num_components = 50, int_num_barcodes_in_ipca_batch = 50000, name_col_filter = 'filter_normalized_log1p_highly_variable', float_prop_subsampling = 1, name_col_filter_subsampled = 'filter_subsampling_for_pca', flag_ipca_whiten = False, name_model = 'ipca', int_num_threads = 3, flag_show_graph = True ) :
-        """ # 2022-08-05 10:45:15 
+    def train_pca( self, name_model = 'ipca', name_layer = 'normalized_log1p', int_num_components = 50, int_num_barcodes_in_ipca_batch = 50000, name_col_filter = 'filter_pca', float_prop_subsampling = 1, name_col_filter_subsampled = 'filter_pca_subsampled', flag_ipca_whiten = False, int_num_threads = 3, flag_show_graph = True ) :
+        """ # 2022-08-06 11:20:06 
         Perform incremental PCA in a very memory-efficient manner.
-        the resulting incremental PCA model will be saved in the RamData.ns database.
+        the resulting incremental PCA model will be saved in the RamData models database.
         
         arguments:
+        'name_model' : the trained incremental PCA model will be saved to RamData models database with this name. if None is given, the model will not be saved.
         'name_layer' : name of the data source layer (the layer from which gene expression data will be retrieved for the barcodes)
         'name_col' : 'name_col' of the PCA data that will be added to Axis.meta ZDF.
         'name_col_filter' : the name of 'feature'/'barcode' Axis metadata column to retrieve selection filter for highly-variable-features. (default: None) if None is given, current feature filter (if it has been set) will be used as-is. if a valid filter is given, filter WILL BE CHANGED.
@@ -6844,8 +7083,7 @@ class RamData( ) :
         'int_num_barcodes_in_ipca_batch' : number of barcodes in an Incremental PCA computation
         'float_prop_subsampling' : proportion of barcodes to used to train representation of single-barcode data using incremental PCA. 1 = all barcodes, 0.1 = 10% of barcodes, etc. subsampling will be performed using a random probability, meaning the actual number of barcodes subsampled will not be same every time.
         'flag_ipca_whiten' : a flag for an incremental PCA computation (Setting this flag to 'True' will reduce the efficiency of model learning, but might make the model more generalizable)
-        'name_model' : the trained incremental PCA model will be saved to RamData.ns database with this name. if None is given, the model will not be saved.
-        'int_num_threads' : number of threads for parallel data retrieval/iPCA transformation/ZarrDataFrame update. 3~5 would be ideal.
+        'int_num_threads' : number of threads for parallel data retrieval/iPCA transformation/ZarrDataFrame update. 3~5 would be ideal. should be larger than 2
         'flag_show_graph' : show graph
         """
         """
@@ -6854,7 +7092,7 @@ class RamData( ) :
         # check the validility of the input arguments
         if name_layer not in self.layers :
             if self.verbose :
-                print( f"[ERROR] [RamData.pca] invalid argument 'name_layer' : '{name_layer}' does not exist." )
+                print( f"[ERROR] [RamData.train_pca] invalid argument 'name_layer' : '{name_layer}' does not exist." )
             return -1 
         # set layer
         self.layer = name_layer
@@ -6863,9 +7101,9 @@ class RamData( ) :
         rtx, ax = self.layer.get_ramtx( flag_is_for_querying_features = False ), self.bc
         if rtx is None :
             if self.verbose :
-                print( f"[ERROR] [RamData.pca] valid ramtx object is not available in the '{self.layer.name}' layer" )
+                print( f"[ERROR] [RamData.train_pca] valid ramtx object is not available in the '{self.layer.name}' layer" )
 
-        # set filters for PCA calculation
+        # set filter
         if name_col_filter is not None :
             self.change_filter( name_col_filter )
         
@@ -6920,7 +7158,7 @@ class RamData( ) :
             if self.verbose : # report
                 print( f'fit completed for {int_num_of_previously_returned_entries + 1}-{int_num_of_previously_returned_entries + int_num_retrieved_entries} barcodes' )
         # fit iPCA using multiple processes
-        bk.Multiprocessing_Batch( ax.batch_generator( int_num_entries_for_batch = int_num_barcodes_in_ipca_batch, flag_return_the_number_of_previously_returned_entries = True ), process_batch, post_process_batch = post_process_batch, int_num_threads = max( min( int_num_threads, 4 ), 2 ), int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) # number of threads for multi-processing is 2 ~ 5 # generate batch with fixed number of barcodes
+        bk.Multiprocessing_Batch( ax.batch_generator( int_num_entries_for_batch = int_num_barcodes_in_ipca_batch, flag_return_the_number_of_previously_returned_entries = True ), process_batch, post_process_batch = post_process_batch, int_num_threads = max( min( int_num_threads, 3 ), 2 ), int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) # number of threads for multi-processing is 2 ~ 5 # generate batch with fixed number of barcodes
         # report
         if self.verbose :
             print( 'fit completed' )
@@ -6932,8 +7170,69 @@ class RamData( ) :
         if flag_is_subsampling_active :
             self.bc.filter = ba_filter_bc_before_subsampling
             del ba_filter_bc_before_subsampling
-            self.bc.create_view( ) # recreate view for the 'barcode' Axis
 
+        # destroy the view
+        self.destroy_view( )
+        
+        # save model
+        if name_model is not None : # if the given 'name_model' is valid 
+            self.save_model( ipca, name_model, 'ipca' ) # save model
+        
+        # draw graphs
+        if flag_show_graph :
+            # draw 'explained variance ratio' graph
+            fig, ax = plt.subplots( 1, 1 )
+            ax.plot( ipca.explained_variance_ratio_, 'o-' )
+            bk.MATPLOTLIB_basic_configuration( x_label = 'principal components', y_label = 'explained variance ratio', title = 'PCA result', show_grid = True )
+        
+        return ipca # return the model
+    def apply_pca( self, name_model = 'ipca', name_layer = 'normalized_log1p', name_col = 'X_pca', name_col_filter = 'filter_pca', int_n_components_in_a_chunk = 20, int_num_threads = 5 ) :
+        """ # 2022-08-06 11:20:06 
+        Apply trained incremental PCA in a memory-efficient manner.
+        
+        arguments:
+        'name_model' : the trained incremental PCA model will be saved to RamData.ns database with this name. if None is given, the model will not be saved.
+        'name_layer' : name of the data source layer (the layer from which gene expression data will be retrieved for the barcodes)
+        'name_col' : 'name_col' of the PCA data that will be added to Axis.meta ZDF.
+        'name_col_filter' : the name of 'feature'/'barcode' Axis metadata column to retrieve selection filter for highly-variable-features. (default: None) if None is given, current feature filter (if it has been set) will be used as-is. if a valid filter is given, filter WILL BE CHANGED.
+        
+        'int_n_components_in_a_chunk' : deterimines the chunk size for PCA data store
+        'int_num_threads' : the number of threads to use for parellel processing. the larger the number of threads are, the larger memory consumed by all the workers.
+        """
+        """
+        1) Prepare
+        """
+        # check the validility of the input arguments
+        if name_layer not in self.layers :
+            if self.verbose :
+                print( f"[ERROR] [RamData.apply_pca] invalid argument 'name_layer' : '{name_layer}' does not exist." )
+            return -1 
+        # set layer
+        self.layer = name_layer
+
+        # retrieve RAMtx object (sorted by barcodes) to summarize # retrieve 'Barcode' Axis object
+        rtx, ax = self.layer.get_ramtx( flag_is_for_querying_features = False ), self.bc
+        if rtx is None :
+            if self.verbose :
+                print( f"[ERROR] [RamData.apply_pca] valid ramtx object is not available in the '{self.layer.name}' layer" )
+
+        # set filters
+        if name_col_filter is not None :
+            self.change_filter( name_col_filter )
+        
+        # create view of the RamData
+        self.create_view( )
+
+        # exit if the model does not exist
+        ipca = self.load_model( name_model, 'ipca' )
+        if ipca is None :
+            if self.verbose :
+                print( f"[ERROR] [RamData.apply_pca] iPCA model '{name_model}' does not exist in the RamData models database" )
+            return
+
+        # prepare pca column in the metadata
+        ax.meta.initialize_column( name_col, dtype = np.float64, shape_not_primary_axis = ( ipca.n_components, ), chunks = ( int_n_components_in_a_chunk, ), categorical_values = None ) # initialize column
+        
         """
         2) Transform Data
         """
@@ -6943,7 +7242,7 @@ class RamData( ) :
             retrieve data and retrieve transformed PCA values for the batch
             '''
             # parse the received batch
-            int_num_of_previously_returned_entries, l_int_entry_current_batch = batch 
+            int_num_of_previously_returned_entries, l_int_entry_current_batch = batch[ 'int_num_of_previously_returned_entries' ], batch[ 'l_int_entry_current_batch' ]
             int_num_retrieved_entries = len( l_int_entry_current_batch )
 
             pipe_to_main_process.send( ( l_int_entry_current_batch, rtx.get_sparse_matrix( l_int_entry_current_batch )[ int_num_of_previously_returned_entries : int_num_of_previously_returned_entries + int_num_retrieved_entries ] ) ) # retrieve data as a sparse matrix and send the result of PCA transformation # send the integer representations of the barcodes for PCA value update
@@ -6961,23 +7260,11 @@ class RamData( ) :
             ax.meta[ name_col, l_int_entry_current_batch ] = X_transformed
 
         # transform values using iPCA using multiple processes
-        bk.Multiprocessing_Batch( ax.batch_generator( int_num_entries_for_batch = int_num_barcodes_in_ipca_batch, flag_return_the_number_of_previously_returned_entries = True ), process_batch, post_process_batch = post_process_batch, int_num_threads = max( min( int_num_threads, 4 ), 2 ), int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) # number of threads for multi-processing is 2 ~ 5 # generate batch with fixed number of barcodes
-
+        bk.Multiprocessing_Batch( rtx.batch_generator( ax.filter, self.int_num_entries_for_each_weight_calculation_batch, self.int_total_weight_for_each_batch ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) 
+        
         # destroy the view
         self.destroy_view( )
-        
-        # save iPCA metrics in the shelve
-        if name_model is not None : # if the given 'name_model' is valid 
-            self.ns[ name_model ] = ipca # save the trained model to the database
-        
-        # draw graphs
-        if flag_show_graph :
-            # draw 'explained variance ratio' graph
-            fig, ax = plt.subplots( 1, 1 )
-            ax.plot( ipca.explained_variance_ratio_, 'o-' )
-            bk.MATPLOTLIB_basic_configuration( x_label = 'principal components', y_label = 'explained variance ratio', title = 'PCA result', show_grid = True )
-        
-        return ipca # return the model
+        return 
     def umap( self, name_col_pca = 'X_pca', int_num_components_pca = 20, name_col_umap = 'X_umap', int_num_components_umap = 2, int_num_barcodes_in_pumap_batch = 20000, name_col_filter = 'filter_normalized_log1p_highly_variable', float_prop_subsampling = 1, name_col_filter_subsampled = 'filter_subsampling_for_umap', name_pumap_model = 'pumap', name_pumap_model_new = 'pumap' ) :
         """ # 2022-07-16 22:23:46 
         Perform Parametric UMAP to embed cells in reduced dimensions for a scalable analysis of single-cell data
