@@ -17,6 +17,8 @@ import shutil
 
 from numba import jit # for speed up
 
+from tqdm import tqdm as progress_bar # for progress bar
+
 # dimension reduction / clustering
 import umap.parametric_umap as pumap # parametric UMAP
 import hdbscan # for clustering
@@ -96,6 +98,10 @@ RamData dimension reduction methods were re-structured
 
 # 2022-08-06 22:24:19 
 RamData.pca was split into RamData.train_pca and RamData.apply_pca
+
+# 2022-08-07 03:15:06 
+RAMtx.batch_generator was modified to support progress_bar functionality (backed by 'tqdm')
+RAMtx.get_total_num_records method was added to support progress_bar functionality (backed by 'tqdm')
 
 """
 
@@ -4866,6 +4872,50 @@ class RAMtx( ) :
         n_bc, n_ft = ( self._int_num_barcodes, self._int_num_features ) if self._ramdata is None else ( self._ramdata.bc.meta.n_rows, self._ramdata.ft.meta.n_rows ) # detect whether the current RAMtx has been attached to a RamData and retrieve the number of barcodes and features accordingly
         X = scipy.sparse.csr_matrix( scipy.sparse.coo_matrix( ( arr_value, ( arr_int_barcode, arr_int_feature ) ), shape = ( n_bc, n_ft ) ) ) # convert count data to a sparse matrix
         return X # return the composed sparse matrix 
+    def get_total_num_records( self, ba = None, int_num_entries_for_each_weight_calculation_batch = 1000, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = True ) :
+        """ # 2022-08-07 01:38:02 
+        get total number of records in the current RAMtx for the given entries ('ba' filter).
+        this function is mainly for the estimation of the total number of records to process for displaying progress information in the progress bar.
+        """
+        # set defaule arguments
+        if ba is None :
+            ba = self.ba_filter_axis_for_querying # if None is given, ba_filter of the currently indexed axis will be used.
+            if ba is None : # if filter is not set or the current RAMtx has not been attached to a RamData object, use the active entries
+                ba = self.ba_active_entries # if None is given, self.ba_active_entries bitarray will be used.
+        # initialize
+        # a namespace that can safely shared between function scopes
+        ns = { 'int_num_records' : 0, 'l_int_entry_for_weight_calculation_batch' : [ ] }
+        
+        # check if pre-calculated weights are available
+        axis = 'features' if self.is_for_querying_features else 'barcodes' # retrieve axis of current ramtx
+        flag_weight_available = False # initialize
+        for path_folder in [ self._path_folder_ramtx, self._path_folder_ramtx_modifiable ] :
+            if path_folder is not None and zarr_exists( f'{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/' ) :
+                path_folder_zarr_weight = f"{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/" # define an existing zarr object path
+                flag_weight_available = True
+                za_weight = zarr.open( path_folder_zarr_weight ) # open zarr object containing weights if available
+        
+        def __update_total_num_records( ) :
+            """ # 2022-08-05 00:56:12 
+            retrieve indices of the current 'weight_current_batch', calculate weights, and yield a batch
+            """
+            ''' retrieve weights '''
+            if flag_weight_available and ( self.mode != 'dense' or not flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ) : # if weight is available
+                # load weight for the batch
+                arr_weight = za_weight.get_orthogonal_selection( ns[ 'l_int_entry_for_weight_calculation_batch' ] ) # retrieve weights
+            else : # if weight is not available
+                arr_weight = np.full( len( ns[ 'l_int_entry_for_weight_calculation_batch' ] ), self.len_axis_not_for_querying ) # if weight is not available, assumes all records are available (number of entries in non-indexed axis) for each entry
+            ''' update total number of records '''
+            ns[ 'int_num_records' ] += arr_weight.sum( ) # update total number of records
+            ns[ 'l_int_entry_for_weight_calculation_batch' ] = [ ] # empty the weight calculation batch
+
+        for int_entry in bk.BA.find( ba ) : # iterate through active entries of the given bitarray
+            ns[ 'l_int_entry_for_weight_calculation_batch' ].append( int_entry ) # collect int_entry for the current 'weight_calculation_batch'
+            # once 'weight_calculation' batch is full, process the 'weight_calculation' batch
+            if len( ns[ 'l_int_entry_for_weight_calculation_batch' ] ) == int_num_entries_for_each_weight_calculation_batch :
+                __update_total_num_records( ) # update total number of records
+        __update_total_num_records( )
+        return int( ns[ 'int_num_records' ] ) # return the total number of records
     def batch_generator( self, ba = None, int_num_entries_for_each_weight_calculation_batch = 1000, int_total_weight_for_each_batch = 10000000, int_chunk_size_for_checking_boundary = None, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = True ) :
         ''' # 2022-08-05 23:37:03 
         generate batches of list of integer indices of the active entries in the given bitarray 'ba'. 
@@ -4876,7 +4926,7 @@ class RAMtx( ) :
         'ba' : (default None) if None is given, self.ba_active_entries bitarray will be used.
         'int_chunk_size_for_checking_boundary' : if this argument is given, each batch will respect the chunk boundary of the given chunk size so that different batches share the same 'chunk'. setting this argument will override 'int_total_weight_for_each_batch' argument
         'int_total_weight_for_each_batch' : total number of records in a batch. 
-        'flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx'
+        'flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx' : when iterating through a dense matrix, interpret the length of the axis not for querying as the total number of records for every entry in the axis for querying. This will be more useful for restricting the memory usage when analysing dense RAMtx matrix.
         '''
         # set defaule arguments
         if ba is None :
@@ -4900,7 +4950,7 @@ class RAMtx( ) :
             """ # 2022-08-05 23:34:28 
             compose batch from the values available in the namespace 'ns'
             """
-            return { 'index_batch' : ns[ 'index_batch' ], 'l_int_entry_current_batch' : ns[ 'l_int_entry_current_batch' ], 'int_num_of_previously_returned_entries' : ns[ 'int_num_of_previously_returned_entries' ] }
+            return { 'index_batch' : ns[ 'index_batch' ], 'l_int_entry_current_batch' : ns[ 'l_int_entry_current_batch' ], 'int_num_of_previously_returned_entries' : ns[ 'int_num_of_previously_returned_entries' ], 'int_accumulated_weight_current_batch' : ns[ 'int_accumulated_weight_current_batch' ] }
         def find_batch( ) :
             """ # 2022-08-05 00:56:12 
             retrieve indices of the current 'weight_current_batch', calculate weights, and yield a batch
@@ -5411,14 +5461,24 @@ class RamDataAxis( ) :
         if name_col_filter in self.meta : # if a given column name exists in the current metadata ZarrDataFrame
             self.filter = self.meta[ name_col_filter, : ] # retrieve filter from the storage and apply the filter to the axis
     def save_filter( self, name_col_filter ) :
-        """ # 2022-07-16 17:17:29 
+        """ # 2022-08-06 22:37:49 
         save current filter using the filter to the metadata with 'name_col_filter' column name. if a filter is not active, the metadata will not be updated.
         
         'name_col_filter' : name of the column of the metadata ZarrDataFrame that will contain the filter
         """
         if name_col_filter is not None : # if a given filter name is valid
             self.meta[ name_col_filter, : ] = bk.BA.to_array( self.ba_active_entries ) # save filter to the storage # when a filter is not active, save filter of all active entries of the RAMtx
-                
+    def change_or_save_filter( self, name_col_filter ) :
+        """ # 2022-08-06 22:36:48 
+        change filter to 'name_col_filter' if 'name_col_filter' exists in the metadata, or save the currently active entries (filter) to the metadata using the name 'name_col_filter'
+        
+        'name_col_filter' : name of the column of the metadata ZarrDataFrame that will contain the filter
+        """
+        if name_col_filter is not None : # if valid 'name_col_filter' has been given
+            if name_col_filter in self.meta : 
+                self.change_filter( name_col_filter ) # change filter to 'name_col_filter' if 'name_col_filter' exists in the metadata
+            else :
+                self.save_filter( name_col_filter ) # save the currently active entries (filter) to the metadata using the name 'name_col_filter'
     def subsample( self, float_prop_subsampling = 1 ) :
         """ # 2022-07-16 17:12:19 
         subsample active entries in the current filter (or all the active entries with valid data) using the proportion of subsampling ratio 'float_prop_subsampling'
@@ -5668,11 +5728,12 @@ class RamData( ) :
     === batch generation ===
     'int_num_entries_for_each_weight_calculation_batch' : the number of entries in a small batch for generating load-balanced batches.
     'int_total_weight_for_each_batch' : the argument controlling total number of records to be processed in each batch (and thus for each process for parallelized works). it determines memory usage/operation efficiency. higher weight will lead to more memory usage but more operation efficiency, and vice versa
+    'flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx' : when iterating through a dense matrix, interpret the length of the axis not for querying as the total number of records for every entry in the axis for querying. This will be more useful for restricting the memory usage when analysing dense RAMtx matrix.
 
     ==== AnnDataContainer ====
     'flag_enforce_name_adata_with_only_valid_characters' : enforce valid characters in the name of AnnData
     """
-    def __init__( self, path_folder_ramdata, name_layer = 'raw', int_num_cpus = 64, int_num_cpus_for_fetching_data = 1, dtype_of_feature_and_barcode_indices = np.int32, dtype_of_values = np.float64, int_index_str_rep_for_barcodes = 0, int_index_str_rep_for_features = 1, int_num_entries_for_each_weight_calculation_batch = 2000, int_total_weight_for_each_batch = 10000000, mode = 'a', path_folder_ramdata_mask = None, dict_kw_zdf = { 'flag_retrieve_categorical_data_as_integers' : False, 'flag_load_data_after_adding_new_column' : True, 'flag_enforce_name_col_with_only_valid_characters' : True }, dict_kw_view = { 'float_min_proportion_of_active_entries_in_an_axis_for_using_array' : 0.1, 'dtype' : np.int32 }, flag_enforce_name_adata_with_only_valid_characters = True, verbose = True, flag_debugging = False ) :
+    def __init__( self, path_folder_ramdata, name_layer = 'raw', int_num_cpus = 64, int_num_cpus_for_fetching_data = 1, dtype_of_feature_and_barcode_indices = np.int32, dtype_of_values = np.float64, int_index_str_rep_for_barcodes = 0, int_index_str_rep_for_features = 1, int_num_entries_for_each_weight_calculation_batch = 2000, int_total_weight_for_each_batch = 10000000, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = True, mode = 'a', path_folder_ramdata_mask = None, dict_kw_zdf = { 'flag_retrieve_categorical_data_as_integers' : False, 'flag_load_data_after_adding_new_column' : True, 'flag_enforce_name_col_with_only_valid_characters' : True }, dict_kw_view = { 'float_min_proportion_of_active_entries_in_an_axis_for_using_array' : 0.1, 'dtype' : np.int32 }, flag_enforce_name_adata_with_only_valid_characters = True, verbose = True, flag_debugging = False ) :
         """ # 2022-07-21 23:32:54 
         """
         # handle input object paths
@@ -5693,8 +5754,10 @@ class RamData( ) :
         self._int_num_cpus_for_fetching_data = int_num_cpus_for_fetching_data
         self._dtype_of_feature_and_barcode_indices = dtype_of_feature_and_barcode_indices
         self._dtype_of_values = dtype_of_values
+        # batch-generation associated settings, which can be changed later
         self.int_num_entries_for_each_weight_calculation_batch = int_num_entries_for_each_weight_calculation_batch
         self.int_total_weight_for_each_batch = int_total_weight_for_each_batch
+        self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx
         
         ''' check read-only status of the given RamData '''
         try :
@@ -6064,8 +6127,7 @@ class RamData( ) :
         # retrieve the total number of entries in the axis that was not indexed (if calculating average expression of feature across barcodes, divide expression with # of barcodes, and vice versa.)
         int_total_num_entries_not_indexed = self.ft.meta.n_rows if flag_summarizing_barcode else self.bc.meta.n_rows 
 
-        if int_num_threads is None : # use default number of threads
-            int_num_threads = self.int_num_cpus
+        int_num_threads = self.int_num_cpus # set the number of threads
         if summarizing_func == 'sum' :
             def summarizing_func( self, int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value ) :
                 ''' # 2022-08-01 21:05:06 
@@ -6135,7 +6197,7 @@ class RamData( ) :
             ''' # 2022-05-08 13:19:07 
             summarize a given list of entries, and write summarized result as a tsv file, and return the path to the output file
             '''
-            l_int_entry_current_batch = batch[ 'l_int_entry_current_batch' ] # parse batch
+            int_num_processed_records, l_int_entry_current_batch = batch[ 'int_accumulated_weight_current_batch' ], batch[ 'l_int_entry_current_batch' ] # parse batch
             
             # retrieve the number of index_entries
             int_num_entries_in_a_batch = len( l_int_entry_current_batch )
@@ -6154,16 +6216,21 @@ class RamData( ) :
                 # write the result to an output file
                 newfile.write( ( '\t'.join( map( str, [ int_entry_of_axis_for_querying ] + list( dict_res[ name_col ] if name_col in dict_res else np.nan for name_col in l_name_col_summarized ) ) ) + '\n' ).encode( ) ) # write an index for the current entry # 0>1 coordinate conversion for 'int_entry'
             newfile.close( ) # close file
-            pipe_to_main_process.send( path_file_output ) # send information about the output file
-        def post_process_batch( path_file_result ) :
+            pipe_to_main_process.send( ( int_num_processed_records, path_file_output ) ) # send information about the output file
+        # initialize the progress bar
+        pbar = progress_bar( total = rtx.get_total_num_records( int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ) )
+        def post_process_batch( res ) :
             """ # 2022-07-06 03:21:49 
             """
+            int_num_processed_records, path_file_result = res # parse result
+            pbar.update( int_num_processed_records ) # update the progress bar
             df = pd.read_csv( path_file_result, sep = '\t', index_col = 0, header = None ) # read summarized output file, using the first column as the integer indices of the entries
             df.columns = l_name_col_summarized_with_name_layer_prefix # name columns of the dataframe using 'name_col' with f'{name_layer}_' prefix
             ax.meta.update( df, flag_use_index_as_integer_indices = True ) # update metadata using ZarrDataFrame method
             os.remove( path_file_result ) # remove the output file
         # summarize the RAMtx using multiple processes
-        bk.Multiprocessing_Batch( rtx.batch_generator( ax.filter, self.int_num_entries_for_each_weight_calculation_batch, self.int_total_weight_for_each_batch ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 )
+        bk.Multiprocessing_Batch( rtx.batch_generator( ax.filter, int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, int_total_weight_for_each_batch = self.int_total_weight_for_each_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 )
+        pbar.close( ) # close the progress bar
         
         # remove temp folder
         shutil.rmtree( path_folder_temp )
@@ -6352,7 +6419,7 @@ class RamData( ) :
                 path_file_index_output_sparse = None
                 
                 # parse batch
-                index_batch, l_int_entry_current_batch = batch[ 'index_batch' ], batch[ 'l_int_entry_current_batch' ]
+                int_num_processed_records, index_batch, l_int_entry_current_batch = batch[ 'int_accumulated_weight_current_batch' ], batch[ 'index_batch' ], batch[ 'l_int_entry_current_batch' ]
                 
                 # retrieve the number of index_entries
                 int_num_entries = len( l_int_entry_current_batch )
@@ -6411,12 +6478,14 @@ class RamData( ) :
                     za_output_sparse.resize( int_num_records_written, 2 ) # resize the output Zarr object
                     pd.DataFrame( l_index ).to_csv( path_file_index_output_sparse, header = None, index = None, sep = '\t' ) # write the index file
                     
-                pipe_to_main_process.send( ( index_batch, int_num_records_written, path_folder_zarr_output_sparse, path_file_index_output_sparse ) ) # send information about the output files
+                pipe_to_main_process.send( ( index_batch, int_num_processed_records, int_num_records_written, path_folder_zarr_output_sparse, path_file_index_output_sparse ) ) # send information about the output files
+            # initialize the progress bar
+            pbar = progress_bar( total = rtx.get_total_num_records( int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ) )
             def post_process_batch( res ) :
                 """ # 2022-07-06 10:22:05 
                 """
                 # parse result
-                index_batch, int_num_records_written, path_folder_zarr_output, path_file_index_output = res
+                index_batch, int_num_processed_records, int_num_records_written, path_folder_zarr_output, path_file_index_output = res
                 ns[ 'int_num_records_written_to_ramtx' ] += int_num_records_written # update the number of records written to the output RAMtx
                 
                 """ %% SPARSE %% """
@@ -6428,7 +6497,7 @@ class RamData( ) :
                     
                     ''' process results produced from batches in the order the batches were generated (in an ascending order of 'int_entry') '''
                     while ns[ 'l_res_sparse' ][ ns[ 'index_batch_waiting_to_be_written_sparse' ] ] != 0 : # if the batch referenced by ns[ 'index_batch_waiting_to_be_written_sparse' ] has been completed
-                        index_batch, int_num_records_written, path_folder_zarr_output, path_file_index_output = ns[ 'l_res_sparse' ][ ns[ 'index_batch_waiting_to_be_written_sparse' ] ]
+                        index_batch, int_num_processed_records, int_num_records_written, path_folder_zarr_output, path_file_index_output = ns[ 'l_res_sparse' ][ ns[ 'index_batch_waiting_to_be_written_sparse' ] ] # parse result
                         int_num_chunks_written_for_a_batch = int( np.ceil( int_num_records_written / int_num_records_in_a_chunk_of_mtx_sparse ) ) # retrieve the number of chunks that were written for a batch
                         int_num_chunks_written_to_ramtx = ns[ 'int_num_chunks_written_to_ramtx' ] # retrieve the number of chunks already present in the output RAMtx zarr matrix object
                         
@@ -6457,10 +6526,12 @@ class RamData( ) :
                         
                         ns[ 'l_res_sparse' ][ ns[ 'index_batch_waiting_to_be_written_sparse' ] ] = None # remove the result from the list of batch outputs
                         ns[ 'index_batch_waiting_to_be_written_sparse' ] += 1 # start waiting for the next batch to be completed
+                        pbar.update( int_num_processed_records ) # update the progress bar
                 
             # transform the values of the RAMtx using multiple processes
-            bk.Multiprocessing_Batch( rtx.batch_generator( ax.filter, self.int_num_entries_for_each_weight_calculation_batch, self.int_total_weight_for_each_batch ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) # create batch considering chunk boundaries # return batch index to allow combining sparse matrix in an ascending order.
-
+            bk.Multiprocessing_Batch( rtx.batch_generator( ax.filter, int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, int_total_weight_for_each_batch = self.int_total_weight_for_each_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) # create batch considering chunk boundaries # return batch index to allow combining sparse matrix in an ascending order.
+            pbar.close( ) # close the progress bar
+            
             # remove temp folder
             shutil.rmtree( path_folder_temp )
             
@@ -6926,12 +6997,12 @@ class RamData( ) :
         # apply filters
         self.bc.change_filter( name_col_filter_bc ) # bc
         self.ft.change_filter( name_col_filter_ft ) # ft
-    def save_filter( self, name_col_filter = None, name_col_filter_bc = None, name_col_filter_ft = None  ) :
+    def save_filter( self, name_col_filter = None, name_col_filter_bc = None, name_col_filter_ft = None ) :
         """ # 2022-07-16 17:27:54 
         save filters for 'barcode' and 'feature' Axes
         
         'name_col_filter_bc', 'name_col_filter_ft' will override 'name_col_filter' when saving filters
-        if filter has not been set, filter containing all active entries (containing valid count data) will be saved instead for consistency
+        for consistency, if filter has not been set, filter containing all active entries (containing valid count data) will be saved instead
         
         if all name_cols are invalid, no filters will be saved
         """
@@ -6946,6 +7017,26 @@ class RamData( ) :
         # save filters
         self.bc.save_filter( name_col_filter_bc ) # bc
         self.ft.save_filter( name_col_filter_ft ) # ft
+    def change_or_save_filter( self, name_col_filter = None, name_col_filter_bc = None, name_col_filter_ft = None ) :
+        """ # 2022-08-07 02:03:53 
+        retrieve and apply filters for 'barcode' and 'feature' Axes, and if the filter names do not exist in the metadata and thus cannot be retrieved, save the currently active entries of each axis to its metadata using the given filter name.
+        
+        'name_col_filter_bc', 'name_col_filter_ft' will override 'name_col_filter' when saving filters
+        for consistency, if filter has not been set, filter containing all active entries (containing valid count data) will be saved instead
+        
+        if all name_cols are invalid, no filters will be saved/retrieved
+        """
+        # check validity of name_cols for filter
+        # bc
+        if name_col_filter_bc not in self.bc.meta :
+            name_col_filter_bc = name_col_filter if name_col_filter in self.bc.meta else None # use 'name_col_filter' instead if 'name_col_filter_bc' is invalid
+        # ft
+        if name_col_filter_ft not in self.ft.meta :
+            name_col_filter_ft = name_col_filter if name_col_filter in self.ft.meta else None # use 'name_col_filter' instead if 'name_col_filter_ft' is invalid
+        
+        # save filters
+        self.bc.change_or_save_filter( name_col_filter_bc ) # bc
+        self.ft.change_or_save_filter( name_col_filter_ft ) # ft
     ''' utility functions for saving/loading models '''
     @property
     def models( self ) :
@@ -7103,15 +7194,15 @@ class RamData( ) :
             if self.verbose :
                 print( f"[ERROR] [RamData.train_pca] valid ramtx object is not available in the '{self.layer.name}' layer" )
 
-        # set filter
+        # set/save filter
         if name_col_filter is not None :
-            self.change_filter( name_col_filter )
+            self.change_or_save_filter( name_col_filter )
         
         # create view for 'feature' Axis
         self.ft.create_view( )
         
         # retrieve a flag indicating whether a subsampling is active
-        flag_is_subsampling_active = ( name_col_filter_subsampled in self.bc.meta ) or ( float_prop_subsampling is not None and float_prop_subsampling < 1 )
+        flag_is_subsampling_active = ( name_col_filter_subsampled in self.bc.meta ) or ( float_prop_subsampling is not None and float_prop_subsampling < 1 ) # perform subsampling if 'name_col_filter_subsampled' is valid or 'float_prop_subsampling' is below 1
         
         # if a subsampling is active, retrieve a filter containing subsampled barcodes and apply the filter to the 'barcode' Axis
         if flag_is_subsampling_active :
@@ -7242,30 +7333,136 @@ class RamData( ) :
             retrieve data and retrieve transformed PCA values for the batch
             '''
             # parse the received batch
-            int_num_of_previously_returned_entries, l_int_entry_current_batch = batch[ 'int_num_of_previously_returned_entries' ], batch[ 'l_int_entry_current_batch' ]
+            int_num_processed_records, int_num_of_previously_returned_entries, l_int_entry_current_batch = batch[ 'int_accumulated_weight_current_batch' ], batch[ 'int_num_of_previously_returned_entries' ], batch[ 'l_int_entry_current_batch' ]
             int_num_retrieved_entries = len( l_int_entry_current_batch )
 
-            pipe_to_main_process.send( ( l_int_entry_current_batch, rtx.get_sparse_matrix( l_int_entry_current_batch )[ int_num_of_previously_returned_entries : int_num_of_previously_returned_entries + int_num_retrieved_entries ] ) ) # retrieve data as a sparse matrix and send the result of PCA transformation # send the integer representations of the barcodes for PCA value update
+            pipe_to_main_process.send( ( int_num_processed_records, l_int_entry_current_batch, rtx.get_sparse_matrix( l_int_entry_current_batch )[ int_num_of_previously_returned_entries : int_num_of_previously_returned_entries + int_num_retrieved_entries ] ) ) # retrieve data as a sparse matrix and send the result of PCA transformation # send the integer representations of the barcodes for PCA value update
+        pbar = progress_bar( total = rtx.get_total_num_records( int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ) )
         def post_process_batch( res ) :
             """ # 2022-07-13 22:18:26 
             perform partial fit for batch
             """
             # parse result 
-            l_int_entry_current_batch, X = res
+            int_num_processed_records, l_int_entry_current_batch, X = res
             
             X_transformed = ipca.transform( X ) # perform PCA transformation
             del X
 
             # update the PCA components for the barcodes of the current batch
             ax.meta[ name_col, l_int_entry_current_batch ] = X_transformed
+            pbar.update( int_num_processed_records ) # update the progress bar
 
         # transform values using iPCA using multiple processes
         bk.Multiprocessing_Batch( rtx.batch_generator( ax.filter, self.int_num_entries_for_each_weight_calculation_batch, self.int_total_weight_for_each_batch ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) 
+        pbar.close( ) # close the progress bar
         
         # destroy the view
         self.destroy_view( )
         return 
-    def umap( self, name_col_pca = 'X_pca', int_num_components_pca = 20, name_col_umap = 'X_umap', int_num_components_umap = 2, int_num_barcodes_in_pumap_batch = 20000, name_col_filter = 'filter_normalized_log1p_highly_variable', float_prop_subsampling = 1, name_col_filter_subsampled = 'filter_subsampling_for_umap', name_pumap_model = 'pumap', name_pumap_model_new = 'pumap' ) :
+    def train_umap( self, name_col_pca = 'X_pca', int_num_components_pca = 20, name_col_umap = 'X_umap', int_num_components_umap = 2, name_col_filter = 'filter_umap', name_pumap_model = 'pumap', name_pumap_model_new = None ) :
+        """ # 2022-07-16 22:23:46 
+        Perform Parametric UMAP to embed cells in reduced dimensions for a scalable analysis of single-cell data
+        Parametric UMAP has several advantages over non-parametric UMAP (conventional UMAP), which are 
+            (1) GPU can be utilized during training of neural network models
+            (2) learned embedding can be applied to other cells not used to build the embedding
+            (3) learned embedding can be updated by training with additional cells
+        Therefore, parametric UMAP is suited for generating embedding of single-cell data with extremely large number of cells
+
+        arguments:
+        'name_layer' : name of the data source layer
+        'name_col_pca' : 'name_col' of the columns containing PCA transformed values.
+        'int_num_components_pca' : number of PCA components to use as inputs for Parametric UMAP learning
+        'name_col_umap' : 'name_col' of the columns containing UMAP transformed values.
+        'int_num_components_umap' : number of output UMAP components. (default: 2)
+        'int_num_barcodes_in_pumap_batch' : number of barcodes in a batch for Parametric UMAP model update.
+        'name_col_filter' : the name of 'feature'/'barcode' Axis metadata column to retrieve selection filter for highly-variable-features. (default: None) if None is given, current feature filter (if it has been set) will be used as-is. if a valid filter is given, filter WILL BE CHANGED.
+        'float_prop_subsampling' : proportion of barcodes to used to train representation of single-barcode data using Parametric UMAP. 1 = all barcodes, 0.1 = 10% of barcodes, etc. subsampling will be performed using a random probability, meaning the actual number of barcodes subsampled will not be same every time.
+        'name_col_filter_subsampled' : the name of 'feature'/'barcode' Axis metadata column to retrieve or save mask containing subsampled barcodes. if 'None' is given and 'float_prop_subsampling' is below 1 (i.e. subsampling will be used), the subsampling filter generated for retrieving gene expression data of selected barcodes will not be saved.
+        'name_pumap_model' = 'pumap' : the name of the parametric UMAP model. if None is given, the trained model will not be saved to the RamData object. if the model already exists, the model will be loaded and trained again.
+        'name_pumap_model_new' = 'pumap' : the name of the new parametric UMAP model after the training. if None is given, the new model will not be saved. if 'name_pumap_model' and 'name_pumap_model_new' are the same, the previously written model will be overwritten.
+        """
+        """
+        1) Prepare
+        """
+        # # retrieve 'Barcode' Axis object
+        ax = self.bc
+
+        # set filters for UMAP calculation
+        if name_col_filter is not None :
+            self.change_filter( name_col_filter )
+
+        # retrieve a flag indicating whether a subsampling is active
+        flag_is_subsampling_active = ( name_col_filter_subsampled in self.bc.meta ) or ( float_prop_subsampling is not None and float_prop_subsampling < 1 )
+
+        # if a subsampling is active, retrieve a filter containing subsampled barcodes and apply the filter to the 'barcode' Axis
+        if flag_is_subsampling_active :
+            # retrieve barcode filter before subsampling
+            ba_filter_bc_before_subsampling = self.bc.filter
+
+            # set barcode filter after subsampling
+            if name_col_filter_subsampled in self.bc.meta : # if 'name_col_filter_subsampled' barcode filter is available, load the filter
+                self.bc.change_filter( name_col_filter_subsampled )
+            else : # if the 'name_col_filter_subsampled' barcode filter is not available, build a filter containing subsampled entries and save the filter
+                self.bc.filter = self.bc.subsample( float_prop_subsampling = float_prop_subsampling ) 
+                self.bc.save_filter( name_col_filter_subsampled )
+        
+        """
+        2) Train Parametric UMAP with/without subsampling of barcodes
+        """
+        # initialize Parametric UMAP object
+        if name_pumap_model is not None and self._path_folder_ramdata_local is not None : # if 'name_pumap_model' has been given # if local RamDatat path is available, check the availability of the model and load the model if the saved model is available
+            assert '/' not in name_pumap_model # check validity of 'name_pumap_model'
+            path_model = f'{self._path_folder_ramdata_local}{name_pumap_model}.pumap' # model should be loaded/saved in local file system (others are not implemented yet)
+            pumap_embedder = pumap.load_ParametricUMAP( path_model ) if os.path.exists( path_model ) else pumap.ParametricUMAP( low_memory = True ) # load model if model exists
+                
+            # fix 'load_ParametricUMAP' error ('decoder' attribute does not exist)
+            if os.path.exists( path_model ) and not hasattr( pumap_embedder, 'decoder' ) : 
+                pumap_embedder.decoder = None
+        else :
+            pumap_embedder = pumap.ParametricUMAP( low_memory = True ) # load an empty model if a saved model is not available
+
+        # iterate through batches
+        for int_num_of_previously_returned_entries, l_int_entry_current_batch in ax.batch_generator( int_num_entries_for_batch = int_num_barcodes_in_pumap_batch, flag_return_the_number_of_previously_returned_entries = True, flag_mix_randomly = True ) : # mix barcodes randomly for efficient learning for each batch
+            int_num_entries_current_batch = len( l_int_entry_current_batch ) # retrieve the number of entries in the current batch
+            # if the number of entries in the current batch is below the given size of the batch 'int_num_barcodes_in_pumap_batch', and the model has been already trained, skip training with smaller number of barcodes, since it can lead to reduced accuracy of embedding due to training with smaller number of barcodes
+            if int_num_entries_current_batch < int_num_barcodes_in_pumap_batch and int_num_of_previously_returned_entries > 0 :
+                continue
+            # train parametric UMAP model
+            pumap_embedder.fit( self.bc.meta[ name_col_pca, l_int_entry_current_batch, : int_num_components_pca ] ) 
+            if self.verbose : # report
+                print( f'training completed for {int_num_of_previously_returned_entries + 1}-{int_num_of_previously_returned_entries + int_num_entries_current_batch} barcodes' )
+
+        # report
+        if self.verbose :
+            print( 'training completed' )
+
+        # if subsampling has been completed, revert to the original barcode selection filter
+        if flag_is_subsampling_active :
+            self.bc.filter = ba_filter_bc_before_subsampling
+            del ba_filter_bc_before_subsampling
+
+        """
+        2) Transform Data
+        """
+        # iterate through batches
+        for int_num_of_previously_returned_entries, l_int_entry_current_batch in ax.batch_generator( int_num_entries_for_batch = int_num_barcodes_in_pumap_batch, flag_return_the_number_of_previously_returned_entries = True ) :
+            # retrieve UMAP embedding of barcodes of the current batch
+            X_transformed = pumap_embedder.transform( self.bc.meta[ name_col_pca, l_int_entry_current_batch, : int_num_components_pca ] ) 
+
+            # update the components for the barcodes of the current batch
+            ax.meta[ name_col_umap, l_int_entry_current_batch ] = X_transformed
+
+        # save Parametric UMAP object after training 
+        if name_pumap_model_new is not None and self._mode != 'r' and self._path_folder_ramdata_local is not None : # if 'name_pumap_model_new' has been given, 'mode' is not 'r', and local RamData path is available
+            assert '/' not in name_pumap_model_new # check validity of 'name_pumap_model_new'
+            path_model = f'{self._path_folder_ramdata_local}{name_pumap_model_new}.pumap'
+            if self.verbose :
+                if os.path.exists( path_model ) :
+                    print( f'existing model {name_pumap_model_new} will be overwritten' )
+            pumap_embedder.save( path_model ) # save model
+
+        return pumap_embedder # return the model
+    def apply_umap( self, name_col_pca = 'X_pca', int_num_components_pca = 20, name_col_umap = 'X_umap', int_num_components_umap = 2, int_num_barcodes_in_pumap_batch = 20000, name_col_filter = 'filter_normalized_log1p_highly_variable', float_prop_subsampling = 1, name_col_filter_subsampled = 'filter_subsampling_for_umap', name_pumap_model = 'pumap', name_pumap_model_new = 'pumap' ) :
         """ # 2022-07-16 22:23:46 
         Perform Parametric UMAP to embed cells in reduced dimensions for a scalable analysis of single-cell data
         Parametric UMAP has several advantages over non-parametric UMAP (conventional UMAP), which are 
