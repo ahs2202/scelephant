@@ -32,7 +32,6 @@ import sklearn.cluster as skc # K-means
 
 # for fast approximate kNN search
 import pynndescent 
-import hnswlib
 
 # define version
 _version_ = '0.0.3'
@@ -4179,6 +4178,24 @@ class ZarrDataFrame( ) :
         df = self.df # retrieve dataframe
         self.unload( ) # empty the cache
         return df
+    def get_shape( self, name_col ) :
+        """ # 2022-08-07 16:01:12 
+        return the shape of the given column except for the dimension along the primary axis.
+        """
+        # the column should exist
+        if name_col not in self :
+            if self.verbose :
+                print( f'{name_col} not available in the current ZarrDataFrame, exiting' )
+            return
+        
+        if self._mask is not None : # if mask is available
+            if name_col in self._mask : # if the column is available in the mask
+                return self._mask.get_shape( name_col ) # return the result of the mask object
+        
+        # open a zarr object, and access the shape
+        path_folder_zarr = f"{self._path_folder_zdf}{name_col}/"
+        za = zarr.open( path_folder_zarr, mode = 'r' ) 
+        return za.shape[ 1 : ] # return the shape including the dimension of the primary axis
     def save( self, path_folder_zdf, * l_name_col ) :
         """ # 2022-07-04 21:09:34 
         save data contained in the ZarrDataFrame object to the new path.
@@ -4259,7 +4276,7 @@ class ZarrDataFrame( ) :
             return zarr.open( path_folder_zarr, 'r' ), __delete_nothing # when array is read-only, it is safe to read from multiple processes
                 
         # open a zarr object, write-from-multiple-processes-enabled
-        za = zarr.open( path_folder_zarr, mode = 'a', synchronizer = zarr.ProcessSynchronizer( path_folder_lock ) ) # use the same chunk size of the current RAMtx
+        za = zarr.open( path_folder_zarr, mode = 'a', synchronizer = zarr.ProcessSynchronizer( path_folder_lock ) ) # use process-sync lock
 
         def __delete_locks( ) :
             """ # 2022-08-06 13:20:57 
@@ -5395,15 +5412,15 @@ class RamDataAxis( ) :
         perform XOR operation between 'filter_1' and 'filter_2'
         """
         return self._convert_to_bitarray( filter_1 ) ^ self._convert_to_bitarray( filter_2 )
-    def batch_generator( self, ba = None, int_num_entries_for_batch = 1000, flag_return_the_number_of_previously_returned_entries = False, flag_mix_randomly = False ) :
+    def batch_generator( self, ba = None, int_num_entries_for_batch = 1000, flag_mix_randomly = False ) :
         ''' # 2022-07-16 22:57:23 
         generate batches of list of integer indices of the active entries in the given bitarray 'ba'. 
         Each bach has the following characteristics:
             monotonous: active entries in a batch are in an increasing order
             same size: except for the last batch, each batch has the same number of active entries 'int_num_entries_for_batch'.
+        This function is simialr to RAMtx.batch_generator, except that the number of records for each entries ('weights') will not be considered when constructing a batch
         
         'ba' : (default None) if None is given, self.filter bitarray will be used.
-        'flag_return_the_number_of_previously_returned_entries' : yield the number of previously returned entries along side with the list of entries of the current batch.
         'flag_mix_randomly' : generate batches of entries after mixing randomly 
         '''
         # set defaule arguments
@@ -5413,13 +5430,19 @@ class RamDataAxis( ) :
             
         # initialize
         # a namespace that can safely shared between functions
-        ns = { 'l_int_entry_current_batch' : [ ] }
+        ns = { 'index_batch' : 0, 'l_int_entry_current_batch' : [ ], 'int_num_of_previously_returned_entries' : 0 }
+        
+        def __compose_batch( ) :
+            """ # 2022-08-05 23:34:28 
+            compose batch from the values available in the namespace 'ns'
+            """
+            return { 'index_batch' : ns[ 'index_batch' ], 'l_int_entry_current_batch' : ns[ 'l_int_entry_current_batch' ], 'int_num_of_previously_returned_entries' : ns[ 'int_num_of_previously_returned_entries' ] }
+
         
         if flag_mix_randomly : # randomly select barcodes across the 
             int_num_active_entries = ba.count( ) # retrieve the total number of active entries 
             float_ratio_batch_size_to_total_size = int_num_entries_for_batch / int_num_active_entries # retrieve approximate number of batches to generate
             # initialize
-            int_num_of_previously_returned_entries = 0
             int_num_entries_added = 0
             ba_remaining = ba.copy( ) # create a copy of the bitarray of active entries to mark the remaining entries
             float_prob_selection = int_num_entries_for_batch / max( 1, int_num_active_entries - int_num_of_previously_returned_entries ) # calculate the initial probability for selection of entries
@@ -5432,26 +5455,27 @@ class RamDataAxis( ) :
                     # once the batch is full, yield the batch
                     if len( ns[ 'l_int_entry_current_batch' ] ) >= int_num_entries_for_batch :
                         ns[ 'l_int_entry_current_batch' ] = np.sort( ns[ 'l_int_entry_current_batch' ] ) # sort the list of int_entries
-                        yield ( int_num_of_previously_returned_entries, ns[ 'l_int_entry_current_batch' ] ) if flag_return_the_number_of_previously_returned_entries else ns[ 'l_int_entry_current_batch' ] # return 'int_num_of_previously_returned_entries' if 'flag_return_the_number_of_previously_returned_entries' is True
-                        int_num_of_previously_returned_entries += len( ns[ 'l_int_entry_current_batch' ] ) # update the number of returned entries
+                        yield __compose_batch( ) # return batch
                         float_prob_selection = int_num_entries_for_batch / max( 1, int_num_active_entries - int_num_of_previously_returned_entries ) # update the probability for selection of an entry
+                        ns[ 'int_num_of_previously_returned_entries' ] += len( ns[ 'l_int_entry_current_batch' ] ) # update the number of returned entries
                         ns[ 'l_int_entry_current_batch' ] = [ ] # initialize the next batch
+                        ns[ 'index_batch' ] += 1
             # return the remaining int_entries as the last batch (if available)
             if len( ns[ 'l_int_entry_current_batch' ] ) > 0 :
                 ns[ 'l_int_entry_current_batch' ] = np.sort( ns[ 'l_int_entry_current_batch' ] ) # sort the list of int_entries
-                yield ( int_num_of_previously_returned_entries, ns[ 'l_int_entry_current_batch' ] ) if flag_return_the_number_of_previously_returned_entries else ns[ 'l_int_entry_current_batch' ] # return 'int_num_of_previously_returned_entries' if 'flag_return_the_number_of_previously_returned_entries' is True
+                yield __compose_batch( ) # return batch
         else : # return barcodes in a batch sequentially
-            int_num_of_previously_returned_entries = 0
             for int_entry in bk.BA.find( ba ) : # iterate through active entries of the given bitarray
                 ns[ 'l_int_entry_current_batch' ].append( int_entry ) # collect int_entry for the current batch
                 # once the batch is full, yield the batch
                 if len( ns[ 'l_int_entry_current_batch' ] ) >= int_num_entries_for_batch :
-                    yield ( int_num_of_previously_returned_entries, ns[ 'l_int_entry_current_batch' ] ) if flag_return_the_number_of_previously_returned_entries else ns[ 'l_int_entry_current_batch' ] # return 'int_num_of_previously_returned_entries' if 'flag_return_the_number_of_previously_returned_entries' is True
-                    int_num_of_previously_returned_entries += len( ns[ 'l_int_entry_current_batch' ] ) # update the number of returned entries
+                    yield __compose_batch( ) # return batch
+                    ns[ 'int_num_of_previously_returned_entries' ] += len( ns[ 'l_int_entry_current_batch' ] ) # update the number of returned entries
                     ns[ 'l_int_entry_current_batch' ] = [ ] # initialize the next batch
+                    ns[ 'index_batch' ] += 1
             # return the remaining int_entries as the last batch (if available)
             if len( ns[ 'l_int_entry_current_batch' ] ) > 0 :
-                yield ( int_num_of_previously_returned_entries, ns[ 'l_int_entry_current_batch' ] ) if flag_return_the_number_of_previously_returned_entries else ns[ 'l_int_entry_current_batch' ] # return 'int_num_of_previously_returned_entries' if 'flag_return_the_number_of_previously_returned_entries' is True
+                yield __compose_batch( ) # return batch
     def change_filter( self, name_col_filter ) :
         """ # 2022-07-16 17:17:29 
         change filter using the filter saved in the metadata with 'name_col_filter' column name. if 'name_col_filter' is not available, current filter setting will not be changed.
@@ -7048,7 +7072,7 @@ class RamData( ) :
             self._save_metadata_( )
         return self._dict_metadata[ 'models' ]
     def load_model( self, name_model, type_model : typing.Literal[ 'ipca', 'pumap' ] ) :
-        """ # 2022-08-05 19:33:53 
+        """ # 2022-08-07 16:55:55 
         load model from RamData
         """
         # if the model does not exists in the RamData, exit
@@ -7086,10 +7110,13 @@ class RamData( ) :
             # attempts to download the model file
             download_file( path_file_model_remote, path_file_model )
         
+        # define a set of picklable models :
+        set_type_model_picklable = { 'ipca', 'hdbscan' }
+        
         # load model
-        if type_model == 'ipca' :
+        if type_model in set_type_model_picklable : # handle picklable models
             # define path
-            name_model_file = f"{name_model}.ipca.pickle"
+            name_model_file = f"{name_model}.{type_model}.pickle"
             path_file_model = f"{path_folder_models}{name_model_file}"
             
             # download the model file
@@ -7117,15 +7144,22 @@ class RamData( ) :
             if not os.path.exists( path_prefix_model ) : # if the model has not been extracted from the tar.gz archive
                 tar_extract( path_file_model, path_prefix_model ) # extract tar.gz file of pumap object
             model = pumap.load_ParametricUMAP( path_prefix_model ) # load pumap model
+            
+            # fix 'load_ParametricUMAP' error ('decoder' attribute does not exist)
+            if not hasattr( model, 'decoder' ) : 
+                model.decoder = None
         return model # return loaded model
     def save_model( self, model, name_model : str, type_model : typing.Literal[ 'ipca', 'pumap' ] ) :
-        """ # 2022-08-05 19:44:23 
+        """ # 2022-08-07 16:56:07 
         save model to RamData
         
         'model' : input model 
         'name_model' : the name of the model. if the same type of model with the same model name already exists, it will be overwritten
         'type_model' : the type of models. currently [ 'ipca', 'pumap' ], for PCA transformation and UMAP embedding, are supported
         """
+        # check validity of the name_model
+        assert '/' not in name_model # check validity of 'name_pumap_model'
+            
         # save model only when mode != 'r'
         if self._mode == 'r' :
             return
@@ -7137,9 +7171,12 @@ class RamData( ) :
         path_folder_models = f"{self._path_folder_ramdata_modifiable}models/" # define a folder to save/load model
         os.makedirs( path_folder_models, exist_ok = True )
         
+        # define a set of picklable models :
+        set_type_model_picklable = { 'ipca', 'hdbscan' }
+        
         # save model
-        if type_model == 'ipca' :
-            path_file_model = f"{path_folder_models}{name_model}.ipca.pickle"
+        if type_model in set_type_model_picklable : # handle picklable models
+            path_file_model = f"{path_folder_models}{name_model}.{type_model}.pickle"
             PICKLE_Write( path_file_model, model )
         elif type_model == 'pumap' :
             path_prefix_model = f"{path_folder_models}{name_model}.pumap"
@@ -7158,6 +7195,56 @@ class RamData( ) :
         if self.verbose :
             print( f"{name_model}.{type_model} model saved." )
         return int_file_size # return the number of bytes written
+    def delete_model( self, name_model : str, type_model : typing.Literal[ 'ipca', 'pumap' ] ) :
+        """ # 2022-08-05 19:44:23 
+        delete model of the RamData if the model exists in the RamData
+        
+        'name_model' : the name of the model. if the same type of model with the same model name already exists, it will be overwritten
+        'type_model' : the type of models. currently [ 'ipca', 'pumap' ], for PCA transformation and UMAP embedding, are supported
+        """
+        # check validity of the name_model
+        assert '/' not in name_model # check validity of 'name_pumap_model'
+            
+        # save model only when mode != 'r'
+        if self._mode == 'r' :
+            return
+        # save model only when modifiable ramdata exists
+        if self._path_folder_ramdata_modifiable is None :
+            return
+        
+        # if the model does not exist in the current RamData, exit
+        if type_model not in self._dict_metadata[ 'models' ] and name_model not in self._dict_metadata[ 'models' ][ type_model ] :
+            return
+        
+        # define a folder for storage of models
+        path_folder_models = f"{self._path_folder_ramdata_modifiable}models/" # define a folder to save/load model
+        os.makedirs( path_folder_models, exist_ok = True )
+        
+        # define a set of picklable models :
+        set_type_model_picklable = { 'ipca', 'hdbscan' }
+        
+        # save model
+        if type_model in set_type_model_picklable : # handle picklable models 
+            path_file_model = f"{path_folder_models}{name_model}.{type_model}.pickle"
+        elif type_model == 'pumap' :
+            path_prefix_model = f"{path_folder_models}{name_model}.pumap"
+            path_file_model = path_prefix_model + '.tar.gz'
+            # if an extracted folder exists, delete the folder
+            if os.path.exists( path_prefix_model ) :
+                shutil.rmtree( path_prefix_model )
+        int_file_size = os.path.getsize( path_file_model ) # retrieve file size of the saved model
+        os.remove( path_file_model )
+        
+        # update metadata
+        del self._dict_metadata[ 'models' ][ type_model ][ name_model ] # delete model from the metadata
+        if len( self._dict_metadata[ 'models' ][ type_model ] ) == 0 : # if list is empty, delete the list, too
+            del self._dict_metadata[ 'models' ][ type_model ]
+        self._save_metadata_( ) # save metadata
+        
+        # report result
+        if self.verbose :
+            print( f"{name_model}.{type_model} model deleted." )
+        return int_file_size # return the number of bytes of the deleted model file
     ''' memory-efficient dimension reduction/clustering functions '''
     def train_pca( self, name_model = 'ipca', name_layer = 'normalized_log1p', int_num_components = 50, int_num_barcodes_in_ipca_batch = 50000, name_col_filter = 'filter_pca', float_prop_subsampling = 1, name_col_filter_subsampled = 'filter_pca_subsampled', flag_ipca_whiten = False, int_num_threads = 3, flag_show_graph = True ) :
         """ # 2022-08-06 11:20:06 
@@ -7230,16 +7317,17 @@ class RamData( ) :
             prepare data as a sparse matrix for the batch
             '''
             # parse the received batch
-            int_num_of_previously_returned_entries, l_int_entry_current_batch = batch 
+            int_num_of_previously_returned_entries, l_int_entry_current_batch = batch[ 'int_num_of_previously_returned_entries' ], batch[ 'l_int_entry_current_batch' ]
             int_num_retrieved_entries = len( l_int_entry_current_batch )
 
             pipe_to_main_process.send( ( int_num_of_previously_returned_entries, int_num_retrieved_entries, rtx.get_sparse_matrix( l_int_entry_current_batch )[ int_num_of_previously_returned_entries : int_num_of_previously_returned_entries + int_num_retrieved_entries ] ) ) # retrieve and send sparse matrix as an input to the incremental PCA # resize sparse matrix
+        pbar = progress_bar( total = ax.meta.n_rows ) # initialize the progress bar
         def post_process_batch( res ) :
             """ # 2022-07-13 22:18:18 
             perform partial fit for batch
             """
             int_num_of_previously_returned_entries, int_num_retrieved_entries, X = res # parse the result
-            
+            pbar.update( int_num_retrieved_entries ) # update the progress bar
             try :
                 ipca.partial_fit( X.toarray( ) ) # perform partial fit using the retrieved data # partial_fit only supports dense array
             except ValueError : # handles 'ValueError: n_components=50 must be less or equal to the batch number of samples 14.' error # 2022-07-18 15:09:52 
@@ -7249,7 +7337,9 @@ class RamData( ) :
             if self.verbose : # report
                 print( f'fit completed for {int_num_of_previously_returned_entries + 1}-{int_num_of_previously_returned_entries + int_num_retrieved_entries} barcodes' )
         # fit iPCA using multiple processes
-        bk.Multiprocessing_Batch( ax.batch_generator( int_num_entries_for_batch = int_num_barcodes_in_ipca_batch, flag_return_the_number_of_previously_returned_entries = True ), process_batch, post_process_batch = post_process_batch, int_num_threads = max( min( int_num_threads, 3 ), 2 ), int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) # number of threads for multi-processing is 2 ~ 5 # generate batch with fixed number of barcodes
+        bk.Multiprocessing_Batch( ax.batch_generator( int_num_entries_for_batch = int_num_barcodes_in_ipca_batch ), process_batch, post_process_batch = post_process_batch, int_num_threads = max( min( int_num_threads, 3 ), 2 ), int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) # number of threads for multi-processing is 2 ~ 5 # generate batch with fixed number of barcodes
+        pbar.close( ) # close the progress bar
+        
         # report
         if self.verbose :
             print( 'fit completed' )
@@ -7359,27 +7449,75 @@ class RamData( ) :
         # destroy the view
         self.destroy_view( )
         return 
-    def train_umap( self, name_col_pca = 'X_pca', int_num_components_pca = 20, name_col_umap = 'X_umap', int_num_components_umap = 2, name_col_filter = 'filter_umap', name_pumap_model = 'pumap', name_pumap_model_new = None ) :
-        """ # 2022-07-16 22:23:46 
+    def train_umap( self, name_col_pca = 'X_pca', int_num_components_pca = 20, int_num_components_umap = 2, name_col_filter = 'filter_umap', name_pumap_model = 'pumap', name_pumap_model_new = None ) :
+        """ # 2022-08-07 11:13:38 
         Perform Parametric UMAP to embed cells in reduced dimensions for a scalable analysis of single-cell data
-        Parametric UMAP has several advantages over non-parametric UMAP (conventional UMAP), which are 
+        
+        * Parametric UMAP has several advantages over non-parametric UMAP (conventional UMAP), which are 
             (1) GPU can be utilized during training of neural network models
             (2) learned embedding can be applied to other cells not used to build the embedding
             (3) learned embedding can be updated by training with additional cells
         Therefore, parametric UMAP is suited for generating embedding of single-cell data with extremely large number of cells
 
         arguments:
-        'name_layer' : name of the data source layer
         'name_col_pca' : 'name_col' of the columns containing PCA transformed values.
         'int_num_components_pca' : number of PCA components to use as inputs for Parametric UMAP learning
         'name_col_umap' : 'name_col' of the columns containing UMAP transformed values.
         'int_num_components_umap' : number of output UMAP components. (default: 2)
-        'int_num_barcodes_in_pumap_batch' : number of barcodes in a batch for Parametric UMAP model update.
         'name_col_filter' : the name of 'feature'/'barcode' Axis metadata column to retrieve selection filter for highly-variable-features. (default: None) if None is given, current feature filter (if it has been set) will be used as-is. if a valid filter is given, filter WILL BE CHANGED.
-        'float_prop_subsampling' : proportion of barcodes to used to train representation of single-barcode data using Parametric UMAP. 1 = all barcodes, 0.1 = 10% of barcodes, etc. subsampling will be performed using a random probability, meaning the actual number of barcodes subsampled will not be same every time.
-        'name_col_filter_subsampled' : the name of 'feature'/'barcode' Axis metadata column to retrieve or save mask containing subsampled barcodes. if 'None' is given and 'float_prop_subsampling' is below 1 (i.e. subsampling will be used), the subsampling filter generated for retrieving gene expression data of selected barcodes will not be saved.
         'name_pumap_model' = 'pumap' : the name of the parametric UMAP model. if None is given, the trained model will not be saved to the RamData object. if the model already exists, the model will be loaded and trained again.
         'name_pumap_model_new' = 'pumap' : the name of the new parametric UMAP model after the training. if None is given, the new model will not be saved. if 'name_pumap_model' and 'name_pumap_model_new' are the same, the previously written model will be overwritten.
+        """
+        """
+        1) Prepare
+        """
+        # handle arguments
+        if name_pumap_model_new is None :
+            name_pumap_model_new = name_pumap_model
+        # retrieve 'Barcode' Axis object
+        ax = self.bc
+
+        # set/save filter
+        if name_col_filter is not None :
+            self.change_or_save_filter( name_col_filter )
+        """
+        2) Train Parametric UMAP 
+        """
+        # load pumap model
+        pumap_embedder = self.load_model( name_pumap_model, 'pumap' )
+        if pumap_embedder is None :
+            pumap_embedder = pumap.ParametricUMAP( low_memory = True, n_components = int_num_components_umap ) # load an empty model if a saved model is not available
+
+        # train parametric UMAP model
+        pumap_embedder.fit( self.bc.meta[ name_col_pca, None, : int_num_components_pca ] )
+
+        # report
+        if self.verbose :
+            print( '[Info] [RamData.train_umap] training completed' )
+        
+        # save the model
+        int_model_file_size = self.save_model( pumap_embedder, name_pumap_model_new, 'pumap' )
+        if int_model_file_size is not None :
+            # report the file size of the model if saving of the model was successful
+            if self.verbose :
+                print( f'[Info] [RamData.train_umap] Parametric UMAP model of {int_model_file_size} Bytes has been saved.' )
+        return pumap_embedder # return the model
+    def apply_umap( self, name_col_pca : str = 'X_pca', name_col_umap : str = 'X_umap', int_num_barcodes_in_pumap_batch : int = 20000, name_col_filter : str = 'filter_umap', name_pumap_model : str = 'pumap' ) :
+        """ # 2022-08-07 11:27:20 
+        Embed barcodes to lower-dimensional space using the trained Parametric UMAP in a scalable way
+        
+        * Parametric UMAP has several advantages over non-parametric UMAP (conventional UMAP), which are 
+            (1) GPU can be utilized during training of neural network models
+            (2) learned embedding can be applied to other cells not used to build the embedding
+            (3) learned embedding can be updated by training with additional cells
+        Therefore, parametric UMAP is suited for generating embedding of single-cell data with extremely large number of cells
+
+        arguments:
+        'name_col_pca' : 'name_col' of the columns containing PCA transformed values.
+        'name_col_umap' : 'name_col' of the columns containing UMAP transformed values.
+        'int_num_barcodes_in_pumap_batch' : number of barcodes in a batch for Parametric UMAP model update.
+        'name_col_filter' : the name of 'feature'/'barcode' Axis metadata column to retrieve selection filter for highly-variable-features. (default: None) if None is given, current feature filter (if it has been set) will be used as-is. if a valid filter is given, filter WILL BE CHANGED.
+        'name_pumap_model' = 'pumap' : the name of the parametric UMAP model. if None is given, the trained model will not be saved to the RamData object. if the model already exists, the model will be loaded and trained again.
         """
         """
         1) Prepare
@@ -7387,102 +7525,66 @@ class RamData( ) :
         # # retrieve 'Barcode' Axis object
         ax = self.bc
 
-        # set filters for UMAP calculation
+        # set filters
         if name_col_filter is not None :
             self.change_filter( name_col_filter )
-
-        # retrieve a flag indicating whether a subsampling is active
-        flag_is_subsampling_active = ( name_col_filter_subsampled in self.bc.meta ) or ( float_prop_subsampling is not None and float_prop_subsampling < 1 )
-
-        # if a subsampling is active, retrieve a filter containing subsampled barcodes and apply the filter to the 'barcode' Axis
-        if flag_is_subsampling_active :
-            # retrieve barcode filter before subsampling
-            ba_filter_bc_before_subsampling = self.bc.filter
-
-            # set barcode filter after subsampling
-            if name_col_filter_subsampled in self.bc.meta : # if 'name_col_filter_subsampled' barcode filter is available, load the filter
-                self.bc.change_filter( name_col_filter_subsampled )
-            else : # if the 'name_col_filter_subsampled' barcode filter is not available, build a filter containing subsampled entries and save the filter
-                self.bc.filter = self.bc.subsample( float_prop_subsampling = float_prop_subsampling ) 
-                self.bc.save_filter( name_col_filter_subsampled )
         
-        """
-        2) Train Parametric UMAP with/without subsampling of barcodes
-        """
-        # initialize Parametric UMAP object
-        if name_pumap_model is not None and self._path_folder_ramdata_local is not None : # if 'name_pumap_model' has been given # if local RamDatat path is available, check the availability of the model and load the model if the saved model is available
-            assert '/' not in name_pumap_model # check validity of 'name_pumap_model'
-            path_model = f'{self._path_folder_ramdata_local}{name_pumap_model}.pumap' # model should be loaded/saved in local file system (others are not implemented yet)
-            pumap_embedder = pumap.load_ParametricUMAP( path_model ) if os.path.exists( path_model ) else pumap.ParametricUMAP( low_memory = True ) # load model if model exists
-                
-            # fix 'load_ParametricUMAP' error ('decoder' attribute does not exist)
-            if os.path.exists( path_model ) and not hasattr( pumap_embedder, 'decoder' ) : 
-                pumap_embedder.decoder = None
-        else :
-            pumap_embedder = pumap.ParametricUMAP( low_memory = True ) # load an empty model if a saved model is not available
-
-        # iterate through batches
-        for int_num_of_previously_returned_entries, l_int_entry_current_batch in ax.batch_generator( int_num_entries_for_batch = int_num_barcodes_in_pumap_batch, flag_return_the_number_of_previously_returned_entries = True, flag_mix_randomly = True ) : # mix barcodes randomly for efficient learning for each batch
-            int_num_entries_current_batch = len( l_int_entry_current_batch ) # retrieve the number of entries in the current batch
-            # if the number of entries in the current batch is below the given size of the batch 'int_num_barcodes_in_pumap_batch', and the model has been already trained, skip training with smaller number of barcodes, since it can lead to reduced accuracy of embedding due to training with smaller number of barcodes
-            if int_num_entries_current_batch < int_num_barcodes_in_pumap_batch and int_num_of_previously_returned_entries > 0 :
-                continue
-            # train parametric UMAP model
-            pumap_embedder.fit( self.bc.meta[ name_col_pca, l_int_entry_current_batch, : int_num_components_pca ] ) 
-            if self.verbose : # report
-                print( f'training completed for {int_num_of_previously_returned_entries + 1}-{int_num_of_previously_returned_entries + int_num_entries_current_batch} barcodes' )
-
-        # report
-        if self.verbose :
-            print( 'training completed' )
-
-        # if subsampling has been completed, revert to the original barcode selection filter
-        if flag_is_subsampling_active :
-            self.bc.filter = ba_filter_bc_before_subsampling
-            del ba_filter_bc_before_subsampling
-
+        # load the model
+        pumap_embedder = self.load_model( name_pumap_model, 'pumap' ) # load the model
+        if pumap_embedder is None :
+            if self.verbose :
+                print( f"[Error] [RamData.apply_umap] the parametric UMAP model {name_pumap_model} does not exist in the current RamData, exiting" )
+            return
+        # retrieve the number of pca components for the input of pumap model
+        int_num_components_pca = pumap_embedder.dims[ 0 ]
+        if ax.meta.get_shape( name_col_pca )[ 0 ] < int_num_components_pca : # check compatibility between the given PCA data and the given pumap model # if the number of input PCA components is larger than the components available in the input PCA column, exit
+            if self.verbose :
+                print( f"[Error] [RamData.apply_umap] the number of PCA components of the given parametric UMAP model {name_pumap_model} is {int_num_components_pca}, which is larger than the number of PCA components available in {name_col_pca} data in the 'barcode' metadata, exiting" )
+            return
+            
         """
         2) Transform Data
         """
+        pbar = progress_bar( total = ax.meta.n_rows ) # initialize the progress bar
         # iterate through batches
-        for int_num_of_previously_returned_entries, l_int_entry_current_batch in ax.batch_generator( int_num_entries_for_batch = int_num_barcodes_in_pumap_batch, flag_return_the_number_of_previously_returned_entries = True ) :
+        for batch in ax.batch_generator( int_num_entries_for_batch = int_num_barcodes_in_pumap_batch ) :
+            l_int_entry_current_batch = batch[ 'l_int_entry_current_batch' ] # parse batch
+            int_num_retrieved_entries = len( l_int_entry_current_batch ) # retrieve the number of retrieve entries
+            pbar.update( int_num_retrieved_entries ) # update the progress bar
+            
             # retrieve UMAP embedding of barcodes of the current batch
             X_transformed = pumap_embedder.transform( self.bc.meta[ name_col_pca, l_int_entry_current_batch, : int_num_components_pca ] ) 
 
             # update the components for the barcodes of the current batch
             ax.meta[ name_col_umap, l_int_entry_current_batch ] = X_transformed
-
-        # save Parametric UMAP object after training 
-        if name_pumap_model_new is not None and self._mode != 'r' and self._path_folder_ramdata_local is not None : # if 'name_pumap_model_new' has been given, 'mode' is not 'r', and local RamData path is available
-            assert '/' not in name_pumap_model_new # check validity of 'name_pumap_model_new'
-            path_model = f'{self._path_folder_ramdata_local}{name_pumap_model_new}.pumap'
-            if self.verbose :
-                if os.path.exists( path_model ) :
-                    print( f'existing model {name_pumap_model_new} will be overwritten' )
-            pumap_embedder.save( path_model ) # save model
+        pbar.close( ) # close the progress bar
 
         return pumap_embedder # return the model
-    def apply_umap( self, name_col_pca = 'X_pca', int_num_components_pca = 20, name_col_umap = 'X_umap', int_num_components_umap = 2, int_num_barcodes_in_pumap_batch = 20000, name_col_filter = 'filter_normalized_log1p_highly_variable', float_prop_subsampling = 1, name_col_filter_subsampled = 'filter_subsampling_for_umap', name_pumap_model = 'pumap', name_pumap_model_new = 'pumap' ) :
-        """ # 2022-07-16 22:23:46 
-        Perform Parametric UMAP to embed cells in reduced dimensions for a scalable analysis of single-cell data
-        Parametric UMAP has several advantages over non-parametric UMAP (conventional UMAP), which are 
-            (1) GPU can be utilized during training of neural network models
-            (2) learned embedding can be applied to other cells not used to build the embedding
-            (3) learned embedding can be updated by training with additional cells
-        Therefore, parametric UMAP is suited for generating embedding of single-cell data with extremely large number of cells
+    def hdbscan( self, name_model : str = 'hdbscan', name_col_umap : str = 'X_umap', int_num_components_umap : int = 2, name_col_filter : str = 'filter_hdbscan', min_cluster_size : int = 30, min_samples : int = 30, cut_distance: float = 0.15, flag_reanalysis_of_previous_clustering_result : bool = False, flag_draw_graph : bool = True, dict_kw_scatter : dict = { 's' : 10, 'linewidth' : 0, 'alpha' : 0.05 } ) :
+        """ # 2022-08-07 16:32:18 
+        Perform HDBSCAN for the currently active barcodes
 
         arguments:
-        'name_layer' : name of the data source layer
-        'name_col_pca' : 'name_col' of the columns containing PCA transformed values.
-        'int_num_components_pca' : number of PCA components to use as inputs for Parametric UMAP learning
+        'name_model' : name of the model saved/will be saved in RamData.models database. if the model already exists, 'cut_distance' and 'min_cluster_size' arguments will become active.
+        
+        === UMAP input ===
         'name_col_umap' : 'name_col' of the columns containing UMAP transformed values.
-        'int_num_components_umap' : number of output UMAP components. (default: 2)
-        'int_num_barcodes_in_pumap_batch' : number of barcodes in a batch for Parametric UMAP model update.
-        'name_col_filter' : the name of 'feature'/'barcode' Axis metadata column to retrieve selection filter for highly-variable-features. (default: None) if None is given, current feature filter (if it has been set) will be used as-is. if a valid filter is given, filter WILL BE CHANGED.
-        'float_prop_subsampling' : proportion of barcodes to used to train representation of single-barcode data using Parametric UMAP. 1 = all barcodes, 0.1 = 10% of barcodes, etc. subsampling will be performed using a random probability, meaning the actual number of barcodes subsampled will not be same every time.
-        'name_col_filter_subsampled' : the name of 'feature'/'barcode' Axis metadata column to retrieve or save mask containing subsampled barcodes. if 'None' is given and 'float_prop_subsampling' is below 1 (i.e. subsampling will be used), the subsampling filter generated for retrieving gene expression data of selected barcodes will not be saved.
-        'name_pumap_model' = 'pumap' : the name of the parametric UMAP model. if None is given, the trained model will not be saved to the RamData object. if the model already exists, the model will be loaded and trained again.
-        'name_pumap_model_new' = 'pumap' : the name of the new parametric UMAP model after the training. if None is given, the new model will not be saved. if 'name_pumap_model' and 'name_pumap_model_new' are the same, the previously written model will be overwritten.
+        'int_num_components_umap' : number of output UMAP components to use for clustering (default: 2)
+        
+        === cell filter ===
+        'name_col_filter' : the name of 'feature'/'barcode' Axis metadata column to retrieve selection filter for running the current method. if None is given, current barcode/feature filters (if it has been set) will be used as-is.
+        
+        === HDBSCAN arguments ===
+        'min_cluster_size', 'min_samples' : arguments for HDBSCAN method. please refer to the documentation of HDBSCAN (https://hdbscan.readthedocs.io/)
+        'cut_distance' and 'min_cluster_size' : arguments for the re-analysis of the clustering result for retrieving more fine-grained/coarse-grained cluster labels (for more info., please refer to hdbscan.HDBSCAN.single_linkage_tree_.get_clusters docstring). 
+        'flag_reanalysis_of_previous_clustering_result' : if 'flag_reanalysis_of_previous_clustering_result' is True and 'name_model' exists in the RamData.ns database, use the hdbscan model saved in the database to re-analyze the previous hierarchical DBSCAN clustering result. 'cut_distance' and 'min_cluster_size' arguments can be used to re-analyze the clustering result and retrieve more fine-grained/coarse-grained cluster labels (for more info., please refer to hdbscan.HDBSCAN.single_linkage_tree_.get_clusters docstring). To perform hdbscan from the start, change name_model to a new name or delete the model from RamData.ns database
+        
+        === settings for drawing graph ===
+        'flag_draw_graph' : visualize clustering results
+        'dict_kw_scatter' : arguments for 'matplotlib Axes.scatter' that will be used for plotting
+
+        returns:
+        embedded_for_training, arr_cluster_label, clusterer(hdbscan object)
         """
         """
         1) Prepare
@@ -7490,82 +7592,112 @@ class RamData( ) :
         # # retrieve 'Barcode' Axis object
         ax = self.bc
 
-        # set filters for UMAP calculation
+        # set filters for operation
         if name_col_filter is not None :
-            self.change_filter( name_col_filter )
+            self.change_or_save_filter( name_col_filter )
 
-        # retrieve a flag indicating whether a subsampling is active
-        flag_is_subsampling_active = ( name_col_filter_subsampled in self.bc.meta ) or ( float_prop_subsampling is not None and float_prop_subsampling < 1 )
-
-        # if a subsampling is active, retrieve a filter containing subsampled barcodes and apply the filter to the 'barcode' Axis
-        if flag_is_subsampling_active :
-            # retrieve barcode filter before subsampling
-            ba_filter_bc_before_subsampling = self.bc.filter
-
-            # set barcode filter after subsampling
-            if name_col_filter_subsampled in self.bc.meta : # if 'name_col_filter_subsampled' barcode filter is available, load the filter
-                self.bc.change_filter( name_col_filter_subsampled )
-            else : # if the 'name_col_filter_subsampled' barcode filter is not available, build a filter containing subsampled entries and save the filter
-                self.bc.filter = self.bc.subsample( float_prop_subsampling = float_prop_subsampling ) 
-                self.bc.save_filter( name_col_filter_subsampled )
-        
         """
-        2) Train Parametric UMAP with/without subsampling of barcodes
+        2) Train Model with/without subsampling of barcodes, and retrieve cluster labels
         """
-        # initialize Parametric UMAP object
-        if name_pumap_model is not None and self._path_folder_ramdata_local is not None : # if 'name_pumap_model' has been given # if local RamDatat path is available, check the availability of the model and load the model if the saved model is available
-            assert '/' not in name_pumap_model # check validity of 'name_pumap_model'
-            path_model = f'{self._path_folder_ramdata_local}{name_pumap_model}.pumap' # model should be loaded/saved in local file system (others are not implemented yet)
-            pumap_embedder = pumap.load_ParametricUMAP( path_model ) if os.path.exists( path_model ) else pumap.ParametricUMAP( low_memory = True ) # load model if model exists
-                
-            # fix 'load_ParametricUMAP' error ('decoder' attribute does not exist)
-            if os.path.exists( path_model ) and not hasattr( pumap_embedder, 'decoder' ) : 
-                pumap_embedder.decoder = None
+        # initialize
+        embedded_for_training = self.bc.meta[ name_col_umap, None, : int_num_components_umap ] # retrieve embedded barcodes (with/without subsampling)
+
+        if name_model in self.ns : # if 'name_model' exists in the database, use the previously computed clustering results
+            clusterer = self.ns[ name_model ] # retrieve previously saved model
+            if flag_reanalysis_of_previous_clustering_result : # if 'flag_reanalysis_of_previous_clustering_result' is True, perform re-analysis of the clustering result
+                arr_cluster_label = clusterer.single_linkage_tree_.get_clusters( cut_distance = cut_distance, min_cluster_size = min_cluster_size ) # re-analyze previous clustering result, and retrieve cluster labels
+            else :
+                arr_cluster_label = clusterer.labels_ # retrieve previously calculated cluster labels
         else :
-            pumap_embedder = pumap.ParametricUMAP( low_memory = True ) # load an empty model if a saved model is not available
-
-        # iterate through batches
-        for int_num_of_previously_returned_entries, l_int_entry_current_batch in ax.batch_generator( int_num_entries_for_batch = int_num_barcodes_in_pumap_batch, flag_return_the_number_of_previously_returned_entries = True, flag_mix_randomly = True ) : # mix barcodes randomly for efficient learning for each batch
-            int_num_entries_current_batch = len( l_int_entry_current_batch ) # retrieve the number of entries in the current batch
-            # if the number of entries in the current batch is below the given size of the batch 'int_num_barcodes_in_pumap_batch', and the model has been already trained, skip training with smaller number of barcodes, since it can lead to reduced accuracy of embedding due to training with smaller number of barcodes
-            if int_num_entries_current_batch < int_num_barcodes_in_pumap_batch and int_num_of_previously_returned_entries > 0 :
-                continue
-            # train parametric UMAP model
-            pumap_embedder.fit( self.bc.meta[ name_col_pca, l_int_entry_current_batch, : int_num_components_pca ] ) 
-            if self.verbose : # report
-                print( f'training completed for {int_num_of_previously_returned_entries + 1}-{int_num_of_previously_returned_entries + int_num_entries_current_batch} barcodes' )
-
+            clusterer = hdbscan.HDBSCAN( min_cluster_size = min_cluster_size, min_samples = min_samples )
+            clusterer.fit( embedded_for_training ) # clustering embedded barcodes
+            arr_cluster_label = clusterer.labels_ # retrieve cluster labels
+            # save trained model
+            if name_model is not None : # check validity of 'name_model' 
+                self.ns[ name_model ] = clusterer
+        
         # report
         if self.verbose :
-            print( 'training completed' )
+            print( 'clustering completed' )
 
-        # if subsampling has been completed, revert to the original barcode selection filter
+        # if subsampling has been completed, revert to the original barcode selection filter (restore)
         if flag_is_subsampling_active :
             self.bc.filter = ba_filter_bc_before_subsampling
             del ba_filter_bc_before_subsampling
 
+        if flag_draw_graph : # visualize clustering results :
+            color_palette = sns.color_palette( 'Paired', len( set( arr_cluster_label ) ) )
+            cluster_colors = [ color_palette[ x ] if x >= 0 else ( 0.5, 0.5, 0.5 ) for x in arr_cluster_label ]
+            fig, plt_ax = plt.subplots( 1, 1, figsize = ( 7, 7 ) )
+            plt_ax.scatter( * embedded_for_training.T, c = cluster_colors, ** dict_kw_scatter )
+
+        if flag_no_prediction : # complete the method without cluster label prediction of remaining embedded barcodes if 'flag_no_prediction' is True
+            return embedded_for_training, arr_cluster_label, clusterer # return the trained model and computed cluster labels
+
         """
-        2) Transform Data
+        2) Transform Data (prediction of cluster labels)
         """
-        # iterate through batches
-        for int_num_of_previously_returned_entries, l_int_entry_current_batch in ax.batch_generator( int_num_entries_for_batch = int_num_barcodes_in_pumap_batch, flag_return_the_number_of_previously_returned_entries = True ) :
-            # retrieve UMAP embedding of barcodes of the current batch
-            X_transformed = pumap_embedder.transform( self.bc.meta[ name_col_pca, l_int_entry_current_batch, : int_num_components_pca ] ) 
+        if flag_is_subsampling_active : # when subsampling was used
+            # subsample the training dataset if 'float_prop_subsampling_for_cluster_label_prediction' < 1
+            if float_prop_subsampling_for_cluster_label_prediction < 1 : # if subsampling of traning data is active, subsamples training data for more efficient (but possibly less accurate) prediction of cluster labels
+                arr_mask = np.random.random( len( arr_cluster_label ) ) < float_prop_subsampling_for_cluster_label_prediction # retrieve arr_mask for subsampling of data used for training
+                embedded_for_training = embedded_for_training[ arr_mask ]
+                arr_cluster_label = arr_cluster_label[ arr_mask ]
+                del arr_mask
 
-            # update the components for the barcodes of the current batch
-            ax.meta[ name_col_umap, l_int_entry_current_batch ] = X_transformed
+            if flag_use_pynndescent : # use pynndescent for fast approximate kNN search for k=1
+                pass
+#                                     index = NNDescent( data )
+#                     index pynndescent.NNDescent(  )
+#                     index = NNDescent(data)
+#                     You can then use the index for searching (and can pickle it to disk if you wish). To search a pynndescent index for the 15 nearest neighbors of a test data set query_data you can do something like
 
-        # save Parametric UMAP object after training 
-        if name_pumap_model_new is not None and self._mode != 'r' and self._path_folder_ramdata_local is not None : # if 'name_pumap_model_new' has been given, 'mode' is not 'r', and local RamData path is available
-            assert '/' not in name_pumap_model_new # check validity of 'name_pumap_model_new'
-            path_model = f'{self._path_folder_ramdata_local}{name_pumap_model_new}.pumap'
-            if self.verbose :
-                if os.path.exists( path_model ) :
-                    print( f'existing model {name_pumap_model_new} will be overwritten' )
-            pumap_embedder.save( path_model ) # save model
+#                     index.query(query_data, k=15)
+                
+            else : # if no other external algorithms are used, fallback to a jit-compiled kNN search algorithm
+                # jit compile a function for finding cluster labels of nearest neighbors
+                @jit( nopython = True )
+                def find_cluster_labels_of_nearest_neighbors( embedded_for_training : np.ndarray, arr_cluster_label : np.ndarray, embedded_for_prediction : np.ndarray, arr_cluster_label_predicted : np.ndarray ) :
+                    ''' # 2022-07-17 19:12:56 
+                    find cluster labels of nearest neighbors
+                    '''
+                    for i in range( len( embedded_for_prediction ) ) : # for each embedded point
+                        arr_cluster_label_predicted[ i ] = arr_cluster_label[ ( ( embedded_for_training - embedded_for_prediction[ i ] ) ** 2 ).sum( axis = 1 ).argmin( ) ] # identify cluster label of the nearest neighbor of the current embedded point
+                    return arr_cluster_label_predicted
 
-        return pumap_embedder # return the model
-    def hdbscan( self, name_model = 'hdbscan', min_cluster_size = 30, min_samples = 30, name_col_umap = 'X_umap', int_num_components_umap = 2, name_col_hdbscan = 'hdbscan', flag_reanalysis_of_previous_clustering_result = False, cut_distance = 0.15, flag_use_pynndescent = True, int_num_threads = 10, int_num_barcodes_in_cluster_label_prediction_batch = 10000, name_col_filter = 'filter_normalized_log1p_highly_variable', float_prop_subsampling_for_clustering = 0.2, name_col_filter_subsampled_for_clustering = 'filter_hdbscan_subsampling_for_clustering', float_prop_subsampling_for_cluster_label_prediction = 0.2, flag_draw_graph = True, dict_kw_scatter = { 's' : 10, 'linewidth' : 0, 'alpha' : 0.05 }, flag_no_prediction = True ) :
+
+            # define functions for multiprocessing step
+            def process_batch( batch, pipe_to_main_process ) :
+                ''' # 2022-07-13 22:18:22 
+                retrieve embedding of the barcodes of the current batch and predict cluster labels based on the inputs and outputs of the (subsampled) training data
+                '''
+                # parse the received batch
+                int_num_of_previously_returned_entries, l_int_entry_current_batch = batch 
+
+                embedded_for_prediction = self.bc.meta[ name_col_umap, l_int_entry_current_batch, : int_num_components_umap ] # retrieve umap embedding from ax.meta ZDF for the current batch
+                arr_cluster_label_predicted = np.zeros( len( embedded_for_prediction ), dtype = int ) # initialize 'arr_cluster_label_predicted'
+                arr_cluster_label_predicted = find_cluster_labels_of_nearest_neighbors( embedded_for_training, arr_cluster_label, embedded_for_prediction, arr_cluster_label_predicted ) # find cluster lables of embedded barcodes using nearest neighbors
+                del embedded_for_prediction
+
+                pipe_to_main_process.send( ( l_int_entry_current_batch, arr_cluster_label_predicted ) ) # send the integer representations of the barcodes for PCA value update
+            def post_process_batch( res ) :
+                """ # 2022-07-13 22:18:26 
+                retrieve predicted cluster labels and write to the Axis.metadata of the 'barcode' axis
+                """
+                # parse result 
+                l_int_entry_current_batch, arr_cluster_label_predicted = res
+
+                # update cluster labels for the barcodes of the current batch
+                ax.meta[ name_col_hdbscan, l_int_entry_current_batch ] = arr_cluster_label_predicted
+
+            # transform values using iPCA using multiple processes
+            bk.Multiprocessing_Batch( ax.batch_generator( int_num_entries_for_batch = int_num_barcodes_in_cluster_label_prediction_batch, flag_return_the_number_of_previously_returned_entries = True ), process_batch, post_process_batch = post_process_batch, int_num_threads = max( int_num_threads, 2 ), int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) # number of threads for multi-processing should be >1 # generate batch with fixed number of barcodes
+        else : # if all barcodes were used for clustering, simply add retrieved cluster labels to the metadata
+            ax.meta[ name_col_hdbscan ] = arr_cluster_label
+
+        return embedded_for_training, arr_cluster_label, clusterer # return the trained model and computed cluster labels
+    
+    def predict_label_hdbscan( self, name_model = 'hdbscan', min_cluster_size = 30, min_samples = 30, name_col_umap = 'X_umap', int_num_components_umap = 2, name_col_hdbscan = 'hdbscan', flag_reanalysis_of_previous_clustering_result = False, cut_distance = 0.15, flag_use_pynndescent = True, int_num_threads = 10, int_num_barcodes_in_cluster_label_prediction_batch = 10000, name_col_filter = 'filter_normalized_log1p_highly_variable', float_prop_subsampling_for_clustering = 0.2, name_col_filter_subsampled_for_clustering = 'filter_hdbscan_subsampling_for_clustering', float_prop_subsampling_for_cluster_label_prediction = 0.2, flag_draw_graph = True, dict_kw_scatter = { 's' : 10, 'linewidth' : 0, 'alpha' : 0.05 }, flag_no_prediction = True ) :
         """ # 2022-07-21 10:34:43 
         Perform HDBSCAN with subsampling for a scalable analysis of single-cell data
 
