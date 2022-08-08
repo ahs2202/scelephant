@@ -29,7 +29,11 @@ setup(
         'hdbscan>=0.8.28',
         'pgzip>=0.3.1',
         'numba>=0.55.2',
-        'pynndescent>=0.5.7'
+        'pynndescent>=0.5.7',
+        'leidenalg>=0.8.10',
+        'bitarray>=2.4.1',
+        'tqdm>=4.64.0',
+        'igraph>=0.9.11',
 #         'pyopa>=0.8.2',
 #         'numpy>=1.22.4',
 

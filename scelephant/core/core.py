@@ -22,6 +22,7 @@ from tqdm import tqdm as progress_bar # for progress bar
 # dimension reduction / clustering
 import umap.parametric_umap as pumap # parametric UMAP
 import hdbscan # for clustering
+import leidenalg
 
 # for fast gzip compression/decompression
 import pgzip # - deprecated
@@ -32,6 +33,9 @@ import sklearn.cluster as skc # K-means
 
 # for fast approximate kNN search
 import pynndescent 
+
+# for leiden clustering
+import igraph as ig
 
 # define version
 _version_ = '0.0.3'
@@ -110,6 +114,9 @@ RamData._repr_html_ was added for more interactive visualization of RamData in a
 
 # 2022-08-08 23:14:16 
 implemented PyNNdescent-backed implementation of cluster label assignments using labels assigned to subsampled barcodes, adding RamData.
+
+# 2022-08-09 03:13:15 
+implemented leiden clustering algorithm using 'leidenalg.find_partition' method
 
 """
 
@@ -2216,10 +2223,10 @@ def Convert_MTX_10X_to_RamData( path_folder_mtx_10x_input, path_folder_ramdata_o
 
 ''' methods for logging purposes '''
 def installed_packages( ) :
-    """ # 2022-08-08 11:52:08 
+    """ # 2022-08-09 02:09:07 
     display the installed packages of scelephant
     """
-    df_installed_packages = bk.PD_Select( bk.PIP_List_Packages( ), index = [ 'biobookshelf', 'typing', 'zarr', 'numcodecs', 'anndata', 'scanpy', 'shelve', 'sklearn', 'tarfile', 'requests', 'shutil', 'numba', 'tqdm', 'umap', 'hdbscan', 'pgzip', 'scipy', 'pynndescent', 'sys', 'os', 'subprocess', 'subprocess', 'multiprocessing', 'ctypes', 'logging', 'inspect', 'copy', 'collections', 'ast', 'pickle', 'traceback', 'mmap', 'itertools', 'math', 'uuid', 'gc', 'time', 'heapq', 'datetime', 'json', 'numpy', 'pandas', 'matplotlib', 'requests', 'ftplib', 'urllib', 'importlib', 'bokeh', 'pysam', 'plotly', 'scanpy', 'bitarray', 'intervaltree', 'statsmodels', 'scipy', 'upsetplot' ] )
+    df_installed_packages = bk.PD_Select( bk.PIP_List_Packages( ), index = [ 'igraph', 'biobookshelf', 'typing', 'zarr', 'numcodecs', 'anndata', 'scanpy', 'shelve', 'sklearn', 'tarfile', 'requests', 'shutil', 'numba', 'tqdm', 'umap', 'hdbscan', 'pgzip', 'scipy', 'pynndescent', 'leidenalg', 'sys', 'os', 'subprocess', 'subprocess', 'multiprocessing', 'ctypes', 'logging', 'inspect', 'copy', 'collections', 'ast', 'pickle', 'traceback', 'mmap', 'itertools', 'math', 'uuid', 'gc', 'time', 'heapq', 'datetime', 'json', 'numpy', 'pandas', 'matplotlib', 'requests', 'ftplib', 'urllib', 'importlib', 'bokeh', 'pysam', 'plotly', 'scanpy', 'bitarray', 'intervaltree', 'statsmodels', 'scipy', 'upsetplot' ] )
     display( df_installed_packages )
     return df_installed_packages 
 
@@ -5832,7 +5839,7 @@ class RamData( ) :
         """
         ''' hard-coded settings  '''
         # define a set of picklable models :
-        self._set_type_model_picklable = { 'ipca', 'hdbscan', 'pynndescent' }
+        self._set_type_model_picklable = { 'ipca', 'hdbscan', 'pynndescent', 'knngraph' }
         
         ''' modifiable settings '''
         # handle input object paths
@@ -7701,31 +7708,34 @@ class RamData( ) :
         pbar.close( ) # close the progress bar
 
         return pumap_embedder # return the model
-    def hdbscan( self, name_model : str = 'hdbscan', name_col_umap : str = 'X_umap', int_num_components_umap : int = 2, name_col_label : str = 'hdbscan', name_col_filter : str = 'filter_hdbscan', min_cluster_size : int = 30, min_samples : int = 30, cut_distance: float = 0.15, flag_reanalysis_of_previous_clustering_result : bool = False, flag_draw_graph : bool = True, dict_kw_scatter : dict = { 's' : 10, 'linewidth' : 0, 'alpha' : 0.05 } ) :
-        """ # 2022-08-07 16:32:18 
+    def hdbscan( self, name_model : str = 'hdbscan', name_col_data : str = 'X_umap', int_num_components_data : int = 2, name_col_label : str = 'hdbscan', min_cluster_size : int = 30, min_samples : int = 30, cut_distance: float = 0.15, flag_reanalysis_of_previous_clustering_result : bool = False, name_col_filter : str = 'filter_hdbscan', name_col_embedding : typing.Union[ str, None ] = 'X_umap', dict_kw_scatter : dict = { 's' : 10, 'linewidth' : 0, 'alpha' : 0.05 } ) :
+        """ # 2022-08-09 02:19:26 
         Perform HDBSCAN for the currently active barcodes
 
         arguments:
         'name_model' : name of the model saved/will be saved in RamData.models database. if the model already exists, 'cut_distance' and 'min_cluster_size' arguments will become active.
         
-        === UMAP input ===
-        'name_col_umap' : 'name_col' of the columns containing UMAP transformed values.
-        'int_num_components_umap' : number of output UMAP components to use for clustering (default: 2)
-        
-        === cell filter ===
-        'name_col_filter' : the name of 'feature'/'barcode' Axis metadata column to retrieve selection filter for running the current method. if None is given, current barcode/feature filters (if it has been set) will be used as-is.
-        
-        === HDBSCAN arguments ===
+        === data input ===
+        'name_col_data' : 'name_col' of the column containing data. UMAP embeddings are recommended (PCA data is not recommended as an input to HDBSCAN clustering, since it is much more sparse and noisy than UMAP embedded data)
+        'int_num_components_data' : number of components of the data for clustering (default: 2)
+
+        === clustering arguments ===
         'min_cluster_size', 'min_samples' : arguments for HDBSCAN method. please refer to the documentation of HDBSCAN (https://hdbscan.readthedocs.io/)
         'cut_distance' and 'min_cluster_size' : arguments for the re-analysis of the clustering result for retrieving more fine-grained/coarse-grained cluster labels (for more info., please refer to hdbscan.HDBSCAN.single_linkage_tree_.get_clusters docstring). 
         'flag_reanalysis_of_previous_clustering_result' : if 'flag_reanalysis_of_previous_clustering_result' is True and 'name_model' exists in the RamData.ns database, use the hdbscan model saved in the database to re-analyze the previous hierarchical DBSCAN clustering result. 'cut_distance' and 'min_cluster_size' arguments can be used to re-analyze the clustering result and retrieve more fine-grained/coarse-grained cluster labels (for more info., please refer to hdbscan.HDBSCAN.single_linkage_tree_.get_clusters docstring). To perform hdbscan from the start, change name_model to a new name or delete the model from RamData.ns database
         
+        === output ===
+        'name_col_label' : 'name_col' of the axis metadata that will contain cluster labels assigned by the current clustering algorithm
+        
+        === cell filter ===
+        'name_col_filter' : the name of 'feature'/'barcode' Axis metadata column to retrieve selection filter for running the current method. if None is given, current barcode/feature filters (if it has been set) will be used as-is.
+        
         === settings for drawing graph ===
-        'flag_draw_graph' : visualize clustering results
+        'name_col_embedding' : 'name_col' of the column containing the embeddings for the visualization of the clustering results. if None is given, the graph will not be drawn
         'dict_kw_scatter' : arguments for 'matplotlib Axes.scatter' that will be used for plotting
 
         returns:
-        embedded_for_training, arr_cluster_label, clusterer(hdbscan object)
+        arr_cluster_label, clusterer(hdbscan object)
         """
         """
         1) Prepare
@@ -7737,22 +7747,19 @@ class RamData( ) :
         if name_col_filter is not None :
             self.change_or_save_filter( name_col_filter )
 
-        flag_embedding_loaded = False # a flag indicating whether the data of the embedded barcodes were loaded
-            
         """
         2) Train model and retrieve cluster labels
         """
         # load the model and retrieve cluster labels
-        clusterer = self.load_model( name_model, 'hdbscan' )
+        type_model = 'hdbscan'
+        clusterer = self.load_model( name_model, type_model )
         if clusterer is None : # if the model does not exist, initiate the model
             clusterer = hdbscan.HDBSCAN( min_cluster_size = min_cluster_size, min_samples = min_samples ) # initiate the model
-            embedded_for_training = self.bc.meta[ name_col_umap, None, : int_num_components_umap ] # retrieve data
-            flag_embedding_loaded = True # update the flag
-            clusterer.fit( embedded_for_training ) # clustering embedded barcodes
+            clusterer.fit( self.bc.meta[ name_col_data, None, : int_num_components_data ] ) # retrieve data # clustering embedded barcodes
             arr_cluster_label = clusterer.labels_ # retrieve cluster labels
             # save trained model
             if name_model is not None : # check validity of 'name_model' 
-                self.save_model( clusterer, name_model, 'hdbscan' ) # save model to the RamData
+                self.save_model( clusterer, name_model, type_model ) # save model to the RamData
         else : # if 'name_model' hdbscan model exists in the database, use the previously computed clustering results
             if flag_reanalysis_of_previous_clustering_result : # if 'flag_reanalysis_of_previous_clustering_result' is True, perform re-analysis of the clustering result
                 arr_cluster_label = clusterer.single_linkage_tree_.get_clusters( cut_distance = cut_distance, min_cluster_size = min_cluster_size ) # re-analyze previous clustering result, and retrieve cluster labels
@@ -7769,17 +7776,124 @@ class RamData( ) :
             print( f'[Info] [RamData.hdbscan] clustering completed for {ax.meta.n_rows} number of barcodes' )
 
         # draw graphs
-        if flag_draw_graph : # visualize clustering results :
+        if name_col_embedding is not None : # visualize clustering results if 'name_col_embedding' has been given
             color_palette = sns.color_palette( 'Paired', len( set( arr_cluster_label ) ) )
             cluster_colors = [ color_palette[ x ] if x >= 0 else ( 0.5, 0.5, 0.5 ) for x in arr_cluster_label ]
             fig, plt_ax = plt.subplots( 1, 1, figsize = ( 7, 7 ) )
-            # load the embedding data if the data has not been loaded
-            if not flag_embedding_loaded :
-                embedded_for_training = self.bc.meta[ name_col_umap, None, : int_num_components_umap ] # retrieve data
-            plt_ax.scatter( * embedded_for_training.T, c = cluster_colors, ** dict_kw_scatter )
+            plt_ax.scatter( * self.bc.meta[ name_col_embedding, None, : 2 ].T, c = cluster_colors, ** dict_kw_scatter ) # retrieve embedding data and draw the graph
             
         # return results
-        return embedded_for_training, arr_cluster_label, clusterer # return the trained model and computed cluster labels
+        return arr_cluster_label, clusterer # return the trained model and computed cluster labels
+    def leiden( self, name_model : str = 'leiden', name_col_data : str = 'X_pca', int_num_components_data : int = 15, name_col_label : str = 'leiden', resolution: float = 0.5, directed: bool = True, use_weights: bool = True, dict_kw_leiden_partition : dict = { 'n_iterations' : -1, 'seed' : 0 }, dict_kw_pynndescent_transformer : dict = { 'n_neighbors' : 10, 'metric' : 'euclidean', 'low_memory' : True }, name_col_filter : str = 'filter_leiden', name_col_embedding : typing.Union[ str, None ] = 'X_umap', dict_kw_scatter : dict = { 's' : 10, 'linewidth' : 0, 'alpha' : 0.05 } ) -> None :
+        """ # 2022-08-09 02:19:31 
+        Perform leiden community detection algorithm (clustering) for the currently active barcodes
+
+        arguments:
+        'name_model' : name of the model saved/will be saved in RamData.models database. if the model already exists, 'cut_distance' and 'min_cluster_size' arguments will become active.
+        
+        === data input ===
+        'name_col_data' : 'name_col' of the column containing data. PCA data is recommended.
+        'int_num_components_data' : number of components of the data for clustering (default: 2)
+        
+        === output ===
+        'name_col_label' : 'name_col' of the axis metadata that will contain cluster labels assigned by the current clustering algorithm
+        
+        === clustering arguments ===
+        'resolution' : resolution of cluster. please refer to 'resolution_parameter' of 'leidenalg.find_partition' method
+        'directed' : create directed graph. it is recommended to set it to True
+        'use_weights' : use weights of the kNN graph for the leiden partitioning
+        'dict_kw_leiden_partition' : a dictionary containing keyworded arguments for the 'leidenalg.find_partition' method
+        'dict_kw_pynndescent_transformer' : a dictionary containing keyworded arguments for the 'pynndescent.PyNNDescentTransformer' method for constructing kNN graph from the data
+        
+        === cell filter ===
+        'name_col_filter' : the name of 'feature'/'barcode' Axis metadata column to retrieve selection filter for running the current method. if None is given, current barcode/feature filters (if it has been set) will be used as-is.
+        
+        === settings for drawing graph ===
+        'name_col_embedding' : 'name_col' of the column containing the embeddings for the visualization of the clustering results. if None is given, the graph will not be drawn
+        'dict_kw_scatter' : arguments for 'matplotlib Axes.scatter' that will be used for plotting
+
+        returns:
+        """
+        """
+        1) Prepare
+        """
+        # # retrieve 'Barcode' Axis object
+        ax = self.bc
+
+        # set filters for operation
+        if name_col_filter is not None :
+            self.change_or_save_filter( name_col_filter )
+
+        """
+        2) construct kNN graph
+        """
+        # load the knn graph
+        type_model = 'knngraph'
+        conn = self.load_model( name_model, type_model )
+        if conn is None : # if the knngraph does not exist, calculate the knngraph
+            knnmodel = pynndescent.PyNNDescentTransformer( ** dict_kw_pynndescent_transformer )
+            conn = knnmodel.fit_transform( ax.meta[ name_col_data, None, : int_num_components_data ] )
+                        
+            # save calculated knngraph
+            if name_model is not None : # check validity of 'name_model' 
+                self.save_model( conn, name_model, type_model ) # save knngraph to the RamData
+                
+        """
+        3) perform leiden clustering
+        """
+        # construct an igraph object from the knn graph
+        def get_igraph_from_adjacency( adjacency, directed = None ) :
+            """ # 2022-08-09 02:28:09 
+            Get igraph graph from adjacency matrix.
+            this code is mostly a copy of a function implemented in scanpy 'https://github.com/scverse/scanpy/blob/536ed15bc73ab5d1131c0d530dd9d4f2dc9aee36/scanpy/_utils/__init__.py'
+            """
+            import igraph as ig
+
+            sources, targets = adjacency.nonzero( )
+            weights = adjacency[ sources, targets ]
+            if isinstance( weights, np.matrix ) :
+                weights = weights.A1
+            g = ig.Graph( directed = directed )
+            g.add_vertices( adjacency.shape[ 0 ] )  # this adds adjacency.shape[0] vertices
+            g.add_edges( list( zip( sources, targets ) ) ) 
+            try:
+                g.es[ 'weight' ] = weights
+            except KeyError:
+                pass
+            if g.vcount() != adjacency.shape[ 0 ]:
+                if self.verbose :
+                    print( f"The constructed graph has only {g.vcount( )} nodes. Your adjacency matrix contained redundant nodes." )
+            return g
+        g = get_igraph_from_adjacency( conn, directed )
+        del conn
+
+        # compose partition arguments
+        if resolution is not None :
+            dict_kw_leiden_partition[ 'resolution_parameter' ] = resolution
+        if use_weights :
+            dict_kw_leiden_partition[ 'weights' ] = np.array( g.es[ 'weight' ] ).astype( np.float64 )
+
+        # store output into adata.obs
+        arr_cluster_label = np.array( leidenalg.find_partition( g, leidenalg.RBConfigurationVertexPartition, ** dict_kw_leiden_partition ).membership )
+        del g
+                
+        """
+        4) save labels
+        """
+        ax.meta[ name_col_label ] = arr_cluster_label
+        
+        # report
+        if self.verbose :
+            print( f'[Info] [RamData.hdbscan] clustering completed for {ax.meta.n_rows} number of barcodes' )
+
+        # draw graphs
+        if name_col_embedding is not None : # visualize clustering results if 'name_col_embedding' has been given
+            color_palette = sns.color_palette( 'Paired', len( set( arr_cluster_label ) ) )
+            cluster_colors = [ color_palette[ x ] if x >= 0 else ( 0.5, 0.5, 0.5 ) for x in arr_cluster_label ]
+            fig, plt_ax = plt.subplots( 1, 1, figsize = ( 7, 7 ) )
+            plt_ax.scatter( * self.bc.meta[ name_col_embedding, None, : 2 ].T, c = cluster_colors, ** dict_kw_scatter ) # retrieve embedding data and draw the graph
+            
+        return
     def train_label( self, name_model : str = 'pynndescent', n_neighbors : int = 10, name_col_label : str = 'hdbscan', name_col_data : str = 'X_pca', int_num_components_data : int = 20, axis : typing.Union[ int, str ] = 'barcodes', name_col_filter : str = 'filter_label', dict_kw_pynndescent : dict = { 'low_memory' : True, 'n_jobs' : None, 'compressed' : False } ) :
         """ # 2022-08-08 16:42:16 
         build nearest-neighbor search index from the entries of the given axis, and using the labels of the entries, predict labels of the remaining entries by performing the nearest-neighbor search using the index
@@ -7926,8 +8040,6 @@ class RamData( ) :
         
         # return the used model
         return labels, index
-
-    
     
     ''' scarab-associated methods for analyzing RamData '''
     def _classify_feature_of_scarab_output_( self, int_min_num_occurrence_to_identify_valid_feature_category = 1000 ) :
