@@ -36,7 +36,7 @@ import pynndescent
 # define version
 _version_ = '0.0.3'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-08-08 00:50:58'
+_last_modified_time_ = '2022-08-09 00:07:57'
 
 """ # 2022-07-21 10:35:42  realease note
 
@@ -107,6 +107,9 @@ RamData.umap has been split into RamData.train_umap and RamData.apply_umap
 
 # 2022-08-08 00:49:58 
 RamData._repr_html_ was added for more interactive visualization of RamData in an interactive IPython environment (such as Jupyter Notebook).
+
+# 2022-08-08 23:14:16 
+implemented PyNNdescent-backed implementation of cluster label assignments using labels assigned to subsampled barcodes, adding RamData.
 
 """
 
@@ -2211,6 +2214,15 @@ def Convert_MTX_10X_to_RamData( path_folder_mtx_10x_input, path_folder_ramdata_o
     
 """ above functions will be moved below eventually """
 
+''' methods for logging purposes '''
+def installed_packages( ) :
+    """ # 2022-08-08 11:52:08 
+    display the installed packages of scelephant
+    """
+    df_installed_packages = bk.PD_Select( bk.PIP_List_Packages( ), index = [ 'biobookshelf', 'typing', 'zarr', 'numcodecs', 'anndata', 'scanpy', 'shelve', 'sklearn', 'tarfile', 'requests', 'shutil', 'numba', 'tqdm', 'umap', 'hdbscan', 'pgzip', 'scipy', 'pynndescent', 'sys', 'os', 'subprocess', 'subprocess', 'multiprocessing', 'ctypes', 'logging', 'inspect', 'copy', 'collections', 'ast', 'pickle', 'traceback', 'mmap', 'itertools', 'math', 'uuid', 'gc', 'time', 'heapq', 'datetime', 'json', 'numpy', 'pandas', 'matplotlib', 'requests', 'ftplib', 'urllib', 'importlib', 'bokeh', 'pysam', 'plotly', 'scanpy', 'bitarray', 'intervaltree', 'statsmodels', 'scipy', 'upsetplot' ] )
+    display( df_installed_packages )
+    return df_installed_packages 
+
 ''' methods for jupyter notebook interaction (IPython) '''
 def html_from_dict( dict_data : dict, name_dict : str = None ) :
     """ # 2022-08-07 23:47:15 
@@ -3715,7 +3727,7 @@ class ZarrDataFrame( ) :
             dict_col_metadata = za.attrs[ 'dict_col_metadata' ] # retrieve metadata of the current column
             return dict_col_metadata
     def initialize_column( self, name_col, dtype = np.float64, shape_not_primary_axis = ( ), chunks = ( ), categorical_values = None ) : 
-        """ # 2022-08-02 11:24:20 
+        """ # 2022-08-08 18:38:27 
         initialize columns with a given shape and given dtype
         'dtype' : initialize the column with this 'dtype'
         'shape_not_primary_axis' : initialize the column with this shape excluding the dimension of the primary axis. if an empty tuple or None is given, a 1D array will be initialized. 
@@ -3781,9 +3793,8 @@ class ZarrDataFrame( ) :
             # write metadata
             za.attrs[ 'dict_col_metadata' ] = dict_col_metadata
 
-            # update zdf metadata
-            self._dict_metadata[ 'columns' ].add( name_col )
-            self._save_metadata_( )
+            # add column to zdf (and update the associated metadata)
+            self._add_column( name_col )
     def __getitem__( self, args ) :
         ''' # 2022-08-02 23:40:47 
         retrieve data of a column.
@@ -5819,6 +5830,11 @@ class RamData( ) :
     def __init__( self, path_folder_ramdata, name_layer = 'raw', int_num_cpus = 64, int_num_cpus_for_fetching_data = 1, dtype_of_feature_and_barcode_indices = np.int32, dtype_of_values = np.float64, int_index_str_rep_for_barcodes = 0, int_index_str_rep_for_features = 1, int_num_entries_for_each_weight_calculation_batch = 2000, int_total_weight_for_each_batch = 10000000, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = True, mode = 'a', path_folder_ramdata_mask = None, dict_kw_zdf = { 'flag_retrieve_categorical_data_as_integers' : False, 'flag_load_data_after_adding_new_column' : True, 'flag_enforce_name_col_with_only_valid_characters' : True }, dict_kw_view = { 'float_min_proportion_of_active_entries_in_an_axis_for_using_array' : 0.1, 'dtype' : np.int32 }, flag_enforce_name_adata_with_only_valid_characters = True, verbose = True, flag_debugging = False ) :
         """ # 2022-07-21 23:32:54 
         """
+        ''' hard-coded settings  '''
+        # define a set of picklable models :
+        self._set_type_model_picklable = { 'ipca', 'hdbscan', 'pynndescent' }
+        
+        ''' modifiable settings '''
         # handle input object paths
         if path_folder_ramdata[ - 1 ] != '/' : # add '/' at the end of path to indicate it is a directory
             path_folder_ramdata += '/'
@@ -7130,7 +7146,7 @@ class RamData( ) :
             return int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value
         self.apply( name_layer_raw, name_layer_out, func, [ [ 'dense', 'sparse_for_querying_barcodes' ] ] )
     ''' utility functions for filter '''
-    def change_filter( self, name_col_filter = None, name_col_filter_bc = None, name_col_filter_ft = None ) :
+    def change_filter( self, name_col_filter = None, name_col_filter_bc = None, name_col_filter_ft = None ) -> None :
         """ # 2022-07-16 17:27:58 
         retrieve and apply filters for 'barcode' and 'feature' Axes
         
@@ -7148,7 +7164,7 @@ class RamData( ) :
         # apply filters
         self.bc.change_filter( name_col_filter_bc ) # bc
         self.ft.change_filter( name_col_filter_ft ) # ft
-    def save_filter( self, name_col_filter = None, name_col_filter_bc = None, name_col_filter_ft = None ) :
+    def save_filter( self, name_col_filter = None, name_col_filter_bc = None, name_col_filter_ft = None ) -> None :
         """ # 2022-07-16 17:27:54 
         save filters for 'barcode' and 'feature' Axes
         
@@ -7157,18 +7173,10 @@ class RamData( ) :
         
         if all name_cols are invalid, no filters will be saved
         """
-        # check validity of name_cols for filter
-        # bc
-        if name_col_filter_bc not in self.bc.meta :
-            name_col_filter_bc = name_col_filter if name_col_filter in self.bc.meta else None # use 'name_col_filter' instead if 'name_col_filter_bc' is invalid
-        # ft
-        if name_col_filter_ft not in self.ft.meta :
-            name_col_filter_ft = name_col_filter if name_col_filter in self.ft.meta else None # use 'name_col_filter' instead if 'name_col_filter_ft' is invalid
-        
         # save filters
-        self.bc.save_filter( name_col_filter_bc ) # bc
-        self.ft.save_filter( name_col_filter_ft ) # ft
-    def change_or_save_filter( self, name_col_filter = None, name_col_filter_bc = None, name_col_filter_ft = None ) :
+        self.bc.save_filter( name_col_filter if name_col_filter_bc is None else name_col_filter_bc ) # bc
+        self.ft.save_filter( name_col_filter if name_col_filter_ft is None else name_col_filter_ft ) # ft
+    def change_or_save_filter( self, name_col_filter = None, name_col_filter_bc = None, name_col_filter_ft = None ) -> None :
         """ # 2022-08-07 02:03:53 
         retrieve and apply filters for 'barcode' and 'feature' Axes, and if the filter names do not exist in the metadata and thus cannot be retrieved, save the currently active entries of each axis to its metadata using the given filter name.
         
@@ -7177,17 +7185,10 @@ class RamData( ) :
         
         if all name_cols are invalid, no filters will be saved/retrieved
         """
-        # check validity of name_cols for filter
-        # bc
-        if name_col_filter_bc not in self.bc.meta :
-            name_col_filter_bc = name_col_filter if name_col_filter in self.bc.meta else None # use 'name_col_filter' instead if 'name_col_filter_bc' is invalid
-        # ft
-        if name_col_filter_ft not in self.ft.meta :
-            name_col_filter_ft = name_col_filter if name_col_filter in self.ft.meta else None # use 'name_col_filter' instead if 'name_col_filter_ft' is invalid
-        
-        # save filters
-        self.bc.change_or_save_filter( name_col_filter_bc ) # bc
-        self.ft.change_or_save_filter( name_col_filter_ft ) # ft
+        # load or save filters ('name_col_filter_bc', 'name_col_filter_ft' get priority over 'name_col_filter')
+        self.bc.change_or_save_filter( name_col_filter if name_col_filter_bc is None else name_col_filter_bc ) # bc
+        self.ft.change_or_save_filter( name_col_filter if name_col_filter_ft is None else name_col_filter_ft ) # ft
+        return
     ''' utility functions for saving/loading models '''
     @property
     def models( self ) :
@@ -7237,11 +7238,8 @@ class RamData( ) :
             # attempts to download the model file
             download_file( path_file_model_remote, path_file_model )
         
-        # define a set of picklable models :
-        set_type_model_picklable = { 'ipca', 'hdbscan' }
-        
         # load model
-        if type_model in set_type_model_picklable : # handle picklable models
+        if type_model in self._set_type_model_picklable : # handle picklable models
             # define path
             name_model_file = f"{name_model}.{type_model}.pickle"
             path_file_model = f"{path_folder_models}{name_model_file}"
@@ -7298,11 +7296,8 @@ class RamData( ) :
         path_folder_models = f"{self._path_folder_ramdata_modifiable}models/" # define a folder to save/load model
         os.makedirs( path_folder_models, exist_ok = True )
         
-        # define a set of picklable models :
-        set_type_model_picklable = { 'ipca', 'hdbscan' }
-        
         # save model
-        if type_model in set_type_model_picklable : # handle picklable models
+        if type_model in self._set_type_model_picklable : # handle picklable models
             path_file_model = f"{path_folder_models}{name_model}.{type_model}.pickle"
             PICKLE_Write( path_file_model, model )
         elif type_model == 'pumap' :
@@ -7347,11 +7342,8 @@ class RamData( ) :
         path_folder_models = f"{self._path_folder_ramdata_modifiable}models/" # define a folder to save/load model
         os.makedirs( path_folder_models, exist_ok = True )
         
-        # define a set of picklable models :
-        set_type_model_picklable = { 'ipca', 'hdbscan' }
-        
         # save model
-        if type_model in set_type_model_picklable : # handle picklable models 
+        if type_model in self._set_type_model_picklable : # handle picklable models 
             path_file_model = f"{path_folder_models}{name_model}.{type_model}.pickle"
         elif type_model == 'pumap' :
             path_prefix_model = f"{path_folder_models}{name_model}.pumap"
@@ -7374,7 +7366,7 @@ class RamData( ) :
         return int_file_size # return the number of bytes of the deleted model file
     ''' memory-efficient dimension reduction/clustering functions '''
     def train_pca( self, name_model = 'ipca', name_layer = 'normalized_log1p', int_num_components = 50, int_num_barcodes_in_ipca_batch = 50000, name_col_filter = 'filter_pca', float_prop_subsampling = 1, name_col_filter_subsampled = 'filter_pca_subsampled', flag_ipca_whiten = False, int_num_threads = 3, flag_show_graph = True ) :
-        """ # 2022-08-06 11:20:06 
+        """ # 2022-08-08 12:01:00 
         Perform incremental PCA in a very memory-efficient manner.
         the resulting incremental PCA model will be saved in the RamData models database.
         
@@ -7454,12 +7446,12 @@ class RamData( ) :
             perform partial fit for batch
             """
             int_num_of_previously_returned_entries, int_num_retrieved_entries, X = res # parse the result
-            pbar.update( int_num_retrieved_entries ) # update the progress bar
             try :
                 ipca.partial_fit( X.toarray( ) ) # perform partial fit using the retrieved data # partial_fit only supports dense array
             except ValueError : # handles 'ValueError: n_components=50 must be less or equal to the batch number of samples 14.' error # 2022-07-18 15:09:52 
                 if self.verbose :
                     print( f'current batch contains less than {int_num_components} number of barcodes, which is incompatible with iPCA model. therefore, current batch will be skipped.' )
+            pbar.update( int_num_retrieved_entries ) # update the progress bar once the training has been completed
             
             if self.verbose : # report
                 print( f'fit completed for {int_num_of_previously_returned_entries + 1}-{int_num_of_previously_returned_entries + int_num_retrieved_entries} barcodes' )
@@ -7495,7 +7487,7 @@ class RamData( ) :
         
         return ipca # return the model
     def apply_pca( self, name_model = 'ipca', name_layer = 'normalized_log1p', name_col = 'X_pca', name_col_filter = 'filter_pca', int_n_components_in_a_chunk = 20, int_num_threads = 5 ) :
-        """ # 2022-08-06 11:20:06 
+        """ # 2022-08-08 22:51:46 
         Apply trained incremental PCA in a memory-efficient manner.
         
         arguments:
@@ -7554,24 +7546,46 @@ class RamData( ) :
             int_num_retrieved_entries = len( l_int_entry_current_batch )
 
             pipe_to_main_process.send( ( int_num_processed_records, l_int_entry_current_batch, rtx.get_sparse_matrix( l_int_entry_current_batch )[ int_num_of_previously_returned_entries : int_num_of_previously_returned_entries + int_num_retrieved_entries ] ) ) # retrieve data as a sparse matrix and send the result of PCA transformation # send the integer representations of the barcodes for PCA value update
+        pipe_sender, pipe_receiver = mp.Pipe( ) # create a communication link between the main process and the worker for saving zarr objects
         pbar = progress_bar( total = rtx.get_total_num_records( int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ) )
         def post_process_batch( res ) :
             """ # 2022-07-13 22:18:26 
-            perform partial fit for batch
+            perform PCA transformation for each batch
             """
             # parse result 
             int_num_processed_records, l_int_entry_current_batch, X = res
             
             X_transformed = ipca.transform( X ) # perform PCA transformation
             del X
-
-            # update the PCA components for the barcodes of the current batch
-            ax.meta[ name_col, l_int_entry_current_batch ] = X_transformed
+            
             pbar.update( int_num_processed_records ) # update the progress bar
+            
+            # send result to the worker
+            pipe_sender.send( ( int_num_processed_records, l_int_entry_current_batch, X_transformed ) )
+        # start the worker 
+        def __worker_for_saving_zarr( pipe_receiver ) :
+            """ # 2022-08-08 18:00:05 
+            save transformed PCA components to the metadata for each batch
+            """
+            while True :
+                res = pipe_receiver.recv( )
+                # terminate if None is received
+                if res is None :
+                    break
+                
+                int_num_processed_records, l_int_entry_current_batch, X_transformed = res # parse the result
+
+                # update the PCA components for the barcodes of the current batch
+                ax.meta[ name_col, l_int_entry_current_batch ] = X_transformed
+        p = mp.Process( target = __worker_for_saving_zarr, args = ( pipe_receiver, ) )
+        p.start( )
 
         # transform values using iPCA using multiple processes
-        bk.Multiprocessing_Batch( rtx.batch_generator( ax.filter, self.int_num_entries_for_each_weight_calculation_batch, self.int_total_weight_for_each_batch ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) 
+        bk.Multiprocessing_Batch( rtx.batch_generator( ax.filter, int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, int_total_weight_for_each_batch = self.int_total_weight_for_each_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) 
         pbar.close( ) # close the progress bar
+        # dismiss the worker
+        pipe_sender.send( None ) # send the termination signal
+        p.join( )
         
         # destroy the view
         self.destroy_view( )
@@ -7687,7 +7701,7 @@ class RamData( ) :
         pbar.close( ) # close the progress bar
 
         return pumap_embedder # return the model
-    def hdbscan( self, name_model : str = 'hdbscan', name_col_umap : str = 'X_umap', int_num_components_umap : int = 2, name_col_filter : str = 'filter_hdbscan', min_cluster_size : int = 30, min_samples : int = 30, cut_distance: float = 0.15, flag_reanalysis_of_previous_clustering_result : bool = False, flag_draw_graph : bool = True, dict_kw_scatter : dict = { 's' : 10, 'linewidth' : 0, 'alpha' : 0.05 } ) :
+    def hdbscan( self, name_model : str = 'hdbscan', name_col_umap : str = 'X_umap', int_num_components_umap : int = 2, name_col_label : str = 'hdbscan', name_col_filter : str = 'filter_hdbscan', min_cluster_size : int = 30, min_samples : int = 30, cut_distance: float = 0.15, flag_reanalysis_of_previous_clustering_result : bool = False, flag_draw_graph : bool = True, dict_kw_scatter : dict = { 's' : 10, 'linewidth' : 0, 'alpha' : 0.05 } ) :
         """ # 2022-08-07 16:32:18 
         Perform HDBSCAN for the currently active barcodes
 
@@ -7744,6 +7758,11 @@ class RamData( ) :
                 arr_cluster_label = clusterer.single_linkage_tree_.get_clusters( cut_distance = cut_distance, min_cluster_size = min_cluster_size ) # re-analyze previous clustering result, and retrieve cluster labels
             else :
                 arr_cluster_label = clusterer.labels_ # retrieve previously calculated cluster labels
+                
+        """
+        3) save labels
+        """
+        ax.meta[ name_col_label ] = arr_cluster_label
         
         # report
         if self.verbose :
@@ -7761,164 +7780,156 @@ class RamData( ) :
             
         # return results
         return embedded_for_training, arr_cluster_label, clusterer # return the trained model and computed cluster labels
-    
-    def predict_label_hdbscan( self, name_model = 'hdbscan', min_cluster_size = 30, min_samples = 30, name_col_umap = 'X_umap', int_num_components_umap = 2, name_col_hdbscan = 'hdbscan', flag_reanalysis_of_previous_clustering_result = False, cut_distance = 0.15, flag_use_pynndescent = True, int_num_threads = 10, int_num_barcodes_in_cluster_label_prediction_batch = 10000, name_col_filter = 'filter_normalized_log1p_highly_variable', float_prop_subsampling_for_clustering = 0.2, name_col_filter_subsampled_for_clustering = 'filter_hdbscan_subsampling_for_clustering', float_prop_subsampling_for_cluster_label_prediction = 0.2, flag_draw_graph = True, dict_kw_scatter = { 's' : 10, 'linewidth' : 0, 'alpha' : 0.05 }, flag_no_prediction = True ) :
-        """ # 2022-07-21 10:34:43 
-        Perform HDBSCAN with subsampling for a scalable analysis of single-cell data
-
-
+    def train_label( self, name_model : str = 'pynndescent', n_neighbors : int = 10, name_col_label : str = 'hdbscan', name_col_data : str = 'X_pca', int_num_components_data : int = 20, axis : typing.Union[ int, str ] = 'barcodes', name_col_filter : str = 'filter_label', dict_kw_pynndescent : dict = { 'low_memory' : True, 'n_jobs' : None, 'compressed' : False } ) :
+        """ # 2022-08-08 16:42:16 
+        build nearest-neighbor search index from the entries of the given axis, and using the labels of the entries, predict labels of the remaining entries by performing the nearest-neighbor search using the index
+        
         arguments:
-        'name_model' : name of the model saved/will be saved in RamData.ns database. if the model already exists, 'flag_recluster' 'cut_distance', and 'min_cluster_size' arguments will become active.
-        'min_cluster_size', 'min_samples' : arguments for HDBSCAN method. please refer to the documentation of HDBSCAN (https://hdbscan.readthedocs.io/)
-        'name_col_umap' : a prefix for the 'name_col' of the columns containing UMAP transformed values.
-        'int_num_components_umap' : number of output UMAP components to use for clustering (default: 2)
-        'flag_reanalysis_of_previous_clustering_result' : if 'flag_reanalysis_of_previous_clustering_result' is True and 'name_model' exists in the RamData.ns database, use the hdbscan model saved in the database to re-analyze the previous hierarchical DBSCAN clustering result. 'cut_distance' and 'min_cluster_size' arguments can be used to re-analyze the clustering result and retrieve more fine-grained/coarse-grained cluster labels (for more info., please refer to hdbscan.HDBSCAN.single_linkage_tree_.get_clusters docstring). To perform hdbscan from the start, change name_model to a new name or delete the model from RamData.ns database
-        'cut_distance' and 'min_cluster_size' : arguments for the re-analysis of the clustering result for retrieving more fine-grained/coarse-grained cluster labels (for more info., please refer to hdbscan.HDBSCAN.single_linkage_tree_.get_clusters docstring). 
-        'name_col_hdbscan' : the name of the RamData.ft.meta ZarrDataFrame column to which estimated/predicted cluster labels will be written (if the column already exists, it will be (partially, depending on the filter) overwritten).
-
-        'flag_use_pynndescent' : set this flag to True to use pynndescent for kNN search (k=1) for efficient cluster label identification
-        'int_num_threads' : the number of threads for the cluster label prediction jobs
-        'int_num_barcodes_in_cluster_label_prediction_batch' : when predicting the cluster labels using the clustering results from subsampled cells, using this number of barcodes for each batch
-        'name_col_filter' : the name of 'feature'/'barcode' Axis metadata column to retrieve selection filter for running the current method. if None is given, current barcode/feature filters (if it has been set) will be used as-is.
-        'float_prop_subsampling_for_clustering' : perform clustering using smaller number of barcodes than the actual dataset using subsampling. decreasing this value will reduce the memory consumption and comoputation time for HDBSCAN, but the clustering label qualities might decrease due to limited representations of barcodes in the dataset.
-        'name_col_filter_subsampled_for_clustering' : the name of 'barcode' Axis metadata column to retrieve or save mask containing subsampled barcodes for clustering. if 'None' is given and 'float_prop_subsampling_for_clustering' is below 1 (i.e. subsampling will be used), the generated subsampling filter will not be saved.
-        'float_prop_subsampling_for_cluster_label_prediction' : for cluster label prediction, further subsampling of barcodes that have been used for clustering will increase the prediction efficiency while decreasing the prediction accuracy minimally for most clusters (for clusters with small number/low density of barcodes, prediction accuracy might decrease significantly.)    
-
-        'flag_draw_graph' : visualize clustering results
-        'dict_kw_scatter' : arguments for 'matplotlib Axes.scatter' that will be used for plotting
-        'flag_no_prediction' : skip prediction step (if subsampling is used) for manual iterative parameter optimization
-
+        === general ===
+        'axis' : { 0 or 'barcodes' } for operating on the 'barcodes' axis, and { 1 or 'features' } for operating on the 'features' axis
+        
+        === nearest-neighbor search index ===
+        'name_model' : name of the nearest-neighbor index and associated lables of the entries of the index that was saved/will be saved in the RamData.models database. if the model already exists, the index and the associated labels will be loadeded, and will be used to predict labels of the remaining entries.
+        'n_neighbors' : the number of neighbors to use for the index
+        'dict_kw_pynndescent' : the remaining arguments for constructing the index pynndescent.NNDescen 'model'
+        
+        === data input ===
+        'name_col_filter' : the 'name_col' of the metadata of the given axis containing the filter marking the entries that will be used for trainining (building the index)
+        'name_col_label' : the 'name_col' of the metadata of the given axis containing 'labels'.
+        'name_col_data' : the 'name_col' of the metadata of the given axis containing 'data' for building nearest-neighbor search.
+        'int_num_components_data' : the number of components in the 'data' to use. for example, when 'int_num_components_data' is 2 and the 'data' contains 3 components, only the first two components will be used to build the index
+        
         returns:
-        embedded_for_training, arr_cluster_label, clusterer(hdbscan object)
+        labels, index 
         """
-        """
-        1) Prepare
-        """
-        # # retrieve 'Barcode' Axis object
-        ax = self.bc
-
+        # handle inputs
+        flag_axis_is_barcode = axis in { 0, 'barcode', 'barcodes' } # retrieve a flag indicating whether the data is summarized for each barcode or not
+        
+        ax = self.bc if flag_axis_is_barcode else self.ft # retrieve the appropriate Axis object
+        
         # set filters for operation
         if name_col_filter is not None :
-            self.change_filter( name_col_filter )
-
-        # retrieve a flag indicating whether a subsampling is active
-        float_prop_subsampling, name_col_filter_subsampled = float_prop_subsampling_for_clustering, name_col_filter_subsampled_for_clustering # rename values
-        flag_is_subsampling_active = ( name_col_filter_subsampled in self.bc.meta ) or ( float_prop_subsampling is not None and float_prop_subsampling < 1 )
-
-        # if a subsampling is active, retrieve a filter containing subsampled barcodes and apply the filter to the 'barcode' Axis
-        if flag_is_subsampling_active :
-            # retrieve barcode filter before subsampling (back-up)
-            ba_filter_bc_before_subsampling = self.bc.filter
-
-            # set barcode filter after subsampling
-            if name_col_filter_subsampled in self.bc.meta : # if 'name_col_filter_subsampled' barcode filter is available, load the filter
-                self.bc.change_filter( name_col_filter_subsampled )
-            else : # if the 'name_col_filter_subsampled' barcode filter is not available, build a filter containing subsampled entries and save the filter
-                self.bc.filter = self.bc.subsample( float_prop_subsampling = float_prop_subsampling ) 
-                self.bc.save_filter( name_col_filter_subsampled )
-
+            self.change_or_save_filter( name_col_filter )
+            
         """
-        2) Train Model with/without subsampling of barcodes, and retrieve cluster labels
+        2) Train model and retrieve cluster labels
         """
-        # initialize
-        embedded_for_training = self.bc.meta[ name_col_umap, None, : int_num_components_umap ] # retrieve embedded barcodes (with/without subsampling)
+        # load the model and retrieve cluster labels
+        type_model = 'pynndescent'
+        model = self.load_model( name_model, type_model )
+        if model is None : # if the model does not exist, initiate the model
+            # load training data
+            data = ax.meta[ name_col_data, None, : int_num_components_data ]
+            labels = ax.meta[ name_col_label ]
+            
+            index = pynndescent.NNDescent( data, n_neighbors = n_neighbors, ** dict_kw_pynndescent )
+            index.prepare( ) # prepare index for searching
 
-        if name_model in self.ns : # if 'name_model' exists in the database, use the previously computed clustering results
-            clusterer = self.ns[ name_model ] # retrieve previously saved model
-            if flag_reanalysis_of_previous_clustering_result : # if 'flag_reanalysis_of_previous_clustering_result' is True, perform re-analysis of the clustering result
-                arr_cluster_label = clusterer.single_linkage_tree_.get_clusters( cut_distance = cut_distance, min_cluster_size = min_cluster_size ) # re-analyze previous clustering result, and retrieve cluster labels
-            else :
-                arr_cluster_label = clusterer.labels_ # retrieve previously calculated cluster labels
-        else :
-            clusterer = hdbscan.HDBSCAN( min_cluster_size = min_cluster_size, min_samples = min_samples )
-            clusterer.fit( embedded_for_training ) # clustering embedded barcodes
-            arr_cluster_label = clusterer.labels_ # retrieve cluster labels
             # save trained model
             if name_model is not None : # check validity of 'name_model' 
-                self.ns[ name_model ] = clusterer
+                self.save_model( ( labels, index ), name_model, type_model ) # save model to the RamData # save both labels used for prediction and the index
+        else : # if the model with 'name_model' name exists in the database, use the previously saved model
+            labels, index = model # parse the model
         
         # report
         if self.verbose :
-            print( 'clustering completed' )
+            print( f"[Info] [RamData.train_label] training of labels completed for {ax.meta.n_rows} number of entries of the axis '{'barcodes' if flag_axis_is_barcode else 'features'}'" )
 
-        # if subsampling has been completed, revert to the original barcode selection filter (restore)
-        if flag_is_subsampling_active :
-            self.bc.filter = ba_filter_bc_before_subsampling
-            del ba_filter_bc_before_subsampling
+        # return the model
+        return labels, index # return the trained model and computed cluster labels
+    def apply_label( self, name_model : str = 'pynndescent', name_col_label : str = 'hdbscan', name_col_data : str = 'X_pca', int_num_threads : int = 10, int_num_entries_in_a_batch : int = 10000, axis : typing.Union[ int, str ] = 'barcodes', name_col_filter : str = 'filter_pca' ) :
+        """ # 2022-08-08 16:42:16 
+        build nearest-neighbor search index from the entries of the given axis, and using the labels of the entries, predict labels of the remaining entries by performing the nearest-neighbor search using the index
+        
+        arguments:
+        === general ===
+        'axis' : { 0 or 'barcodes' } for operating on the 'barcodes' axis, and { 1 or 'features' } for operating on the 'features' axis
+        'int_num_threads' : the number of threads to use for assigning labels. 3 ~ 10 are recommended.
+        'int_num_entries_in_a_batch' : the number of entries to assign labels in each batch
+        
+        === nearest-neighbor search index ===
+        'name_model' : name of the nearest-neighbor index and associated lables of the entries of the index that was saved/will be saved in the RamData.models database. if the model already exists, the index and the associated labels will be loadeded, and will be used to predict labels of the remaining entries.
+        
+        === data input ===
+        'name_col_label' : the 'name_col' of the metadata of the given axis that will contain assigned 'labels' (existing data will be overwritten).
+        'name_col_data' : the 'name_col' of the metadata of the given axis containing 'data' for building nearest-neighbor search.
+        'int_num_components_data' : the number of components in the 'data' to use. for example, when 'int_num_components_data' is 2 and the 'data' contains 3 components, only the first two components will be used to build the index
+        
+        === data input - [data] ===
+        'name_col_filter' : the name of 'feature'/'barcode' Axis metadata column to retrieve selection filter for running the current method. if None is given, current barcode/feature filters (if it has been set) will be used as-is.
+        
+        returns:
+        labels, index 
+        """
+        """ prepare """
+        # handle inputs
+        flag_axis_is_barcode = axis in { 0, 'barcode', 'barcodes' } # retrieve a flag indicating whether the data is summarized for each barcode or not
+        
+        ax = self.bc if flag_axis_is_barcode else self.ft # retrieve the appropriate Axis object
+        
+        # set filters for operation
+        if name_col_filter is not None :
+            self.change_filter( name_col_filter )
+            
+        """
+        load model and the associated data objects
+        """
+        # load the model and retrieve cluster labels
+        type_model = 'pynndescent'
+        model = self.load_model( name_model, type_model )
+        if model is None : # if the model does not exist, initiate the model
+            if self.verbose :
+                print( f"[Info] [RamData.apply_label] the nearest-neighbor search index '{name_model}' does not exist, exiting" )
+                return 
+        labels, index = model # parse the model
 
-        if flag_draw_graph : # visualize clustering results :
-            color_palette = sns.color_palette( 'Paired', len( set( arr_cluster_label ) ) )
-            cluster_colors = [ color_palette[ x ] if x >= 0 else ( 0.5, 0.5, 0.5 ) for x in arr_cluster_label ]
-            fig, plt_ax = plt.subplots( 1, 1, figsize = ( 7, 7 ) )
-            plt_ax.scatter( * embedded_for_training.T, c = cluster_colors, ** dict_kw_scatter )
-
-        if flag_no_prediction : # complete the method without cluster label prediction of remaining embedded barcodes if 'flag_no_prediction' is True
-            return embedded_for_training, arr_cluster_label, clusterer # return the trained model and computed cluster labels
+        # retrieve the number of components for the model
+        int_num_components_data = index.dim
 
         """
-        2) Transform Data (prediction of cluster labels)
+        assign labels
         """
-        if flag_is_subsampling_active : # when subsampling was used
-            # subsample the training dataset if 'float_prop_subsampling_for_cluster_label_prediction' < 1
-            if float_prop_subsampling_for_cluster_label_prediction < 1 : # if subsampling of traning data is active, subsamples training data for more efficient (but possibly less accurate) prediction of cluster labels
-                arr_mask = np.random.random( len( arr_cluster_label ) ) < float_prop_subsampling_for_cluster_label_prediction # retrieve arr_mask for subsampling of data used for training
-                embedded_for_training = embedded_for_training[ arr_mask ]
-                arr_cluster_label = arr_cluster_label[ arr_mask ]
-                del arr_mask
+        # define functions for multiprocessing step
+        def process_batch( batch, pipe_to_main_process ) :
+            ''' # 2022-07-13 22:18:22 
+            retrieve data and retrieve transformed PCA values for the batch
+            '''
+            # parse the received batch
+            int_num_of_previously_returned_entries, l_int_entry_current_batch = batch[ 'int_num_of_previously_returned_entries' ], batch[ 'l_int_entry_current_batch' ]
+            
+            # retrieve data from the axis metadata
+            data = ax.meta[ name_col_data, l_int_entry_current_batch, : int_num_components_data ]
+            
+            neighbors, distances = index.query( data ) # retrieve neighbors using the index
+            del data, distances
+            
+            labels_assigned = list( bk.DICTIONARY_Find_keys_with_max_value( bk.COUNTER( labels[ e ] ) )[ 0 ][ 0 ] for e in neighbors ) # assign labels using the labels of nearest neighbors
+            del neighbors
+            
+            pipe_to_main_process.send( ( l_int_entry_current_batch, labels_assigned ) ) # send the result back to the main process
+        pbar = progress_bar( total = ax.meta.n_rows ) # initialize the progress bar
+        def post_process_batch( res ) :
+            """ # 2022-07-13 22:18:26 
+            perform PCA transformation for each batch
+            """
+            # parse result 
+            l_int_entry_current_batch, labels_assigned = res
+            int_num_retrieved_entries = len( l_int_entry_current_batch )
+            
+            # write the result to the axis metadata
+            ax.meta[ name_col_label, l_int_entry_current_batch ] = labels_assigned
+            
+            pbar.update( int_num_retrieved_entries ) # update the progress bar
+        # transform values using iPCA using multiple processes
+        bk.Multiprocessing_Batch( ax.batch_generator( ax.filter, int_num_entries_for_batch = int_num_entries_in_a_batch, flag_mix_randomly = False ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) 
+        pbar.close( ) # close the progress bar
+        
+        # return the used model
+        return labels, index
 
-            if flag_use_pynndescent : # use pynndescent for fast approximate kNN search for k=1
-                pass
-#                                     index = NNDescent( data )
-#                     index pynndescent.NNDescent(  )
-#                     index = NNDescent(data)
-#                     You can then use the index for searching (and can pickle it to disk if you wish). To search a pynndescent index for the 15 nearest neighbors of a test data set query_data you can do something like
-
-#                     index.query(query_data, k=15)
-                
-            else : # if no other external algorithms are used, fallback to a jit-compiled kNN search algorithm
-                # jit compile a function for finding cluster labels of nearest neighbors
-                @jit( nopython = True )
-                def find_cluster_labels_of_nearest_neighbors( embedded_for_training : np.ndarray, arr_cluster_label : np.ndarray, embedded_for_prediction : np.ndarray, arr_cluster_label_predicted : np.ndarray ) :
-                    ''' # 2022-07-17 19:12:56 
-                    find cluster labels of nearest neighbors
-                    '''
-                    for i in range( len( embedded_for_prediction ) ) : # for each embedded point
-                        arr_cluster_label_predicted[ i ] = arr_cluster_label[ ( ( embedded_for_training - embedded_for_prediction[ i ] ) ** 2 ).sum( axis = 1 ).argmin( ) ] # identify cluster label of the nearest neighbor of the current embedded point
-                    return arr_cluster_label_predicted
-
-
-            # define functions for multiprocessing step
-            def process_batch( batch, pipe_to_main_process ) :
-                ''' # 2022-07-13 22:18:22 
-                retrieve embedding of the barcodes of the current batch and predict cluster labels based on the inputs and outputs of the (subsampled) training data
-                '''
-                # parse the received batch
-                int_num_of_previously_returned_entries, l_int_entry_current_batch = batch 
-
-                embedded_for_prediction = self.bc.meta[ name_col_umap, l_int_entry_current_batch, : int_num_components_umap ] # retrieve umap embedding from ax.meta ZDF for the current batch
-                arr_cluster_label_predicted = np.zeros( len( embedded_for_prediction ), dtype = int ) # initialize 'arr_cluster_label_predicted'
-                arr_cluster_label_predicted = find_cluster_labels_of_nearest_neighbors( embedded_for_training, arr_cluster_label, embedded_for_prediction, arr_cluster_label_predicted ) # find cluster lables of embedded barcodes using nearest neighbors
-                del embedded_for_prediction
-
-                pipe_to_main_process.send( ( l_int_entry_current_batch, arr_cluster_label_predicted ) ) # send the integer representations of the barcodes for PCA value update
-            def post_process_batch( res ) :
-                """ # 2022-07-13 22:18:26 
-                retrieve predicted cluster labels and write to the Axis.metadata of the 'barcode' axis
-                """
-                # parse result 
-                l_int_entry_current_batch, arr_cluster_label_predicted = res
-
-                # update cluster labels for the barcodes of the current batch
-                ax.meta[ name_col_hdbscan, l_int_entry_current_batch ] = arr_cluster_label_predicted
-
-            # transform values using iPCA using multiple processes
-            bk.Multiprocessing_Batch( ax.batch_generator( int_num_entries_for_batch = int_num_barcodes_in_cluster_label_prediction_batch, flag_return_the_number_of_previously_returned_entries = True ), process_batch, post_process_batch = post_process_batch, int_num_threads = max( int_num_threads, 2 ), int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) # number of threads for multi-processing should be >1 # generate batch with fixed number of barcodes
-        else : # if all barcodes were used for clustering, simply add retrieved cluster labels to the metadata
-            ax.meta[ name_col_hdbscan ] = arr_cluster_label
-
-        return embedded_for_training, arr_cluster_label, clusterer # return the trained model and computed cluster labels
     
-    ''' satellite methods for analyzing RamData '''
+    
+    ''' scarab-associated methods for analyzing RamData '''
     def _classify_feature_of_scarab_output_( self, int_min_num_occurrence_to_identify_valid_feature_category = 1000 ) :
         """ # 2022-05-30 12:39:01 
         classify features of count matrix from the scarab output.
