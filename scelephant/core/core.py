@@ -7609,7 +7609,7 @@ class RamData( ) :
         self.destroy_view( )
         return 
     ''' memory-efficient UMAP '''
-    def train_umap( self, name_col_pca = 'X_pca', int_num_components_pca = 20, int_num_components_umap = 2, name_col_filter : Union[ str, None ] = 'filter_umap', name_pumap_model = 'pumap', name_pumap_model_new : Union[ str, None ] = None ) :
+    def train_umap( self, name_col_pca = 'X_pca', int_num_components_pca = 20, int_num_components_umap = 2, name_col_filter : Union[ str, None ] = 'filter_umap', name_pumap_model = 'pumap', name_pumap_model_new : Union[ str, None ] = None, dict_kw_pumap : dict = { 'metric' : 'euclidean' } ) :
         """ # 2022-08-07 11:13:38 
         Perform Parametric UMAP to embed cells in reduced dimensions for a scalable analysis of single-cell data
         
@@ -7627,6 +7627,8 @@ class RamData( ) :
         'name_col_filter' : the name of 'feature'/'barcode' Axis metadata column to retrieve selection filter for highly-variable-features. (default: None) if None is given, current feature filter (if it has been set) will be used as-is. if a valid filter is given, filter WILL BE CHANGED.
         'name_pumap_model' = 'pumap' : the name of the parametric UMAP model. if None is given, the trained model will not be saved to the RamData object. if the model already exists, the model will be loaded and trained again.
         'name_pumap_model_new' = 'pumap' : the name of the new parametric UMAP model after the training. if None is given, the new model will not be saved. if 'name_pumap_model' and 'name_pumap_model_new' are the same, the previously written model will be overwritten.
+        'dict_kw_pumap' : remaining keyworded arguments of umap.ParametricUMAP
+        
         """
         """
         1) Prepare
@@ -7646,7 +7648,7 @@ class RamData( ) :
         # load pumap model
         pumap_embedder = self.load_model( name_pumap_model, 'pumap' )
         if pumap_embedder is None :
-            pumap_embedder = pumap.ParametricUMAP( low_memory = True, n_components = int_num_components_umap ) # load an empty model if a saved model is not available
+            pumap_embedder = pumap.ParametricUMAP( low_memory = True, n_components = int_num_components_umap, ** dict_kw_pumap ) # load an empty model if a saved model is not available
 
         # train parametric UMAP model
         pumap_embedder.fit( self.bc.meta[ name_col_pca, None, : int_num_components_pca ] )
@@ -8088,13 +8090,14 @@ class RamData( ) :
         # return the counts of each unique label
         return dict_label_counter
     ''' subsampling method '''
-    def subsample( self, name_model = 'leiden', int_num_entries_to_subsample : int = 100000, int_num_iterations_for_subsampling : int = 3, name_col_data : str = 'X_pca', int_num_components_data : int = 20, int_num_clus_expected : Union[ int, None ] = 20, name_col_label : str = 'subsampling_label', name_col_avg_dist : str = 'subsampling_avg_dist', axis : typing.Union[ int, str ] = 'barcodes', 
+    def subsample( self, name_model = 'leiden', int_num_entries_to_use : int = 30000, int_num_entries_to_subsample : int = 100000, int_num_iterations_for_subsampling : int = 2, name_col_data : str = 'X_pca', int_num_components_data : int = 20, int_num_clus_expected : Union[ int, None ] = 20, name_col_label : str = 'subsampling_label', name_col_avg_dist : str = 'subsampling_avg_dist', axis : typing.Union[ int, str ] = 'barcodes', 
                   name_col_filter : str = 'filter_pca', name_col_filter_subsampled : str = "filter_subsampled", resolution = 0.7, directed : bool = True, use_weights : bool = True, dict_kw_leiden_partition : dict = { 'n_iterations' : -1, 'seed' : 0 }, dict_kw_pynndescent_transformer : dict = { 'n_neighbors' : 10, 'metric' : 'euclidean', 'low_memory' : True }, n_neighbors : int = 20, dict_kw_pynndescent : dict = { 'low_memory' : True, 'n_jobs' : None, 'compressed' : False }, int_num_threads : int = 10, int_num_entries_in_a_batch : int = 10000 ) :
         """ # 2022-08-10 04:15:38 
         subsample informative entries through iterative density-based subsampling combined with community detection algorithm
         
         arguments:
         === general ===
+        'int_num_entries_to_use' : the number of entries to use during iterative subsampling
         'int_num_entries_to_subsample' : the number of entries to subsample
         'axis' : { 0 or 'barcodes' } for operating on the 'barcodes' axis, and { 1 or 'features' } for operating on the 'features' axis
         'int_num_threads' : the number of threads to use for nearest neighbor search. 3 ~ 10 are recommended.
@@ -8137,7 +8140,6 @@ class RamData( ) :
         ax.meta.initialize_column( name_col_label, dtype = np.int32, shape_not_primary_axis = ( int_num_iterations_for_subsampling, ), chunks = ( 1, ), categorical_values = None ) 
         ax.meta.initialize_column( name_col_avg_dist, dtype = np.float64, shape_not_primary_axis = ( int_num_iterations_for_subsampling, ), chunks = ( 1, ), categorical_values = None )
         
-        print( name_col_label, ax.meta[ name_col_label ].shape )
         # set filters for operation
         if name_col_filter is None :
             if self.verbose  :
@@ -8146,14 +8148,13 @@ class RamData( ) :
         self.change_or_save_filter( name_col_filter )
         
         # when the number of entries is below 'int_num_entries_to_subsample'
-        float_subsampling_ratio = min( 1, int_num_entries_to_subsample / ax.meta.n_rows ) # retrieve subsampling ratio
-        if float_subsampling_ratio == 1 :
+        if int_num_entries_to_subsample >= ax.meta.n_rows :
             """ if no subsampling is required, save the current filter as the subsampled filter, and exit """
             self.save_filter( name_col_filter_subsampled )
             return
         
         # perform initial random sampling
-        ax.filter = ax.subsample( float_subsampling_ratio )
+        ax.filter = ax.subsample( min( 1, int_num_entries_to_use / ax.meta.n_rows ) ) # retrieve subsampling ratio
         self.save_filter( name_col_filter_subsampled ) # save subsampled filter
         
         type_model = 'knn_classifier'
@@ -8236,13 +8237,15 @@ class RamData( ) :
             for label in dict_label_count :
                 arr_label_count[ label ] = dict_label_count[ label ]
             
-            int_label_count_current_threshold = int( int_num_entries_to_subsample / int_num_labels ) # initialize the threshold
+            int_num_entries_to_include = int_num_entries_to_subsample if index_iteration == int_num_iterations_for_subsampling - 1 else int_num_entries_to_use # if the current round is the last round, include 'int_num_entries_to_subsample' number of entries in the output filter. if not, include 'int_num_entries_to_use' number of entries for next iteration
+            
+            int_label_count_current_threshold = int( int_num_entries_to_include / int_num_labels ) # initialize the threshold
             for index_current_label in np.argsort( arr_label_count ) : # from label with the smallest number of entries to label with the largest number of entries
                 int_label_count = arr_label_count[ index_current_label ]
                 if int_label_count > int_label_count_current_threshold :
                     break
                 arr = arr_label_count[ arr_label_count <= int_label_count ]
-                int_label_count_current_threshold = int( ( int_num_entries_to_subsample - arr.sum( ) ) / ( int_num_labels - len( arr ) ) )
+                int_label_count_current_threshold = int( ( int_num_entries_to_include - arr.sum( ) ) / ( int_num_labels - len( arr ) ) )
                 
             # retrieve number of entries to subsample for each label
             arr_label_count_subsampled = deepcopy( arr_label_count )
