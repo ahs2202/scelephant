@@ -1,5 +1,6 @@
 # core
 import typing # import typing
+from typing import Union
 from biobookshelf.main import *
 from biobookshelf import *
 import biobookshelf as bk
@@ -40,7 +41,7 @@ import igraph as ig
 # define version
 _version_ = '0.0.3'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-08-09 00:07:57'
+_last_modified_time_ = '2022-08-10 10:02:37'
 
 """ # 2022-07-21 10:35:42  realease note
 
@@ -117,6 +118,12 @@ implemented PyNNdescent-backed implementation of cluster label assignments using
 
 # 2022-08-09 03:13:15 
 implemented leiden clustering algorithm using 'leidenalg.find_partition' method
+
+# 2022-08-10 04:51:54 
+implemented subsampling method using iterative community detection and density-based subsampling algorithms (RamData.subsample)
+
+# 2022-08-10 10:02:18 
+RamData.delete_model error corrected
 
 """
 
@@ -3891,7 +3898,7 @@ class ZarrDataFrame( ) :
                         values[ t_coord ] = l_value_unique[ val ] if val >= 0 else np.nan # convert integer representations to its original string values # -1 (negative integers) encodes np.nan
                     return values
     def __setitem__( self, args, values ) :
-        ''' # 2022-08-03 21:45:02 
+        ''' # 2022-08-10 03:13:44 
         save/update a column at indexed positions.
         when a filter is active, only active entries will be saved/updated automatically.
         boolean mask/integer arrays/slice indexing is supported. However, indexing will be applied to the original column with unfiltered rows (i.e., when indexing is active, filter will be ignored)
@@ -4102,7 +4109,7 @@ class ZarrDataFrame( ) :
         if flag_indexing_primary_axis and name_col in self._loaded_data :
             del self._loaded_data[ name_col ]
         # add data to the loaded data dictionary (object cache) if 'self._flag_load_data_after_adding_new_column' is True and indexing was not used
-        if self._flag_load_data_after_adding_new_column and not flag_indexing_primary_axis : 
+        if self._flag_load_data_after_adding_new_column and not flag_indexing_primary_axis and coords_rest is None :  # no indexing through secondary axis, too
             self._loaded_data[ name_col ] = values_before_encoding if dict_col_metadata[ 'flag_categorical' ] else values
     def __delitem__( self, name_col ) :
         ''' # 2022-06-20 21:57:38 
@@ -5813,7 +5820,7 @@ class RamDataLayer( ) :
 
 ''' class for storing RamData '''
 class RamData( ) :
-    """ # 2022-08-03 00:55:14 
+    """ # 2022-08-09 03:15:16 
     This class provides frameworks for single-cell transcriptomic/genomic data analysis, utilizing RAMtx data structures, which is backed by Zarr persistant arrays.
     Extreme lazy loading strategies used by this class allows efficient parallelization of analysis of single cell data with minimal memory footprint, loading only essential data required for analysis. 
     
@@ -5839,7 +5846,7 @@ class RamData( ) :
         """
         ''' hard-coded settings  '''
         # define a set of picklable models :
-        self._set_type_model_picklable = { 'ipca', 'hdbscan', 'pynndescent', 'knngraph' }
+        self._set_type_model_picklable = { 'ipca', 'hdbscan', 'knn_classifier', 'knngraph' }
         
         ''' modifiable settings '''
         # handle input object paths
@@ -6230,7 +6237,7 @@ class RamData( ) :
             path_folder_temp = f"{path_folder}temp_{UUID( )}/"
             os.makedirs( path_folder_temp, exist_ok = True ) # create the temporary folder
             return path_folder_temp # return the path to the temporary folder
-    def summarize( self, name_layer, axis, summarizing_func ) :
+    def summarize( self, name_layer : str, axis : Union[ int, str ], summarizing_func, l_name_col_summarized = None ) :
         ''' # 2022-07-20 23:40:02 
         this function summarize entries of the given axis (0 = barcode, 1 = feature) using the given function
         
@@ -6266,6 +6273,8 @@ class RamData( ) :
                             calculate the min and max values, and count the number of active barcodes/features (that were not indexed) for the entry of the indexed axis
                             
                             returns: 'count', 'max', 'min'
+                            
+        'l_name_col_summarized' : list of column names returned by 'summarizing_func'. by default (when None is given), the list of column names will be inferred by observing output when giving zero values as inputs
         
         =========
         outputs 
@@ -6336,10 +6345,12 @@ class RamData( ) :
             if self.verbose :
                 print( f"given summarizing_func is not a function, exiting" )
             return -1
-        # retrieve the list of key values returned by 'summarizing_func' by applying dummy values
-        arr_dummy_one, arr_dummy_zero = np.ones( 10, dtype = int ), np.zeros( 10, dtype = int )
-        dict_res = summarizing_func( self, 0, arr_dummy_zero, arr_dummy_one )
-        l_name_col_summarized = sorted( list( dict_res ) ) # retrieve the list of key values of an dict_res result returned by 'summarizing_func'
+        # infer 'l_name_col_summarized'
+        if l_name_col_summarized is None :
+            # retrieve the list of key values returned by 'summarizing_func' by applying dummy values
+            arr_dummy_one, arr_dummy_zero = np.ones( 10, dtype = int ), np.zeros( 10, dtype = int )
+            l_name_col_summarized = list( summarizing_func( self, 0, arr_dummy_zero, arr_dummy_one ) )
+        l_name_col_summarized = sorted( l_name_col_summarized ) # retrieve the list of key values of an dict_res result returned by 'summarizing_func'
         l_name_col_summarized_with_name_layer_prefix = list( f"{name_layer}_{e}" for e in l_name_col_summarized ) # retrieve the name_col containing summarized data with f'{name_layer}_' prefix 
         
         
@@ -7079,7 +7090,7 @@ class RamData( ) :
         self.ft.save_filter( name_col_filter ) # save the feature filter as a metadata
     ''' function for fast exploratory analysis '''
     def prepare_dimension_reduction_from_raw( self, name_layer_raw = 'raw', name_layer_out = 'normalized_log1p_scaled', min_counts = 500, min_features = 100, int_total_count_target = 10000, int_num_highly_variable_features = 2000, max_value = 10, dict_kw_hv = { 'float_min_mean' : 0.01, 'float_min_variance' : 0.01, 'name_col_filter' : 'filter_normalized_log1p_highly_variable' } ) :
-        """ # 2022-08-01 21:15:57 
+        """ # 2022-08-10 09:55:26 
 
         a method designed for fast exploratory analysis of the raw data, removing unncessary layer building operations as much as possible.
 
@@ -7104,7 +7115,7 @@ class RamData( ) :
         # retrieve the total number of barcodes
         int_total_num_barcodes = self.bc.meta.n_rows
 
-        def func( self, int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value ) : # normalize count data of a single feature containing (possibly) multiple barcodes
+        def func( self, int_entry_of_axis_for_querying : int, arr_int_entries_of_axis_not_for_querying : np.ndarray, arr_value : np.ndarray ) : # normalize count data of a single feature containing (possibly) multiple barcodes
             """ # 2022-07-06 23:58:38 
             """
             # perform normalization in-place
@@ -7125,7 +7136,7 @@ class RamData( ) :
             return dict_summary    
 
         # calculate the metric for identifying highly variable genes
-        self.summarize( name_layer_raw, 'feature', func )
+        self.summarize( name_layer_raw, 'feature', func, l_name_col_summarized = [ 'normalized_log1p_sum', 'normalized_log1p_mean', 'normalized_log1p_deviation', 'normalized_log1p_variance' ] )
 
         # identify highly variable genes
         self.identify_highly_variable_features( name_layer = f'{name_layer_raw}_normalized_log1p', int_num_highly_variable_features = int_num_highly_variable_features, flag_show_graph = True, ** dict_kw_hv )
@@ -7342,7 +7353,7 @@ class RamData( ) :
             return
         
         # if the model does not exist in the current RamData, exit
-        if type_model not in self._dict_metadata[ 'models' ] and name_model not in self._dict_metadata[ 'models' ][ type_model ] :
+        if type_model not in self._dict_metadata[ 'models' ] or name_model not in self._dict_metadata[ 'models' ][ type_model ] :
             return
         
         # define a folder for storage of models
@@ -7371,7 +7382,7 @@ class RamData( ) :
         if self.verbose :
             print( f"{name_model}.{type_model} model deleted." )
         return int_file_size # return the number of bytes of the deleted model file
-    ''' memory-efficient dimension reduction/clustering functions '''
+    ''' memory-efficient PCA '''
     def train_pca( self, name_model = 'ipca', name_layer = 'normalized_log1p', int_num_components = 50, int_num_barcodes_in_ipca_batch = 50000, name_col_filter = 'filter_pca', float_prop_subsampling = 1, name_col_filter_subsampled = 'filter_pca_subsampled', flag_ipca_whiten = False, int_num_threads = 3, flag_show_graph = True ) :
         """ # 2022-08-08 12:01:00 
         Perform incremental PCA in a very memory-efficient manner.
@@ -7597,7 +7608,8 @@ class RamData( ) :
         # destroy the view
         self.destroy_view( )
         return 
-    def train_umap( self, name_col_pca = 'X_pca', int_num_components_pca = 20, int_num_components_umap = 2, name_col_filter = 'filter_umap', name_pumap_model = 'pumap', name_pumap_model_new = None ) :
+    ''' memory-efficient UMAP '''
+    def train_umap( self, name_col_pca = 'X_pca', int_num_components_pca = 20, int_num_components_umap = 2, name_col_filter : Union[ str, None ] = 'filter_umap', name_pumap_model = 'pumap', name_pumap_model_new : Union[ str, None ] = None ) :
         """ # 2022-08-07 11:13:38 
         Perform Parametric UMAP to embed cells in reduced dimensions for a scalable analysis of single-cell data
         
@@ -7650,7 +7662,7 @@ class RamData( ) :
             if self.verbose :
                 print( f'[Info] [RamData.train_umap] Parametric UMAP model of {int_model_file_size} Bytes has been saved.' )
         return pumap_embedder # return the model
-    def apply_umap( self, name_col_pca : str = 'X_pca', name_col_umap : str = 'X_umap', int_num_barcodes_in_pumap_batch : int = 20000, name_col_filter : str = 'filter_umap', name_pumap_model : str = 'pumap' ) :
+    def apply_umap( self, name_col_pca : str = 'X_pca', name_col_umap : str = 'X_umap', int_num_barcodes_in_pumap_batch : int = 20000, name_col_filter : Union[ str, None ] = 'filter_umap', name_pumap_model : Union[ str, None ] = 'pumap' ) :
         """ # 2022-08-07 11:27:20 
         Embed barcodes to lower-dimensional space using the trained Parametric UMAP in a scalable way
         
@@ -7708,7 +7720,8 @@ class RamData( ) :
         pbar.close( ) # close the progress bar
 
         return pumap_embedder # return the model
-    def hdbscan( self, name_model : str = 'hdbscan', name_col_data : str = 'X_umap', int_num_components_data : int = 2, name_col_label : str = 'hdbscan', min_cluster_size : int = 30, min_samples : int = 30, cut_distance: float = 0.15, flag_reanalysis_of_previous_clustering_result : bool = False, name_col_filter : str = 'filter_hdbscan', name_col_embedding : typing.Union[ str, None ] = 'X_umap', dict_kw_scatter : dict = { 's' : 10, 'linewidth' : 0, 'alpha' : 0.05 } ) :
+    ''' for community detection '''
+    def hdbscan( self, name_model : str = 'hdbscan', name_col_data : str = 'X_umap', int_num_components_data : int = 2, name_col_label : str = 'hdbscan', min_cluster_size : int = 30, min_samples : int = 30, cut_distance: float = 0.15, flag_reanalysis_of_previous_clustering_result : bool = False, name_col_filter : Union[ str, None ] = 'filter_hdbscan', name_col_embedding : Union[ str, None ] = 'X_umap', dict_kw_scatter : dict = { 's' : 10, 'linewidth' : 0, 'alpha' : 0.05 }, index_col_of_name_col_label : Union[ int, None ] = None ) :
         """ # 2022-08-09 02:19:26 
         Perform HDBSCAN for the currently active barcodes
 
@@ -7726,6 +7739,7 @@ class RamData( ) :
         
         === output ===
         'name_col_label' : 'name_col' of the axis metadata that will contain cluster labels assigned by the current clustering algorithm
+        'index_col_of_name_col_label' : index of the secondary axis of the column of 'name_col_label' that will contain cluster labels. if None, 'name_col_label' is assumed to be a 1-dimensional column. 
         
         === cell filter ===
         'name_col_filter' : the name of 'feature'/'barcode' Axis metadata column to retrieve selection filter for running the current method. if None is given, current barcode/feature filters (if it has been set) will be used as-is.
@@ -7769,7 +7783,12 @@ class RamData( ) :
         """
         3) save labels
         """
-        ax.meta[ name_col_label ] = arr_cluster_label
+        if index_col_of_name_col_label is None : # assume 'name_col_label' is 1-dimensional column
+            # update all columns
+            ax.meta[ name_col_label ] = arr_cluster_label
+        else :
+            # update a single column in the meatadata column 'name_col_label'
+            ax.meta[ name_col_label, None, index_col_of_name_col_label ] = arr_cluster_label
         
         # report
         if self.verbose :
@@ -7784,7 +7803,7 @@ class RamData( ) :
             
         # return results
         return arr_cluster_label, clusterer # return the trained model and computed cluster labels
-    def leiden( self, name_model : str = 'leiden', name_col_data : str = 'X_pca', int_num_components_data : int = 15, name_col_label : str = 'leiden', resolution: float = 0.5, directed: bool = True, use_weights: bool = True, dict_kw_leiden_partition : dict = { 'n_iterations' : -1, 'seed' : 0 }, dict_kw_pynndescent_transformer : dict = { 'n_neighbors' : 10, 'metric' : 'euclidean', 'low_memory' : True }, name_col_filter : str = 'filter_leiden', name_col_embedding : typing.Union[ str, None ] = 'X_umap', dict_kw_scatter : dict = { 's' : 10, 'linewidth' : 0, 'alpha' : 0.05 } ) -> None :
+    def leiden( self, name_model : str = 'leiden', name_col_data : str = 'X_pca', int_num_components_data : int = 15, name_col_label : str = 'leiden', resolution: float = 0.2, int_num_clus_expected : Union[ int, None ] = None, directed: bool = True, use_weights: bool = True, dict_kw_leiden_partition : dict = { 'n_iterations' : -1, 'seed' : 0 }, dict_kw_pynndescent_transformer : dict = { 'n_neighbors' : 10, 'metric' : 'euclidean', 'low_memory' : True }, name_col_filter : Union[ str, None ] = 'filter_leiden', name_col_embedding : Union[ str, None ] = 'X_umap', dict_kw_scatter : dict = { 's' : 10, 'linewidth' : 0, 'alpha' : 0.05 }, index_col_of_name_col_label : Union[ int, None ] = None ) -> None :
         """ # 2022-08-09 02:19:31 
         Perform leiden community detection algorithm (clustering) for the currently active barcodes
 
@@ -7797,9 +7816,11 @@ class RamData( ) :
         
         === output ===
         'name_col_label' : 'name_col' of the axis metadata that will contain cluster labels assigned by the current clustering algorithm
+        'index_col_of_name_col_label' : index of the secondary axis of the column of 'name_col_label' that will contain cluster labels. if None, 'name_col_label' is assumed to be a 1-dimensional column. 
         
         === clustering arguments ===
-        'resolution' : resolution of cluster. please refer to 'resolution_parameter' of 'leidenalg.find_partition' method
+        'resolution' : initial resolution of cluster. please refer to 'resolution_parameter' of 'leidenalg.find_partition' method
+        'int_num_clus_expected' : the expected number of clusters in the data to optimize hyperparameters for community detection. if 'int_num_clus_expected' is not None, until the number of detected communities reaches 'int_num_clus_expected', the 'resolution' parameter will be optimized. this argument will be inactive when 'resolution' is None.
         'directed' : create directed graph. it is recommended to set it to True
         'use_weights' : use weights of the kNN graph for the leiden partitioning
         'dict_kw_leiden_partition' : a dictionary containing keyworded arguments for the 'leidenalg.find_partition' method
@@ -7837,7 +7858,7 @@ class RamData( ) :
             # save calculated knngraph
             if name_model is not None : # check validity of 'name_model' 
                 self.save_model( conn, name_model, type_model ) # save knngraph to the RamData
-                
+            
         """
         3) perform leiden clustering
         """
@@ -7866,25 +7887,43 @@ class RamData( ) :
             return g
         g = get_igraph_from_adjacency( conn, directed )
         del conn
+        if self.verbose :
+            print( f'[Info] [RamData.leiden] knn-graph loaded' )
 
         # compose partition arguments
         if resolution is not None :
             dict_kw_leiden_partition[ 'resolution_parameter' ] = resolution
         if use_weights :
             dict_kw_leiden_partition[ 'weights' ] = np.array( g.es[ 'weight' ] ).astype( np.float64 )
+            
 
-        # store output into adata.obs
-        arr_cluster_label = np.array( leidenalg.find_partition( g, leidenalg.RBConfigurationVertexPartition, ** dict_kw_leiden_partition ).membership )
+        while True :
+            # perform leiden clustering
+            arr_cluster_label = np.array( leidenalg.find_partition( g, leidenalg.RBConfigurationVertexPartition, ** dict_kw_leiden_partition ).membership )
+            
+            # until the desired 
+            if resolution is not None and int_num_clus_expected is not None and len( set( arr_cluster_label ) ) < int_num_clus_expected :
+                dict_kw_leiden_partition[ 'resolution_parameter' ] *= 1.2
+                if self.verbose :
+                    print( f"[Info] [RamData.leiden] resolution increased to {dict_kw_leiden_partition[ 'resolution_parameter' ]}" )
+            else :
+                break
         del g
                 
         """
         4) save labels
         """
-        ax.meta[ name_col_label ] = arr_cluster_label
-        
+        if index_col_of_name_col_label is None : # assume 'name_col_label' is 1-dimensional column
+            # update all columns
+            ax.meta[ name_col_label ] = arr_cluster_label
+        else :
+            # update a single column in the meatadata column 'name_col_label'
+            print( name_col_label, None, index_col_of_name_col_label )
+            ax.meta[ name_col_label, None, index_col_of_name_col_label ] = arr_cluster_label
+            
         # report
         if self.verbose :
-            print( f'[Info] [RamData.hdbscan] clustering completed for {ax.meta.n_rows} number of barcodes' )
+            print( f'[Info] [RamData.leiden] clustering completed for {ax.meta.n_rows} number of barcodes' )
 
         # draw graphs
         if name_col_embedding is not None : # visualize clustering results if 'name_col_embedding' has been given
@@ -7894,9 +7933,10 @@ class RamData( ) :
             plt_ax.scatter( * self.bc.meta[ name_col_embedding, None, : 2 ].T, c = cluster_colors, ** dict_kw_scatter ) # retrieve embedding data and draw the graph
             
         return
-    def train_label( self, name_model : str = 'pynndescent', n_neighbors : int = 10, name_col_label : str = 'hdbscan', name_col_data : str = 'X_pca', int_num_components_data : int = 20, axis : typing.Union[ int, str ] = 'barcodes', name_col_filter : str = 'filter_label', dict_kw_pynndescent : dict = { 'low_memory' : True, 'n_jobs' : None, 'compressed' : False } ) :
+    ''' for kNN-bsed label transfer '''
+    def train_label( self, name_model : str = 'knn_classifier', n_neighbors : int = 10, name_col_label : str = 'hdbscan', name_col_data : str = 'X_pca', int_num_components_data : int = 20, axis : Union[ int, str ] = 'barcodes', name_col_filter : str = 'filter_label', dict_kw_pynndescent : dict = { 'low_memory' : True, 'n_jobs' : None, 'compressed' : False }, index_col_of_name_col_label : Union[ int, None ] = None ) -> None :
         """ # 2022-08-08 16:42:16 
-        build nearest-neighbor search index from the entries of the given axis, and using the labels of the entries, predict labels of the remaining entries by performing the nearest-neighbor search using the index
+        build nearest-neighbor search index from the entries of the given axis, and using the labels of the entries, construct a kNN classifier
         
         arguments:
         === general ===
@@ -7910,6 +7950,7 @@ class RamData( ) :
         === data input ===
         'name_col_filter' : the 'name_col' of the metadata of the given axis containing the filter marking the entries that will be used for trainining (building the index)
         'name_col_label' : the 'name_col' of the metadata of the given axis containing 'labels'.
+        'index_col_of_name_col_label' : index of the secondary axis of the column of 'name_col_label' that will contain cluster labels. if None, 'name_col_label' is assumed to be a 1-dimensional column. 
         'name_col_data' : the 'name_col' of the metadata of the given axis containing 'data' for building nearest-neighbor search.
         'int_num_components_data' : the number of components in the 'data' to use. for example, when 'int_num_components_data' is 2 and the 'data' contains 3 components, only the first two components will be used to build the index
         
@@ -7929,12 +7970,12 @@ class RamData( ) :
         2) Train model and retrieve cluster labels
         """
         # load the model and retrieve cluster labels
-        type_model = 'pynndescent'
+        type_model = 'knn_classifier'
         model = self.load_model( name_model, type_model )
         if model is None : # if the model does not exist, initiate the model
             # load training data
             data = ax.meta[ name_col_data, None, : int_num_components_data ]
-            labels = ax.meta[ name_col_label ]
+            labels = ax.meta[ name_col_label ] if index_col_of_name_col_label is None else ax.meta[ name_col_label, None, index_col_of_name_col_label ] # retrieve labels
             
             index = pynndescent.NNDescent( data, n_neighbors = n_neighbors, ** dict_kw_pynndescent )
             index.prepare( ) # prepare index for searching
@@ -7948,12 +7989,9 @@ class RamData( ) :
         # report
         if self.verbose :
             print( f"[Info] [RamData.train_label] training of labels completed for {ax.meta.n_rows} number of entries of the axis '{'barcodes' if flag_axis_is_barcode else 'features'}'" )
-
-        # return the model
-        return labels, index # return the trained model and computed cluster labels
-    def apply_label( self, name_model : str = 'pynndescent', name_col_label : str = 'hdbscan', name_col_data : str = 'X_pca', int_num_threads : int = 10, int_num_entries_in_a_batch : int = 10000, axis : typing.Union[ int, str ] = 'barcodes', name_col_filter : str = 'filter_pca' ) :
+    def apply_label( self, name_model : str = 'knn_classifier', name_col_label : str = 'hdbscan', name_col_data : str = 'X_pca', int_num_threads : int = 10, int_num_entries_in_a_batch : int = 10000, axis : Union[ int, str ] = 'barcodes', name_col_filter : str = 'filter_pca', index_col_of_name_col_label : Union[ int, None ] = None ) -> dict :
         """ # 2022-08-08 16:42:16 
-        build nearest-neighbor search index from the entries of the given axis, and using the labels of the entries, predict labels of the remaining entries by performing the nearest-neighbor search using the index
+        using the previously constructed kNN classifier, predict labels of the entries by performing the nearest-neighbor search
         
         arguments:
         === general ===
@@ -7965,15 +8003,14 @@ class RamData( ) :
         'name_model' : name of the nearest-neighbor index and associated lables of the entries of the index that was saved/will be saved in the RamData.models database. if the model already exists, the index and the associated labels will be loadeded, and will be used to predict labels of the remaining entries.
         
         === data input ===
+        'name_col_filter' : the name of 'feature'/'barcode' Axis metadata column to retrieve selection filter for running the current method. if None is given, current barcode/feature filters (if it has been set) will be used as-is.
         'name_col_label' : the 'name_col' of the metadata of the given axis that will contain assigned 'labels' (existing data will be overwritten).
-        'name_col_data' : the 'name_col' of the metadata of the given axis containing 'data' for building nearest-neighbor search.
+        'index_col_of_name_col_label' : index of the secondary axis of the column of 'name_col_label' that will contain cluster labels. if None, 'name_col_label' is assumed to be a 1-dimensional column. 
+        'name_col_data' : the 'name_col' of the metadata of the given axis containing 'data' for building nearest-neighbor search index.
         'int_num_components_data' : the number of components in the 'data' to use. for example, when 'int_num_components_data' is 2 and the 'data' contains 3 components, only the first two components will be used to build the index
         
-        === data input - [data] ===
-        'name_col_filter' : the name of 'feature'/'barcode' Axis metadata column to retrieve selection filter for running the current method. if None is given, current barcode/feature filters (if it has been set) will be used as-is.
-        
         returns:
-        labels, index 
+        'dict_label_counter' : a dictionary containing counts of each unique label
         """
         """ prepare """
         # handle inputs
@@ -7989,11 +8026,11 @@ class RamData( ) :
         load model and the associated data objects
         """
         # load the model and retrieve cluster labels
-        type_model = 'pynndescent'
+        type_model = 'knn_classifier'
         model = self.load_model( name_model, type_model )
         if model is None : # if the model does not exist, initiate the model
             if self.verbose :
-                print( f"[Info] [RamData.apply_label] the nearest-neighbor search index '{name_model}' does not exist, exiting" )
+                print( f"[Error] [RamData.apply_label] the nearest-neighbor search index '{name_model}' does not exist, exiting" )
                 return 
         labels, index = model # parse the model
 
@@ -8003,6 +8040,10 @@ class RamData( ) :
         """
         assign labels
         """
+        if self.verbose :
+            print( f"[Info] [RamData.apply_label] the nearest-neighbor search started" )
+        # initialize the counter for counting labels
+        dict_label_counter = dict( )
         # define functions for multiprocessing step
         def process_batch( batch, pipe_to_main_process ) :
             ''' # 2022-07-13 22:18:22 
@@ -8031,15 +8072,230 @@ class RamData( ) :
             int_num_retrieved_entries = len( l_int_entry_current_batch )
             
             # write the result to the axis metadata
-            ax.meta[ name_col_label, l_int_entry_current_batch ] = labels_assigned
+            if index_col_of_name_col_label is None : # assume 'name_col_label' is 1-dimensional column
+                ax.meta[ name_col_label, l_int_entry_current_batch ] = labels_assigned
+            else : # update a single column in the meatadata column 'name_col_label'
+                ax.meta[ name_col_label, l_int_entry_current_batch, index_col_of_name_col_label ] = labels_assigned
+            
+            bk.COUNTER( labels_assigned, dict_counter = dict_label_counter ) # count assigned labels
             
             pbar.update( int_num_retrieved_entries ) # update the progress bar
+            del labels_assigned
         # transform values using iPCA using multiple processes
         bk.Multiprocessing_Batch( ax.batch_generator( ax.filter, int_num_entries_for_batch = int_num_entries_in_a_batch, flag_mix_randomly = False ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) 
         pbar.close( ) # close the progress bar
         
-        # return the used model
-        return labels, index
+        # return the counts of each unique label
+        return dict_label_counter
+    ''' subsampling method '''
+    def subsample( self, name_model = 'leiden', int_num_entries_to_subsample : int = 100000, int_num_iterations_for_subsampling : int = 3, name_col_data : str = 'X_pca', int_num_components_data : int = 20, int_num_clus_expected : Union[ int, None ] = 20, name_col_label : str = 'subsampling_label', name_col_avg_dist : str = 'subsampling_avg_dist', axis : typing.Union[ int, str ] = 'barcodes', 
+                  name_col_filter : str = 'filter_pca', name_col_filter_subsampled : str = "filter_subsampled", resolution = 0.7, directed : bool = True, use_weights : bool = True, dict_kw_leiden_partition : dict = { 'n_iterations' : -1, 'seed' : 0 }, dict_kw_pynndescent_transformer : dict = { 'n_neighbors' : 10, 'metric' : 'euclidean', 'low_memory' : True }, n_neighbors : int = 20, dict_kw_pynndescent : dict = { 'low_memory' : True, 'n_jobs' : None, 'compressed' : False }, int_num_threads : int = 10, int_num_entries_in_a_batch : int = 10000 ) :
+        """ # 2022-08-10 04:15:38 
+        subsample informative entries through iterative density-based subsampling combined with community detection algorithm
+        
+        arguments:
+        === general ===
+        'int_num_entries_to_subsample' : the number of entries to subsample
+        'axis' : { 0 or 'barcodes' } for operating on the 'barcodes' axis, and { 1 or 'features' } for operating on the 'features' axis
+        'int_num_threads' : the number of threads to use for nearest neighbor search. 3 ~ 10 are recommended.
+        'int_num_entries_in_a_batch' : the number of entries in each batch for nearest neighbor search. 
+        
+        === data input ===
+        'name_col_filter' : the 'name_col' of the metadata of the given axis containing the filter marking the entries that will be used for trainining (building the index)
+        'name_col_data' : the 'name_col' of the metadata of the given axis containing 'data' for building nearest-neighbor search index.
+        'int_num_components_data' : the number of components in the 'data' to use. for example, when 'int_num_components_data' is 2 and the 'data' contains 3 components, only the first two components will be used to build the index
+        
+        === nearest-neighbor search index ===
+        'n_neighbors' : the number of neighbors to use for the index
+        'dict_kw_pynndescent' : the remaining arguments for constructing the index pynndescent.NNDescen 'model'
+        
+        === clustering arguments ===
+        'resolution' : initial resolution of cluster. please refer to 'resolution_parameter' of 'leidenalg.find_partition' method
+        'int_num_clus_expected' : the expected number of clusters in the data to optimize hyperparameters for community detection. if 'int_num_clus_expected' is not None, until the number of detected communities reaches 'int_num_clus_expected', the 'resolution' parameter will be optimized. this argument will be inactive when 'resolution' is None.
+        'directed' : create directed graph. it is recommended to set it to True
+        'use_weights' : use weights of the kNN graph for the leiden partitioning
+        'dict_kw_leiden_partition' : a dictionary containing keyworded arguments for the 'leidenalg.find_partition' method
+        'dict_kw_pynndescent_transformer' : a dictionary containing keyworded arguments for the 'pynndescent.PyNNDescentTransformer' method for constructing kNN graph from the data
+        
+        === iterative community-detection-and-density-based subsampling ===
+        'name_model' : name of the kNN-clasifier model for predicting labels
+        'int_num_iterations_for_subsampling' : the number of interations of subsampling operations
+        
+        === output ===
+        'name_col_label' : the 'name_col' of the axis metadata that will contains clueter lables for each iteration.
+        'name_col_avg_dist' : the 'name_col' of the axis metadata that will contains average distance of an entry to its nearest neighbors for each iteration.
+        'name_col_filter_subsampled' : the 'name_col' of the metadata of the given axis containing the subsampled entries
+        
+        returns:
+        """
+        # handle inputs
+        flag_axis_is_barcode = axis in { 0, 'barcode', 'barcodes' } # retrieve a flag indicating whether the data is summarized for each barcode or not
+        
+        ax = self.bc if flag_axis_is_barcode else self.ft # retrieve the appropriate Axis object
+
+        # initialize output columns in the metadata
+        ax.meta.initialize_column( name_col_label, dtype = np.int32, shape_not_primary_axis = ( int_num_iterations_for_subsampling, ), chunks = ( 1, ), categorical_values = None ) 
+        ax.meta.initialize_column( name_col_avg_dist, dtype = np.float64, shape_not_primary_axis = ( int_num_iterations_for_subsampling, ), chunks = ( 1, ), categorical_values = None )
+        
+        print( name_col_label, ax.meta[ name_col_label ].shape )
+        # set filters for operation
+        if name_col_filter is None :
+            if self.verbose  :
+                print( f"[Error] [RamData.subsample] 'name_col_filter' should not be None, exiting" )
+            return
+        self.change_or_save_filter( name_col_filter )
+        
+        # when the number of entries is below 'int_num_entries_to_subsample'
+        float_subsampling_ratio = min( 1, int_num_entries_to_subsample / ax.meta.n_rows ) # retrieve subsampling ratio
+        if float_subsampling_ratio == 1 :
+            """ if no subsampling is required, save the current filter as the subsampled filter, and exit """
+            self.save_filter( name_col_filter_subsampled )
+            return
+        
+        # perform initial random sampling
+        ax.filter = ax.subsample( float_subsampling_ratio )
+        self.save_filter( name_col_filter_subsampled ) # save subsampled filter
+        
+        type_model = 'knn_classifier'
+        for index_iteration in range( int_num_iterations_for_subsampling ) : # for each iteration
+            if self.verbose :
+                print( f"[Info] [RamData.subsample] iteration #{index_iteration} started." )
+            """
+            community detection - leiden
+            """
+            # perform leiden clustering
+            self.leiden( name_model = None, name_col_data = name_col_data, int_num_components_data = int_num_components_data, name_col_label = name_col_label, resolution = resolution, int_num_clus_expected = int_num_clus_expected, directed = directed, use_weights = use_weights, dict_kw_leiden_partition = dict_kw_leiden_partition, dict_kw_pynndescent_transformer = dict_kw_pynndescent_transformer, name_col_filter = None, name_col_embedding = None, index_col_of_name_col_label = index_iteration ) # clustering result will be saved 'index_iteration' column in the 'name_col_label' # does not save model
+            
+            # assign labels and retrieve label counts
+            self.delete_model( name_model, type_model ) # reset the model before training
+            self.train_label( name_model = name_model, n_neighbors = n_neighbors, name_col_label = name_col_label, name_col_data = name_col_data, int_num_components_data = int_num_components_data, axis = axis, name_col_filter = None, dict_kw_pynndescent = dict_kw_pynndescent, index_col_of_name_col_label = index_iteration )
+            dict_label_count = self.apply_label( name_model = name_model, name_col_label = name_col_label, name_col_data = name_col_data, int_num_threads = int_num_threads, int_num_entries_in_a_batch = int_num_entries_in_a_batch, axis = axis, name_col_filter = name_col_filter, index_col_of_name_col_label = index_iteration ) # assign labels to 'name_col_filter' entries
+
+            """
+            calculate density - build knn search index
+            """
+            if self.verbose :
+                print( f"[Info] [RamData.subsample] iteration #{index_iteration} calculating density information started" )
+
+            # prepare knn search index
+            self.change_filter( name_col_filter_subsampled ) # change filter to currently subsampled entries for building knn search index
+            index = pynndescent.NNDescent( ax.meta[ name_col_data, None, : int_num_components_data ], n_neighbors = n_neighbors, ** dict_kw_pynndescent )
+            index.prepare( ) # prepare index for searching
+
+            """
+            calculate density - summarize the distances
+            """
+            self.change_filter( name_col_filter ) # change filter to all the query entries for estimating density
+            dict_label_total_avg_dist = dict( ) # initialize the dictionary for surveying the the total 'average distance' values of the entries belonging to each unique label
+            # define functions for multiprocessing step
+            def process_batch( batch, pipe_to_main_process ) :
+                ''' # 2022-07-13 22:18:22 
+                retrieve data and retrieve transformed PCA values for the batch
+                '''
+                # parse the received batch
+                int_num_of_previously_returned_entries, l_int_entry_current_batch = batch[ 'int_num_of_previously_returned_entries' ], batch[ 'l_int_entry_current_batch' ]
+
+                # retrieve data from the axis metadata
+                data = ax.meta[ name_col_data, l_int_entry_current_batch, : int_num_components_data ]
+
+                neighbors, distances = index.query( data ) # retrieve neighbors using the index
+                del data, neighbors
+
+                pipe_to_main_process.send( ( l_int_entry_current_batch, distances.mean( axis = 1 ) ) ) # calculate average distances of the entries in a batch # send the result back to the main process
+            pbar = progress_bar( total = ax.meta.n_rows ) # initialize the progress bar
+            def post_process_batch( res ) :
+                """ # 2022-07-13 22:18:26 
+                perform PCA transformation for each batch
+                """
+                # parse result 
+                l_int_entry_current_batch, arr_avg_dist = res
+                int_num_retrieved_entries = len( l_int_entry_current_batch )
+
+                # write the result to the axis metadata
+                ax.meta[ name_col_avg_dist, l_int_entry_current_batch, index_iteration ] = arr_avg_dist
+                
+                # retrieve assigned labels, and summarize calculated average distances
+                for label, avg_dist in zip( ax.meta[ name_col_label, l_int_entry_current_batch, index_iteration ], arr_avg_dist ) :
+                    if label not in dict_label_total_avg_dist :
+                        dict_label_total_avg_dist[ label ] = 0
+                    dict_label_total_avg_dist[ label ] += avg_dist # update total avg_dist of the label
+
+                pbar.update( int_num_retrieved_entries ) # update the progress bar
+            # transform values using iPCA using multiple processes
+            bk.Multiprocessing_Batch( ax.batch_generator( ax.filter, int_num_entries_for_batch = int_num_entries_in_a_batch, flag_mix_randomly = False ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) 
+            pbar.close( ) # close the progress bar
+            
+            """
+            using the summarized metrics, prepare subsampling
+            """
+            # calculate the number of entries to subsample for each unique label
+            int_num_labels = len( dict_label_count ) # retrieve the number of labels
+            
+            # convert type of 'dict_label_count' to numpy ndarray # leiden labels are 0-based coordinate-based
+            arr_label_count = np.zeros( int_num_labels )
+            for label in dict_label_count :
+                arr_label_count[ label ] = dict_label_count[ label ]
+            
+            int_label_count_current_threshold = int( int_num_entries_to_subsample / int_num_labels ) # initialize the threshold
+            for index_current_label in np.argsort( arr_label_count ) : # from label with the smallest number of entries to label with the largest number of entries
+                int_label_count = arr_label_count[ index_current_label ]
+                if int_label_count > int_label_count_current_threshold :
+                    break
+                arr = arr_label_count[ arr_label_count <= int_label_count ]
+                int_label_count_current_threshold = int( ( int_num_entries_to_subsample - arr.sum( ) ) / ( int_num_labels - len( arr ) ) )
+                
+            # retrieve number of entries to subsample for each label
+            arr_label_count_subsampled = deepcopy( arr_label_count )
+            arr_label_count_subsampled[ arr_label_count_subsampled > int_label_count_current_threshold ] = int_label_count_current_threshold
+            
+            # compose name space for subsampling
+            dict_ns = dict( ( label, { 'int_num_entries_remaining_to_reject' : dict_label_count[ label ] - arr_label_count_subsampled[ label ], 'int_num_entries_remaining_to_accept' : arr_label_count_subsampled[ label ] } ) for label in dict_label_count )
+            
+            if self.verbose :
+                print( f"[Info] [RamData.subsample] iteration #{index_iteration} subsampling started" )
+
+            # define functions for multiprocessing step
+            def process_batch( batch, pipe_to_main_process ) :
+                ''' # 2022-07-13 22:18:22 
+                retrieve data and retrieve transformed PCA values for the batch
+                '''
+                # parse the received batch
+                int_num_of_previously_returned_entries, l_int_entry_current_batch = batch[ 'int_num_of_previously_returned_entries' ], batch[ 'l_int_entry_current_batch' ]
+                
+                pipe_to_main_process.send( ( l_int_entry_current_batch, ax.meta[ name_col_label, l_int_entry_current_batch, index_iteration ], ax.meta[ name_col_avg_dist, l_int_entry_current_batch, index_iteration ] ) ) # retrieve data from the axis metadata and # send result back to the main process
+            pbar = progress_bar( total = ax.meta.n_rows ) # initialize the progress bar
+            def post_process_batch( res ) :
+                """ # 2022-07-13 22:18:26 
+                perform PCA transformation for each batch
+                """
+                # parse result 
+                l_int_entry_current_batch, arr_labels, arr_avg_dist = res
+                int_num_retrieved_entries = len( l_int_entry_current_batch )
+                
+                # initialize selection result
+                arr_selection = np.zeros( len( arr_labels ), dtype = bool ) # no selected entries by default
+
+                for index in range( len( arr_labels ) ) : # iterate through each entry by entry
+                    label, avg_dist = arr_labels[ index ], arr_avg_dist[ index ] # retrieve data of an entry
+                    
+                    # if no entry should be rejected, select 
+                    if dict_ns[ label ][ 'int_num_entries_remaining_to_reject' ] == 0 :
+                        arr_selection[ index ] = True
+                        dict_ns[ label ][ 'int_num_entries_remaining_to_accept' ] -= 1 # update 'int_num_entries_remaining_to_accept' 
+                    else :
+                        if ( ( dict_ns[ label ][ 'int_num_entries_remaining_to_accept' ] / dict_ns[ label ][ 'int_num_entries_remaining_to_reject' ] ) * avg_dist / dict_label_total_avg_dist[ label ] ) > np.random.random( ) : # determine whether the current entry should be included in the subsampled result
+                            arr_selection[ index ] = True
+                            dict_ns[ label ][ 'int_num_entries_remaining_to_accept' ] -= 1 # update 'int_num_entries_remaining_to_accept' 
+                        else :
+                            dict_ns[ label ][ 'int_num_entries_remaining_to_reject' ] -= 1 # update 'int_num_entries_remaining_to_reject'
+                    
+                # write the subsampled result to the axis metadata
+                ax.meta[ name_col_filter_subsampled, l_int_entry_current_batch ] = arr_selection
+                
+                pbar.update( int_num_retrieved_entries ) # update the progress bar
+            # transform values using iPCA using multiple processes
+            bk.Multiprocessing_Batch( ax.batch_generator( ax.filter, int_num_entries_for_batch = int_num_entries_in_a_batch, flag_mix_randomly = False ), process_batch, post_process_batch = post_process_batch, int_num_threads = min( 3, int_num_threads ), int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) 
+            pbar.close( ) # close the progress bar
     
     ''' scarab-associated methods for analyzing RamData '''
     def _classify_feature_of_scarab_output_( self, int_min_num_occurrence_to_identify_valid_feature_category = 1000 ) :
@@ -8155,23 +8411,23 @@ class RamData( ) :
 # utility functions
 # for benchmarking
 def draw_result( self, path_folder_graph, dict_kw_scatter = { 's' : 2, 'linewidth' : 0, 'alpha' : 0.1 } ) :
-    """ # 2022-07-19 13:24:22 
+    """ # 2022-08-10 04:37:00 
     draw resulting UMAP graph
     """
-    arr_cluster_label = self.bc.meta[ 'hdbscan' ]
-    embedded_for_training = self.get_umap( )
+    arr_cluster_label = self.bc.meta[ 'subsampling_label', None, 1 ]
+    embedding = self.bc.meta[ 'X_umap' ]
     
     # adjust graph settings based on the number of cells to plot
-    int_num_bc = embedded_for_training.shape[ 0 ]
+    int_num_bc = embedding.shape[ 0 ]
     size_factor = max( 1, np.log( int_num_bc ) - np.log( 5000 ) )
     dict_kw_scatter = { 's' : 20 / size_factor, 'linewidth' : 0, 'alpha' : 0.5 / size_factor }
     
     color_palette = sns.color_palette( 'Paired', len( set( arr_cluster_label ) ) )
     cluster_colors = [ color_palette[ x ] if x >= 0 else ( 0.5, 0.5, 0.5 ) for x in arr_cluster_label ]
     fig, plt_ax = plt.subplots( 1, 1, figsize = ( 7, 7 ) )
-    plt_ax.scatter( * embedded_for_training.T, c = cluster_colors, ** dict_kw_scatter )
+    plt_ax.scatter( * embedding.T, c = cluster_colors, ** dict_kw_scatter )
     MPL_basic_configuration( x_label = 'UMAP_1', y_label = 'UMAP_1', show_grid = False )
-    MPL_SAVE( 'umap.hdbscan', folder = path_folder_graph )
+    MPL_SAVE( 'umap.leiden', folder = path_folder_graph )
 def umap( adata, l_name_col_for_regression = [ ], float_scale_max_value = 10, int_pca_n_comps = 50, int_neighbors_n_neighbors = 10, int_neighbors_n_pcs = 50, dict_kw_umap = dict( ), dict_leiden = dict( ) ) :
     ''' # 2022-07-06 20:49:44 
     retrieve all expression data of the RamData with current barcodes/feature filters', perform dimension reduction process, and return the new AnnData object with umap coordinate and leiden cluster information
