@@ -1,4 +1,6 @@
 # core
+# from memory_profiler import profile # for testing
+
 import typing # import typing
 from typing import Union
 from biobookshelf.main import *
@@ -124,6 +126,9 @@ implemented subsampling method using iterative community detection and density-b
 
 # 2022-08-10 10:02:18 
 RamData.delete_model error corrected
+
+# 2022-08-12 01:51:27 
+resolved error in RamData.summarize
 
 """
 
@@ -6403,9 +6408,12 @@ class RamData( ) :
             """
             int_num_processed_records, path_file_result = res # parse result
             pbar.update( int_num_processed_records ) # update the progress bar
-            df = pd.read_csv( path_file_result, sep = '\t', index_col = 0, header = None ) # read summarized output file, using the first column as the integer indices of the entries
-            df.columns = l_name_col_summarized_with_name_layer_prefix # name columns of the dataframe using 'name_col' with f'{name_layer}_' prefix
-            ax.meta.update( df, flag_use_index_as_integer_indices = True ) # update metadata using ZarrDataFrame method
+            try :
+                df = pd.read_csv( path_file_result, sep = '\t', index_col = 0, header = None ) # read summarized output file, using the first column as the integer indices of the entries
+                df.columns = l_name_col_summarized_with_name_layer_prefix # name columns of the dataframe using 'name_col' with f'{name_layer}_' prefix
+                ax.meta.update( df, flag_use_index_as_integer_indices = True ) # update metadata using ZarrDataFrame method
+            except pd.errors.EmptyDataError : # if the given dataframe is empty
+                pass
             os.remove( path_file_result ) # remove the output file
         # summarize the RAMtx using multiple processes
         bk.Multiprocessing_Batch( rtx.batch_generator( ax.filter, int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, int_total_weight_for_each_batch = self.int_total_weight_for_each_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 )
@@ -7655,7 +7663,7 @@ class RamData( ) :
 
         # report
         if self.verbose :
-            print( '[Info] [RamData.train_umap] training completed' )
+            print( f'[Info] [RamData.train_umap] training for {ax.meta.n_rows} entries completed' )
         
         # save the model
         int_model_file_size = self.save_model( pumap_embedder, name_pumap_model_new, 'pumap' )
@@ -8299,6 +8307,9 @@ class RamData( ) :
             # transform values using iPCA using multiple processes
             bk.Multiprocessing_Batch( ax.batch_generator( ax.filter, int_num_entries_for_batch = int_num_entries_in_a_batch, flag_mix_randomly = False ), process_batch, post_process_batch = post_process_batch, int_num_threads = min( 3, int_num_threads ), int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) 
             pbar.close( ) # close the progress bar
+            
+            # prepare next batch
+            self.change_filter( name_col_filter_subsampled ) # change filter to currently subsampled entries for the next round
     
     ''' scarab-associated methods for analyzing RamData '''
     def _classify_feature_of_scarab_output_( self, int_min_num_occurrence_to_identify_valid_feature_category = 1000 ) :
