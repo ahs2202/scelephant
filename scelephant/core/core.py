@@ -416,7 +416,7 @@ def __MTX_10X_Combine__renumber_feature_mtx_10x__( path_file_input, path_folder_
                 while True :
                     if len( line ) == 0 :
                         break
-                    index_row, index_col, int_value = tuple( map( int, line.strip( ).split( ) ) ) # parse each entry of the current matrix 
+                    index_row, index_col, int_value = tuple( map( int, map( float, line.strip( ).split( ) ) ) ) # parse each entry of the current matrix 
                     newfile.write( ( ' '.join( tuple( map( str, [ dict_id_feature_to_index_feature[ arr_id_feature[ index_row - 1 ] ], index_col + int_total_n_barcodes_of_previously_written_matrices, int_value ] ) ) ) + '\n' ).encode( ) ) # translate indices of the current matrix to that of the combined matrix            
                     line = file.readline( ).decode( ) # read the next line
 def Read_SPLiT_Seq( path_folder_mtx ) :
@@ -515,13 +515,13 @@ def __MTX_10X_Combine__renumber_barcode_or_feature_index_mtx_10x__( path_file_in
                 while True :
                     if len( line ) == 0 :
                         break
-                    index_row, index_col, int_value = tuple( map( int, line.strip( ).split( ) ) ) # parse each entry of the current matrix 
+                    index_row, index_col, int_value = tuple( map( int, map( float, line.strip( ).split( ) ) ) ) # parse each entry of the current matrix 
                     
                     newfile.write( ( ' '.join( tuple( map( str, ( [ dict_id_entry_to_index_entry[ arr_id_entry[ index_row - 1 ] ], index_col + int_total_n_entries_of_previously_written_matrices ] if flag_renumber_feature_index else [ index_row + int_total_n_entries_of_previously_written_matrices, dict_id_entry_to_index_entry[ arr_id_entry[ index_col - 1 ] ] ] ) + [ int_value ] ) ) ) + '\n' ).encode( ) ) # translate indices of the current matrix to that of the combined matrix            
                     line = file.readline( ).decode( ) # read the next line
 def MTX_10X_Combine( path_folder_mtx_10x_output, * l_path_folder_mtx_10x_input, int_num_threads = 15, flag_split_mtx = True, flag_split_mtx_again = False, int_max_num_entries_for_chunk = 10000000, flag_low_memory_mode_because_there_is_no_shared_cell_between_mtxs = None, flag_low_memory_mode_because_there_is_no_shared_feature_between_mtxs = None, verbose = False ) :
     '''
-    # 2022-05-16 11:39:24 
+    # 2022-08-13 06:04:06 
     Combine 10X count matrix files from the given list of folders and write combined output files to the given output folder 'path_folder_mtx_10x_output'
     If there are no shared cells between matrix files, a low-memory mode will be used. The output files will be simply combined since no count summing operation is needed. Only feature matrix will be loaded and updated in the memory.
     'id_feature' should be unique across all features
@@ -605,9 +605,11 @@ def MTX_10X_Combine( path_folder_mtx_10x_output, * l_path_folder_mtx_10x_input, 
         ''' collect the number of records for each 10X matrix '''
         int_total_n_records = 0 
         for path_folder_mtx_10x in l_path_folder_mtx_10x_input :
-            with gzip.open( f'{path_folder_mtx_10x}matrix.mtx.gz', 'rb' ) as file : # retrieve a list of features
-                file.readline( ), file.readline( )
-                int_total_n_records += int( file.readline( ).decode( ).strip( ).split( )[ 2 ] ) # update the total number of entries
+            with gzip.open( f'{path_folder_mtx_10x}matrix.mtx.gz', 'rt' ) as file : # retrieve a list of features
+                line = file.readline( )
+                while line[ 0 ] == '%' :
+                    line = file.readline( )
+                int_total_n_records += int( line.strip( ).split( )[ 2 ] ) # update the total number of entries
 
         """ write a part of a combined matrix.mtx.gz for each dataset using multiple processes """
         # compose inputs for multiprocessing
