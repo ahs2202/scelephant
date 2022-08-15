@@ -4380,7 +4380,7 @@ class ZarrDataFrame( ) :
         return za, __delete_locks
 ''' a class for accessing Zarr-backed count matrix data (RAMtx, Random-Access matrix) '''
 class RAMtx( ) :
-    """ # 2022-08-03 00:55:22 
+    """ # 2022-08-16 02:47:08 
     This class represent a random-access mtx format for memory-efficient exploration of extremely large single-cell transcriptomics/genomics data.
     This class use a count matrix data stored in a random read-access compatible format, called RAMtx, enabling exploration of a count matrix with hundreds of millions cells with hundreds of millions of features.
     Also, the RAMtx format is supports multi-processing, and provide convenient interface for parallel processing of single-cell data
@@ -4501,7 +4501,7 @@ class RAMtx( ) :
 
         # return the mask
         return ba
-    def survey_number_of_records_for_each_entry( self, axes = [ 'barcodes', 'features' ], int_num_chunks_in_a_batch_for_index_of_sparse_matrix = 100, int_num_chunks_in_a_batch_for_axis_for_querying_dense = 1, int_total_number_of_values_in_a_batch_for_dense_matrix = None, int_size_chunk = 1000, flag_ignore_dense = True, int_num_threads = 20 ) :
+    def survey_number_of_records_for_each_entry( self, axes = [ 'barcodes', 'features' ], int_num_chunks_in_a_batch_for_index_of_sparse_matrix = 100, int_num_chunks_in_a_batch_for_axis_for_querying_dense = 1, int_total_number_of_values_in_a_batch_for_dense_matrix = None, int_size_chunk = 1000, flag_ignore_dense = False, int_num_threads = 20 ) :
         """ # 2022-08-15 22:17:44 
         survey the number of records for each entry in the existing axis
         'axes' : a list of axes to use for surveying the number of records for each entry
