@@ -41,9 +41,9 @@ import pynndescent
 import igraph as ig
 
 # define version
-_version_ = '0.0.3'
+_version_ = '0.0.5'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-08-16 02:37:41'
+_last_modified_time_ = '2022-08-18 15:30:45'
 
 """ # 2022-07-21 10:35:42  realease note
 
@@ -133,6 +133,18 @@ resolved error in RamData.summarize
 # 2022-08-16 02:32:51 
 resolved RAMtx.__getitem__ performance issues for dense RAMtx data when the length of axis not for querying is extremely large.
 New algorithm uses sub-batches to convert dense matrix to sparse matrix in a memory-efficient conversion.
+
+# 2022-08-16 11:21:53 
+resolved an issue in RAMtx.survey_number_of_records_for_each_entry
+
+# 2022-08-18 15:30:22 
+bumped version to v0.0.5
+
+# 2022-08-21 16:13:08 
+RamData.get_expr function was implemented.
+    possible usages: (1) calculating gene_set/pathway activities across cells, which can subsequently used for filtering cells for subclustering
+                     (2) calculating pseudo-bulk expression profiles of a subset of cells across all active features 
+
 """
 
 ''' previosuly written for biobookshelf '''
@@ -524,10 +536,10 @@ def __MTX_10X_Combine__renumber_barcode_or_feature_index_mtx_10x__( path_file_in
                     line = file.readline( ).decode( ) # read the next line
 def MTX_10X_Combine( path_folder_mtx_10x_output, * l_path_folder_mtx_10x_input, int_num_threads = 15, flag_split_mtx = True, flag_split_mtx_again = False, int_max_num_entries_for_chunk = 10000000, flag_low_memory_mode_because_there_is_no_shared_cell_between_mtxs = None, flag_low_memory_mode_because_there_is_no_shared_feature_between_mtxs = None, verbose = False ) :
     '''
-    # 2022-08-13 06:04:06 
+    # 2022-08-20 01:04:36 
     Combine 10X count matrix files from the given list of folders and write combined output files to the given output folder 'path_folder_mtx_10x_output'
     If there are no shared cells between matrix files, a low-memory mode will be used. The output files will be simply combined since no count summing operation is needed. Only feature matrix will be loaded and updated in the memory.
-    'id_feature' should be unique across all features
+    'id_feature' should be unique across all features. if id_feature is not unique, features with duplicated id_features will lead to combining of the features into a single feature (with combined counts/values).
     
     'int_num_threads' : number of threads to use when combining datasets. multiple threads will be utilized only when datasets does not share cells and thus can be safely concatanated.
     'flag_split_mtx' : split the resulting mtx file so that the contents in the output mtx file can be processed in parallel without ungzipping the mtx.gz file and spliting the file.
@@ -1154,7 +1166,7 @@ def __MTX_10X_Filter__filter_mtx_10x__( path_file_input, path_folder_mtx_10x_out
                     line = file.readline( ).decode( ) # read the next line
     return int_n_entries # returns the total number of entries written by the current process
 def MTX_10X_Filter( path_folder_mtx_10x_input, path_folder_mtx_10x_output, min_counts = None, min_features = None, min_cells = None, l_features = None, l_cells = None, verbose = False, function_for_adjusting_thresholds = None, int_num_threads = 15, flag_split_mtx = True, int_max_num_entries_for_chunk = 10000000 ) :
-    ''' # 2022-07-07 21:01:59 
+    ''' # 2022-08-20 10:23:28 
     # hyunsu-an
     read 10x count matrix and filter matrix based on several thresholds
     'path_folder_mtx_10x_input' : a folder containing files for the input 10x count matrix
@@ -1260,6 +1272,7 @@ def MTX_10X_Filter( path_folder_mtx_10x_input, path_folder_mtx_10x_output, min_c
 
     ''' save barcode file '''
     df_bc.to_csv( f"{path_folder_mtx_10x_output}barcodes.tsv.gz", columns = [ 'barcode' ], sep = '\t', index = False, header = False ) 
+    del df_bc
 
     ''' save feature file '''
     df_feature[ [ 'id_feature', 'feature', 'feature_type' ] ].to_csv( f"{path_folder_mtx_10x_output}features.tsv.gz", sep = '\t', index = False, header = False ) # save as a file
@@ -2234,7 +2247,6 @@ def Convert_MTX_10X_to_RamData( path_folder_mtx_10x_input, path_folder_ramdata_o
         'layers' : [ name_layer ],
         'version' : _version_,
     }
-    
     
 """ above functions will be moved below eventually """
 
@@ -4502,7 +4514,7 @@ class RAMtx( ) :
         # return the mask
         return ba
     def survey_number_of_records_for_each_entry( self, axes = [ 'barcodes', 'features' ], int_num_chunks_in_a_batch_for_index_of_sparse_matrix = 100, int_num_chunks_in_a_batch_for_axis_for_querying_dense = 1, int_total_number_of_values_in_a_batch_for_dense_matrix = None, int_size_chunk = 1000, flag_ignore_dense = False, int_num_threads = 20 ) :
-        """ # 2022-08-15 22:17:44 
+        """ # 2022-08-16 11:20:41 
         survey the number of records for each entry in the existing axis
         'axes' : a list of axes to use for surveying the number of records for each entry
         
@@ -4555,7 +4567,7 @@ class RAMtx( ) :
             
             # start worker
             def __write_result( pipe_receiver ) :
-                """ # 2022-08-04 22:54:22 
+                """ # 2022-08-16 11:20:34 
                 write survey results as zarr objects
                 """
                 while True :
@@ -4587,7 +4599,7 @@ class RAMtx( ) :
                 int_num_entries_processed = 0
                 int_num_entries_to_retrieve = int( self._za_mtx_index.chunks[ 0 ] * int_num_chunks_in_a_batch_for_index_of_sparse_matrix )
                 while int_num_entries_processed < len_axis :
-                    sl = slice( int_num_entries_processed, int_num_entries_processed + int_num_entries_to_retrieve )
+                    sl = slice( int_num_entries_processed, min( len_axis, int_num_entries_processed + int_num_entries_to_retrieve ) )
                     arr_num_records = self._za_mtx_index[ sl ][ :, 1 ] - self._za_mtx_index[ sl ][ :, 0 ] # retrieve the number of records
                     int_num_entries_processed += int_num_entries_to_retrieve # update the position
                     # flush buffer
@@ -4778,6 +4790,7 @@ class RAMtx( ) :
         ba_filter_axis_for_querying, ba_filter_not_axis_for_querying = ( self.ba_filter_features, self.ba_filter_barcodes ) if is_for_querying_features else ( self.ba_filter_barcodes, self.ba_filter_features )
             
         ''' filter 'int_entry', if a filter has been set '''
+        ''' handle when empty 'l_int_entry' has been given and filter has been set  '''
         if ba_filter_axis_for_querying is not None :
             l_int_entry = bk.BA.to_integer_indices( ba_filter_axis_for_querying ) if len( l_int_entry ) == 0 else list( int_entry for int_entry in l_int_entry if ba_filter_axis_for_querying[ int_entry ] ) # filter 'l_int_entry' or use the entries in the given filter (if no int_entry was given, use all active entries in the filter)
                 
@@ -5027,7 +5040,7 @@ class RAMtx( ) :
         
         return l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying, l_arr_value
     def get_sparse_matrix( self, l_int_entry, flag_return_as_arrays = False ) :
-        """ # 2022-08-01 04:47:11 
+        """ # 2022-08-21 15:35:09 
         
         get sparse matrix for the given list of integer representations of the entries.
         
@@ -5067,7 +5080,7 @@ class RAMtx( ) :
         if flag_return_as_arrays : # if 'flag_return_as_arrays' is True, return data as arrays
             return arr_int_barcode, arr_int_feature, arr_value, l_int_num_records
         # return data as a sparse matrix
-        n_bc, n_ft = ( self._int_num_barcodes, self._int_num_features ) if self._ramdata is None else ( self._ramdata.bc.meta.n_rows, self._ramdata.ft.meta.n_rows ) # detect whether the current RAMtx has been attached to a RamData and retrieve the number of barcodes and features accordingly
+        n_bc, n_ft = ( self._int_num_barcodes, self._int_num_features ) if self._ramdata is None else ( len( self._ramdata.bc ), len( self._ramdata.ft ) ) # detect whether the current RAMtx has been attached to a RamData and retrieve the number of barcodes and features accordingly
         X = scipy.sparse.csr_matrix( scipy.sparse.coo_matrix( ( arr_value, ( arr_int_barcode, arr_int_feature ) ), shape = ( n_bc, n_ft ) ) ) # convert count data to a sparse matrix
         return X # return the composed sparse matrix 
     def get_total_num_records( self, ba = None, int_num_entries_for_each_weight_calculation_batch = 1000, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = True ) :
@@ -5236,6 +5249,7 @@ class RamDataAxis( ) :
         # set viewer settings
         self._dict_kw_view = dict_kw_view
         self.dict_change = None # initialize view
+        self._dict_change_backup = None
     def _convert_to_bitarray( self, ba_filter ) :
         ''' # 2022-08-03 02:21:21 
         handle non-None filter objects and convert these formats to the bitarray filter object
@@ -5257,10 +5271,16 @@ class RamDataAxis( ) :
         """
         return ( ( bk.BA.to_integer_indices( self.filter ) if self.filter is not None else np.arange( len( self ) ) ) if self._dict_str_to_i is None else self._dict_str_to_i ).__iter__( )
     def __len__( self ) :
-        ''' # 2022-07-02 09:45:27 
-        returns the number of entries in the Axis
+        ''' # 2022-08-21 15:31:48 
+        returns the number of entries in the Axis. when view is active, the length after applying the view will be returned. when view is absent, the number of all entries will be returned, regardless of whether a filter is active or not.
         '''
-        return self.int_num_entries
+        return self.meta.n_rows if self.is_view_active else self.int_num_entries
+    @property
+    def is_view_active( self ) :
+        """ # 2022-08-21 15:31:44 
+        return true if a view is active
+        """
+        return self.dict_change is not None
     def create_view( self ) :
         """ # 2022-07-16 15:17:17 
         build 'dict_change' (dictionaries for conversion of coordinates) from the given filter, creating a view of the current 'Axis'
@@ -5299,6 +5319,18 @@ class RamDataAxis( ) :
         unload 'self.dict_change' (dictionaries for conversion of coordinates), destroying the current view
         """
         self.dict_change = None
+    def backup_view( self ) :
+        """ # 2022-08-20 17:25:12 
+        backup view
+        """
+        self._dict_change_backup = self.dict_change # back up view
+        self.destroy_view( ) # destroy view
+    def restore_view( self ) :
+        """ # 2022-08-20 17:25:12 
+        restore view
+        """
+        self.dict_change = self._dict_change_backup
+        self._dict_change_backup = None
     @property
     def filter( self ) :
         """ # 2022-06-24 22:20:43 
@@ -5917,7 +5949,7 @@ class RamDataLayer( ) :
 
 ''' class for storing RamData '''
 class RamData( ) :
-    """ # 2022-08-16 02:27:46 
+    """ # 2022-08-21 00:43:30 
     This class provides frameworks for single-cell transcriptomic/genomic data analysis, utilizing RAMtx data structures, which is backed by Zarr persistant arrays.
     Extreme lazy loading strategies used by this class allows efficient parallelization of analysis of single cell data with minimal memory footprint, loading only essential data required for analysis. 
     
@@ -7482,6 +7514,52 @@ class RamData( ) :
         if self.verbose :
             print( f"{name_model}.{type_model} model deleted." )
         return int_file_size # return the number of bytes of the deleted model file
+    ''' utility functions for retrieving expression values from layer and save them as metadata in axis  '''
+    def get_expr( self, name_layer : str, queries, name_new_col = None, axis : Union[ int, str ] = 'barcodes' ) :
+        """ # 2022-08-21 16:12:56
+        retrieve expression values of given 'queries' from the given layer 'name_layer' in the given axis 'axis' (with currently active filters), 
+        and save the total expression values for each entry in the axis metadata using the new column name 'name_new_col'
+        
+        possible usages: (1) calculating gene_set/pathway activities across cells, which can subsequently used for filtering cells for subclustering
+                         (2) calculating pseudo-bulk expression profiles of a subset of cells across all active features 
+        
+        'name_layer' : name of the layer to retrieve data
+        'queries' : queries that will be handed to RamDataAxis.__getitem__ calls. A slice, a bitarray, a single or a list of integer representation(s), a single or a list of string representation(s), boolean array are one of the possible inputs
+        'name_new_col' : the name of the new column that will contains retrieved expression values in the metadata of the given axis. if None, does not 
+        'axis' : axis for not querying, to which expression values will be summarized. { 0 or 'barcodes' } for operating on the 'barcodes' axis, and { 1 or 'features' } for operating on the 'features' axis
+        """
+        # handle inputs
+        flag_axis_for_querying_is_barcode = axis not in { 0, 'barcode', 'barcodes' } # retrieve a flag indicating whether the data is summarized for each barcode or not
+        
+        # retrieve the appropriate Axis object
+        ax_for_querying, ax_not_for_querying = ( self.bc, self.ft ) if flag_axis_for_querying_is_barcode else ( self.ft, self.bc )
+        
+        # handle invalid layer
+        if name_layer not in self.layers :
+            if self.verbose :
+                print( f"[RamData.get_expr] the given layer '{name_layer}' does not exist" )
+            return 
+        self.layer = name_layer # load the target layer
+        # retrieve appropriate rtx object
+        rtx = ram.layer.get_ramtx( flag_is_for_querying_features = not flag_axis_for_querying_is_barcode )
+        # handle when appropriate RAMtx object does not exist
+        if rtx is None :
+            if self.verbose :
+                print( f"[RamData.get_expr] RAMtx appropriate for the given axis does not exist" )
+            return
+        
+        # parse query
+        l_int_entry_query = bk.BA.to_integer_indices( ax_for_querying[ queries ] ) # retrieve bitarray of the queried entries, convert to list of integer indices
+        
+        ax_not_for_querying.backup_view( ) # back-up current view and reset the view of the axis not for querying
+        mtx = rtx.get_sparse_matrix( l_int_entry_query ) # retrieve expr matrix of the queries in sparse format
+        ax_not_for_querying.restore_view( ) # restore vies
+        
+        arr_expr = np.array( ( mtx[ l_int_entry_query ] if flag_axis_for_querying_is_barcode else mtx[ :, l_int_entry_query ].T ).sum( axis = 0 ) )[ 0 ] # retrieve summarized expression values of the queried entries # convert it to numpy array of shape (len_axis_not_for_querying, )
+        
+        if name_new_col is not None : # if valid 'name_new_col' column name has been given, save the retrieved data as a metadata column
+            ax_not_for_querying.meta[ name_new_col, : ] = arr_expr
+        return arr_expr # return retrieved expression values
     ''' memory-efficient PCA '''
     def train_pca( self, name_model = 'ipca', name_layer = 'normalized_log1p', int_num_components = 50, int_num_barcodes_in_ipca_batch = 50000, name_col_filter = 'filter_pca', float_prop_subsampling = 1, name_col_filter_subsampled = 'filter_pca_subsampled', flag_ipca_whiten = False, int_num_threads = 3, flag_show_graph = True ) :
         """ # 2022-08-08 12:01:00 
@@ -8402,6 +8480,74 @@ class RamData( ) :
             
             # prepare next batch
             self.change_filter( name_col_filter_subsampled ) # change filter to currently subsampled entries for the next round
+    ''' for marker detection analysis '''
+    def find_markers( self, name_col_label : str = 'subsampling_label', index_name_col_label : int = -1, l_name_cluster : Union[ list, np.ndarray, tuple, set, None ] = None, name_col_auroc : str = 'marker_auroc', name_col_log2fc : str = 'marker_log2fc', name_col_pval : str = 'marker_pval', method_pval : str = 'wilcoxon' ) :
+        """ # 2022-08-21 13:37:02 
+        find marker features for each cluster label by calculating a AUROC metric
+        
+        name_col_label : str = 'subsampling_label' : the name of the column of 'barcodes' metadata containing cluster labels
+        index_name_col_label : int = -1 : the index of the column (secondary axis) of the 'name_col_label' metadata column. if no secondary axis is available, this argument will be ignored.
+        l_name_cluster : Union[ list, np.ndarray, tuple, None ] = None : the list of cluster labels that will be included 
+        
+        
+        === output ===
+        name_col_auroc : str = 'marker_auroc' : the name of the output column name in the 'features' metadata ZDF. This column contains Area Under Receiver Operating Characteristic (Sensitivity/Specificity) curve values for each cluster and feature pair. if None is given, AUROC will be not calculated
+        name_col_log2fc : str = 'marker_log2fc' : the name of the output column name in the 'features' metadata ZDF. This column contains Log_2 fold change values of the cells of the cluster label of interest versus the rest of the cells.
+        name_col_pval : str = 'marker_pval' : the name of the output column name in the 'features' metadata ZDF. This column contains uncorrected p-value from the wilcoxon or t-test results
+        method_pval : str = 'wilcoxon' : one of the test methods in { 'wilcoxon', 't-test' }
+        
+        an array with a shape of ( the number of all features ) X ( the number of all cluster labels ), stored in the feature metadata using the given column name
+        information about which column of the output array represent which cluster label is available in the column metadata.
+        """
+        # handle inputs
+        if name_col_label not in self.bc.meta :
+            if self.verbose  :
+                print( f"[Error] [RamData.find_markers] 'name_col_label' {name_col_label} does not exist in barcode metadata, exiting" )
+            return
+        
+        # retrieve labels
+        arr_cluster_label = self.bc.meta[ name_col_label ]
+        
+        
+        # retrieve flags
+        flag_calcualte_auroc = name_col_auroc is not None
+        flag_calculate_pval = name_col_pval is not None
+        if flag_calculate_pval and method_pval not in { 'wilcoxon', 't-test' } :
+            if self.verbose  :
+                print( f"[Error] [RamData.find_markers] 'name_col_label' {name_col_label} does not exist in barcode metadata, exiting" )
+            return
+            
+        
+        
+        
+        
+        
+        # retrieve the total number of barcodes
+        int_total_num_barcodes = self.bc.meta.n_rows
+
+        def func( self, int_entry_of_axis_for_querying : int, arr_int_entries_of_axis_not_for_querying : np.ndarray, arr_value : np.ndarray ) : # normalize count data of a single feature containing (possibly) multiple barcodes
+            """ # 2022-07-06 23:58:38 
+            """
+            # perform normalization in-place
+            for i, e in enumerate( arr_int_entries_of_axis_not_for_querying.astype( int ) ) : # iterate through barcodes
+                arr_value[ i ] = arr_value[ i ] / dict_count[ e ] # perform normalization using the total count data for each barcode
+            arr_value *= int_total_count_target
+
+            # perform log1p transformation 
+            arr_value = np.log10( arr_value + 1 )
+
+            # calculate deviation
+            int_num_records = len( arr_value ) # retrieve the number of records of the current entry
+            dict_summary = { 'normalized_log1p_sum' : np.sum( arr_value ) if int_num_records > 30 else sum( arr_value ) } # if an input array has more than 30 elements, use np.sum to calculate the sum
+            dict_summary[ 'normalized_log1p_mean' ] = dict_summary[ 'normalized_log1p_sum' ] / int_total_num_barcodes # calculate the mean
+            arr_dev = ( arr_value - dict_summary[ 'normalized_log1p_mean' ] ) ** 2 # calculate the deviation
+            dict_summary[ 'normalized_log1p_deviation' ] = np.sum( arr_dev ) if int_num_records > 30 else sum( arr_dev )
+            dict_summary[ 'normalized_log1p_variance' ] = dict_summary[ 'normalized_log1p_deviation' ] / ( int_total_num_barcodes - 1 ) if int_total_num_barcodes > 1 else np.nan
+            return dict_summary    
+
+        # calculate the metric for identifying highly variable genes
+        self.summarize( name_layer_raw, 'feature', func, l_name_col_summarized = [ 'normalized_log1p_sum', 'normalized_log1p_mean', 'normalized_log1p_deviation', 'normalized_log1p_variance' ] )
+
     
     ''' scarab-associated methods for analyzing RamData '''
     def _classify_feature_of_scarab_output_( self, int_min_num_occurrence_to_identify_valid_feature_category = 1000 ) :
@@ -8513,11 +8659,11 @@ class RamData( ) :
         self.subset( path_folder_ramdata_output, set_str_barcode = set_str_barcode )
         if self.verbose :
             print( f'cell filtering completed for {len( set_str_barcode )} cells. A filtered RamData was exported at {path_folder_ramdata_output}' )
-        
+
 # utility functions
 # for benchmarking
 def draw_result( self, path_folder_graph, dict_kw_scatter = { 's' : 2, 'linewidth' : 0, 'alpha' : 0.1 } ) :
-    """ # 2022-08-10 04:37:00 
+    """ # 2022-08-16 12:00:56 
     draw resulting UMAP graph
     """
     arr_cluster_label = self.bc.meta[ 'subsampling_label', None, 1 ]
@@ -8527,9 +8673,10 @@ def draw_result( self, path_folder_graph, dict_kw_scatter = { 's' : 2, 'linewidt
     int_num_bc = embedding.shape[ 0 ]
     size_factor = max( 1, np.log( int_num_bc ) - np.log( 5000 ) )
     dict_kw_scatter = { 's' : 20 / size_factor, 'linewidth' : 0, 'alpha' : 0.5 / size_factor }
-    
+    if arr_cluster_label is None :
+        arr_cluster_label = [ arr_cluster_label ]
     color_palette = sns.color_palette( 'Paired', len( set( arr_cluster_label ) ) )
-    cluster_colors = [ color_palette[ x ] if x >= 0 else ( 0.5, 0.5, 0.5 ) for x in arr_cluster_label ]
+    cluster_colors = [ color_palette[ x ] if x is not None and x >= 0 else ( 0.5, 0.5, 0.5 ) for x in arr_cluster_label ]
     fig, plt_ax = plt.subplots( 1, 1, figsize = ( 7, 7 ) )
     plt_ax.scatter( * embedding.T, c = cluster_colors, ** dict_kw_scatter )
     MPL_basic_configuration( x_label = 'UMAP_1', y_label = 'UMAP_1', show_grid = False )
