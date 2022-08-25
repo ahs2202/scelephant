@@ -7,6 +7,7 @@ from biobookshelf.main import *
 from biobookshelf import *
 import biobookshelf as bk
 pd.options.mode.chained_assignment = None  # default='warn' # to disable worining
+import math
 import zarr # SCElephant is currently implemented using Zarr
 import numcodecs
 import anndata
@@ -43,7 +44,7 @@ import igraph as ig
 # define version
 _version_ = '0.0.5'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-08-18 15:30:45'
+_last_modified_time_ = '2022-08-25 16:18:53'
 
 """ # 2022-07-21 10:35:42  realease note
 
@@ -144,6 +145,13 @@ bumped version to v0.0.5
 RamData.get_expr function was implemented.
     possible usages: (1) calculating gene_set/pathway activities across cells, which can subsequently used for filtering cells for subclustering
                      (2) calculating pseudo-bulk expression profiles of a subset of cells across all active features 
+
+# 2022-08-23 11:36:32 
+RamData.find_markers : finding markers for each cluster using AUROC, log2fc, and statistical test methods in memory-efficient method, built on top of RamData.summarize
+RamData.get_marker_table : retrieve markers as table from the results produced by 'RamData.find_markers'
+
+# 2022-08-25 16:18:04 
+initialized ZarrDataFrame class with an additional functionality (combined mode)
 
 """
 
@@ -2250,6 +2258,18 @@ def Convert_MTX_10X_to_RamData( path_folder_mtx_10x_input, path_folder_ramdata_o
     
 """ above functions will be moved below eventually """
 
+''' miscellaneous functions '''
+def convert_numpy_dtype_number_to_number( e ) :
+    """ # 2022-08-22 15:46:33 
+    convert potentially numpy number to number. useful for JSON serialization, since it cannot serialize numbers in the numpy dtype  
+    """
+    if np.issubdtype( type( e ), np.floating ) :
+        return float( e )
+    elif np.issubdtype( type( e ), np.integer ) :
+        return int( e )
+    else :
+        return e
+
 ''' methods for logging purposes '''
 def installed_packages( ) :
     """ # 2022-08-09 02:09:07 
@@ -3281,7 +3301,23 @@ def create_ramdata_from_mtx( path_folder_mtx_10x_input, path_folder_ramdata_outp
         'set_modes' : list( set_modes ) + ( [ 'dense_for_querying_barcodes', 'dense_for_querying_features' ] if 'dense' in set_modes else [ ] ), # dense ramtx can be operated for querying either barcodes/features
         'version' : _version_,
     }
+def sort_mtx_10x( path_folder_mtx_input : str, path_folder_mtx_output : str, flag_mtx_sorted_by_id_feature : bool = False, ** kwargs ) :
+    """ # 2022-08-21 17:05:55 
+    a convenient wrapper method of 'sort_mtx' for sorting a matrix in a 10X matrix format. features and barcodes files will be copied, too.
     
+    'path_folder_mtx_input' : path to the input matrix folder
+    'path_folder_mtx_output' : path to the output matrix folder
+    'flag_mtx_sorted_by_id_feature' : whether to sort mtx file in the feature axis or not
+    
+    kwargs: keyworded arguments for 'sort_mtx'
+    """
+    os.makedirs( path_folder_mtx_output, exist_ok = True ) # create output folder
+    # copy features and barcodes files
+    for name_file in [ 'features.tsv.gz', 'barcodes.tsv.gz' ] :
+        shutil.copyfile( f"{path_folder_mtx_input}{name_file}", f"{path_folder_mtx_output}{name_file}" )
+    # sort matrix file
+    sort_mtx( f"{path_folder_mtx_input}matrix.mtx.gz", path_file_gzip_sorted = f"{path_folder_mtx_output}matrix.mtx.gz", flag_mtx_sorted_by_id_feature = flag_mtx_sorted_by_id_feature, ** kwargs )
+
 ''' utility functions for handling zarr '''
 def zarr_exists( path_folder_zarr ) :
     """ # 2022-07-20 01:06:09 
@@ -3595,8 +3631,36 @@ class ZarrDataFrame( ) :
     'path_folder_mask' : a local (local file system) path to the mask of the current ZarrDataFrame that allows modifications to be written without modifying the source. if a valid local path to a mask is given, all modifications will be written to the mask
     'flag_is_read_only' : read-only status of the storage
     'flag_use_mask_for_caching' : use mask for not only storing modifications, but also save retrieved data from (remote) sources for faster access. this behavior can be turned on/off at any time
+    
+    === settings for combined ZarrDataFrame ===
+    settings for combined ZarrDataFrames.
+    When a list of ZarrDataFrame objects were given through the 'l_zdf' argument, 'combined' ZarrDataFrame mode will be activated.
+    Briefly, combined ZarrDataFrame works by retrieving data from individual zdf objects, combined the data, and write a combined data as a column of 'combined' ZarrDataFrame.
+    
+    There are two types of combined ZarrDataFrames, 'stacked' and 'interleaved'
+        * 'stacked' : rows of each ZarrDataFrame stacked on top of each other without interleaving
+            ----------
+            rows of ZDF-0
+            ----------
+            rows of ZDF-1
+            ----------
+            rows of ZDF-2
+            ...
+            
+        * 'interleaved' : rows of each ZarrDataFrame can be mapped to those of each other.
+    
+    'l_zdf' : a list of ZarrDataFrame objects that will be combined
+    'index_zdf_data_source_when_interleaved' : the index of the zdf to retrieve data when combining mode is interleaved (rows shared between ZDFs)
+    'l_dict_index_mapping_interleaved' : list of dictionaries mapping row indices of the combined ZarrDataFrame to row indices of each individual ZarrDataFrame. this argument should be set to non-None value only when the current combined ZarrDataFrame is interleaved. if None is given, the combined ZarrDataFrame will be considered 'stacked'
+    'flag_write_after_combining' : a flag indicating whether a combined column should be written to the current ZarrDataFrame every time data values were retrieved across the given list of zdf objects and combined (which can serve as a local cache, if one of the zdf object reside in remote location). 
+    
+    # arguments that works differently in combined zdf object
+    'path_folder_zdf' : a path to the 'combined' ZarrDataFrame object.
+    'int_num_rows' : when ZarrDataFrame is in combined mode and 'int_num_rows' argument is not given, 'int_num_rows' will be inferred from the given list of ZarrDataFrame 'l_zdf' and 'l_dict_index_mapping_interleaved'
+    
+    
     """
-    def __init__( self, path_folder_zdf, df = None, int_num_rows = None, int_num_rows_in_a_chunk = 10000, ba_filter = None, flag_enforce_name_col_with_only_valid_characters = False, flag_store_string_as_categorical = True, flag_retrieve_categorical_data_as_integers = False, flag_load_data_after_adding_new_column = True, mode = 'a', path_folder_mask = None, flag_is_read_only = False, flag_use_mask_for_caching = True, verbose = True ) :
+    def __init__( self, path_folder_zdf : str, l_zdf : Union[ list, np.ndarray, None ] = None, index_zdf_data_source_when_interleaved : int = 0, l_dict_index_mapping_interleaved : Union[ list, None ] = None, flag_write_after_combining : bool = False, df = None, int_num_rows = None, int_num_rows_in_a_chunk = 10000, ba_filter = None, flag_enforce_name_col_with_only_valid_characters = False, flag_store_string_as_categorical = True, flag_retrieve_categorical_data_as_integers = False, flag_load_data_after_adding_new_column = True, mode = 'a', path_folder_mask = None, flag_is_read_only = False, flag_use_mask_for_caching = True, verbose = True ) :
         """ # 2022-07-20 10:50:23 
         """
         # handle path
@@ -3614,15 +3678,34 @@ class ZarrDataFrame( ) :
         self._flag_load_data_after_adding_new_column = flag_load_data_after_adding_new_column
         self._ba_filter = None # initialize the '_ba_filter' attribute
         self.verbose = verbose
-        self.filter = ba_filter
         
+        # %% COMBINED MODE %%
+        self._l_zdf = l_zdf
+        self.index_zdf_data_source_when_interleaved = index_zdf_data_source_when_interleaved
+        self._l_dict_index_mapping_interleaved = l_dict_index_mapping_interleaved
+        self.flag_write_after_combining = flag_write_after_combining
+
+        # %% COMBINED = STACKED %%
+        if self.is_combined and not self.is_interleaved :
+            # retrieve the number of unfiltered rows for each zdf
+            self._l_n_rows_unfiltered = list( zdf._n_rows_unfiltered for zdf in self._l_zdf )
+        
+        if self.is_combined and int_num_rows is None : # infer 'int_num_rows' from the given arguments
+            if self.is_interleaved : # infer 'int_num_rows' for interleaved czdf
+                int_num_rows = max( max( dict_index ) for dict_index in self._l_dict_index_mapping_interleaved )
+            else : # infer 'int_num_rows' for stacked czdf (combined zdf)
+                int_num_rows = sum( self._l_n_rows_unfiltered ) # assumes given zdf has valid number of rows
+                
+        # apply filter once the zdf is properly initialized
+        self.filter = ba_filter
+
         # open or initialize zdf and retrieve associated metadata
         if not zarr_exists( path_folder_zdf ) : # if the object does not exist, initialize ZarrDataFrame
             # create the output folder
             os.makedirs( path_folder_zdf, exist_ok = True )
             
             self._root = zarr.open( path_folder_zdf, mode = 'a' )
-            self._dict_metadata = { 'version' : _version_, 'columns' : set( ), 'int_num_rows_in_a_chunk' : int_num_rows_in_a_chunk, 'flag_enforce_name_col_with_only_valid_characters' : flag_enforce_name_col_with_only_valid_characters, 'flag_store_string_as_categorical' : flag_store_string_as_categorical  } # to reduce the number of I/O operations from lookup, a metadata dictionary will be used to retrieve/update all the metadata
+            self._dict_metadata = { 'version' : _version_, 'columns' : set( ), 'int_num_rows_in_a_chunk' : int_num_rows_in_a_chunk, 'flag_enforce_name_col_with_only_valid_characters' : flag_enforce_name_col_with_only_valid_characters, 'flag_store_string_as_categorical' : flag_store_string_as_categorical, 'is_interleaved' : self.is_interleaved, 'is_combined' : self.is_combined } # to reduce the number of I/O operations from lookup, a metadata dictionary will be used to retrieve/update all the metadata
             # if 'int_num_rows' has been given, add it to the metadata
             if int_num_rows is not None :
                 self._dict_metadata[ 'int_num_rows' ] = int_num_rows
@@ -3640,16 +3723,30 @@ class ZarrDataFrame( ) :
         # if a mask is given, open the mask zdf
         self._mask = None # initialize 'mask'
         if path_folder_mask is not None : # if a mask is given
-            self._mask = ZarrDataFrame( path_folder_mask, df = df, int_num_rows = self.n_rows, int_num_rows_in_a_chunk = self.metadata[ 'int_num_rows_in_a_chunk' ], ba_filter = ba_filter, flag_enforce_name_col_with_only_valid_characters = self.metadata[ 'flag_enforce_name_col_with_only_valid_characters' ], flag_store_string_as_categorical = self.metadata[ 'flag_store_string_as_categorical' ], flag_retrieve_categorical_data_as_integers = flag_retrieve_categorical_data_as_integers, flag_load_data_after_adding_new_column = flag_load_data_after_adding_new_column, mode = 'a', path_folder_mask = None, flag_is_read_only = False ) # the mask ZarrDataFrame shoud not have mask, should be modifiable, and not mode == 'r'.
+            self._mask = ZarrDataFrame( 
+                path_folder_mask, 
+                df = df, 
+                int_num_rows = self._n_rows_unfiltered,
+                int_num_rows_in_a_chunk = self.metadata[ 'int_num_rows_in_a_chunk' ], 
+                ba_filter = ba_filter, 
+                flag_enforce_name_col_with_only_valid_characters = self.metadata[ 'flag_enforce_name_col_with_only_valid_characters' ], 
+                flag_store_string_as_categorical = self.metadata[ 'flag_store_string_as_categorical' ], 
+                flag_retrieve_categorical_data_as_integers = flag_retrieve_categorical_data_as_integers, 
+                flag_load_data_after_adding_new_column = flag_load_data_after_adding_new_column, 
+                mode = 'a', 
+                path_folder_mask = None, 
+                flag_is_read_only = False,
+                l_zdf = l_zdf,
+                index_zdf_data_source_when_interleaved = index_zdf_data_source_when_interleaved,
+                dict_index_mapping_interleaved = dict_index_mapping_interleaved,
+                flag_write_after_combining = flag_write_after_combining,
+            ) # the mask ZarrDataFrame shoud not have mask, should be modifiable, and not mode == 'r'.
         
         # handle input arguments
         self._str_invalid_char = '! @#$%^&*()-=+`~:;[]{}\|,<.>/?' + '"' + "'" if self._dict_metadata[ 'flag_enforce_name_col_with_only_valid_characters' ] else '/' # linux file system does not allow the use of linux'/' character in the folder/file name
-        
+
         # initialize loaded data
         self._loaded_data = dict( ) # containing filtered data (if filter is active) or unfiltered data (if filter is not active)
-        
-        # initialize temp folder
-        self._initialize_temp_folder_( )
         
         if isinstance( df, pd.DataFrame ) : # if a valid pandas.dataframe has been given
             # update zdf with the given dataframe
@@ -3657,6 +3754,18 @@ class ZarrDataFrame( ) :
             
         # initialize attribute storing columns as dictionaries
         self.dict = dict( )
+    @property
+    def is_combined( self ) :
+        """ # 2022-08-25 13:53:20 
+        return True if current zdf is in 'combined' mode
+        """
+        return self._l_zdf is not None
+    @property
+    def is_interleaved( self ) :
+        """ # 2022-08-25 14:03:34 
+        return True if current zdf is interleaved 'combined' zdf
+        """
+        return self._l_dict_index_mapping_interleaved is not None
     @property
     def int_num_rows_in_a_chunk( self ) :
         """ # 2022-08-02 13:01:53 
@@ -3678,18 +3787,6 @@ class ZarrDataFrame( ) :
         ''' # 2022-07-21 02:38:31 
         '''
         return self._dict_metadata
-    def _initialize_temp_folder_( self ) :
-        """ # 2022-07-20 10:50:19 
-        empty the temp folder
-        """
-        if self._flag_is_read_only : # ignore the operation if the current object is read-only
-            self._path_folder_temp = None # initialize the temp folder
-            return
-        # initialize temporary data folder directory
-        self._path_folder_temp = f"{self._path_folder_zdf}.__temp__/" # set temporary folder
-        if os.path.exists( self._path_folder_temp ) : # if temporary folder already exists
-            OS_Run( [ 'rm', '-rf', self._path_folder_temp ] ) # delete temporary folder
-        os.makedirs( self._path_folder_temp, exist_ok = True ) # recreate temporary folder
     @property
     def _n_rows_unfiltered( self ) :
         """ # 2022-06-22 23:12:09 
@@ -3722,7 +3819,6 @@ class ZarrDataFrame( ) :
             # if the filter was present before the filter was removed, empty the cache and the temp folder
             if self.filter is not None :
                 self._loaded_data = dict( ) # empty the cache
-                self._initialize_temp_folder_( ) # empty the temp folder
                 self.dict = dict( ) # empty the cache for columns stored as dictionaries
             self._ba_filter = None
             self._n_rows_after_applying_filter = None
@@ -3741,7 +3837,6 @@ class ZarrDataFrame( ) :
                 assert len( ba_filter ) == self._dict_metadata[ 'int_num_rows' ]
 
             self._loaded_data = dict( ) # empty the cache
-            self._initialize_temp_folder_( ) # empty the temp folder
             self.dict = dict( ) # empty the cache for columns stored as dictionaries
             self._n_rows_after_applying_filter = ba_filter.count( ) # retrieve the number of rows after applying the filter
 
@@ -3749,6 +3844,26 @@ class ZarrDataFrame( ) :
         # set filter of mask
         if hasattr( self, '_mask' ) and self._mask is not None : # propagate filter change to the mask ZDF
             self._mask.filter = ba_filter
+            
+        if self.is_combined :
+            # %% COMBINED %%
+            if ba_filter is None : # if filter is removed
+                # remove filter from all zdf objects
+                for zdf in self._l_zdf : 
+                    zdf.filter = None
+            else : # if filter is being set
+                if self.is_interleaved :
+                    pass
+                else :
+                    # %% COMBINED - STACKED %%
+                    # for stacked czdf, split the given filter into smaller filters for each zdf
+                    int_pos = 0
+                    for zdf in self._l_zdf :
+                        # zdf.filter = 
+                        pl( ba_filter[ int_pos : int_pos + zdf._n_rows_unfiltered ] ) # apply a subset of filter
+                        int_pos += zdf._n_rows_unfiltered # update 'int_pos'
+
+        
     def get_column_metadata( self, name_col ) :
         """ # 2022-08-02 11:21:24 
         get metadata of a given column
@@ -3762,8 +3877,20 @@ class ZarrDataFrame( ) :
             za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'r' ) # read data from the Zarr object
             dict_col_metadata = za.attrs[ 'dict_col_metadata' ] # retrieve metadata of the current column
             return dict_col_metadata
-    def initialize_column( self, name_col, dtype = np.float64, shape_not_primary_axis = ( ), chunks = ( ), categorical_values = None ) : 
-        """ # 2022-08-08 18:38:27 
+    def _set_column_metadata( self, name_col, dict_col_metadata ) :
+        """ # 2022-08-22 12:36:13 
+        a semi-private method for setting metadata of a given column (metadata is supposed to be read-only)
+        """
+        if name_col in self : # if the current column is valid
+            # if mask is available return the metadata from the mask
+            if self._mask is not None and name_col in self._mask : # if the column is available in the mask
+                return self._mask._set_column_metadata( name_col = name_col, dict_col_metadata = dict_col_metadata )
+            
+            # read metadata
+            za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'a' ) # read data from the Zarr object
+            za.attrs[ 'dict_col_metadata' ] = dict_col_metadata # retrieve metadata of the current column
+    def initialize_column( self, name_col, dtype = np.float64, shape_not_primary_axis = ( ), chunks = ( ), categorical_values = None, fill_value = 0 ) : 
+        """ # 2022-08-22 16:30:48 
         initialize columns with a given shape and given dtype
         'dtype' : initialize the column with this 'dtype'
         'shape_not_primary_axis' : initialize the column with this shape excluding the dimension of the primary axis. if an empty tuple or None is given, a 1D array will be initialized. 
@@ -3773,10 +3900,11 @@ class ZarrDataFrame( ) :
                 
         'chunks' : chunk size of the zarr object. length of the chunk along the primary axis can be skipped, which will be replaced by 'int_num_rows_in_a_chunk' of the current ZarrDataFrame attribute
         'categorical_values' : if 'categorical_values' has been given, set the column as a column containing categorical data
+        'fill_value' : fill value of zarr object
         """
         # hand over to mask if mask is available
         if self._mask is not None : # if mask is available, save new data to the mask # overwriting on the mask
-            self._mask.initialize_column( name_col, dtype = dtype, shape_not_primary_axis = shape_not_primary_axis, chunks = chunks, categorical_values = categorical_values )
+            self._mask.initialize_column( name_col, dtype = dtype, shape_not_primary_axis = shape_not_primary_axis, chunks = chunks, categorical_values = categorical_values, fill_value = fill_value )
             return
         
         if self._n_rows_unfiltered is None : # if length of zdf has not been set, exit
@@ -3824,7 +3952,7 @@ class ZarrDataFrame( ) :
             shape = tuple( [ self._n_rows_unfiltered ] + list( shape_not_primary_axis ) ) # compose 'shape' of the zarr object
             chunks = tuple( chunks ) if len( chunks ) == len( shape ) else tuple( [ self.int_num_rows_in_a_chunk ] + list( chunks ) ) # compose 'chunks' of the zarr object
             assert len( chunks ) == len( shape ) # the length of chunks and shape should be the same
-            za = zarr.open( path_folder_col, mode = 'w', shape = shape, chunks = chunks, dtype = dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object if the object does not exist.
+            za = zarr.open( path_folder_col, mode = 'w', shape = shape, chunks = chunks, dtype = dtype, fill_value = fill_value, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object if the object does not exist.
             
             # write metadata
             za.attrs[ 'dict_col_metadata' ] = dict_col_metadata
@@ -3845,6 +3973,20 @@ class ZarrDataFrame( ) :
         'coords' : coordinates/slice/mask for the primary axis
         'coords_rest' : coordinates/slices for axis other than the primary axis
         """
+        
+#         if self.is_combined :
+#             # %% COMBINED MODE %%
+#             if is_interleaved :
+#             else :
+#                 # retrieve data from stacked czdf 
+#                 l_data = [ ] 
+#                 for zdf in self._l_zdf :
+#                     data = zdf[ args ]
+#                     if data is None :
+#                         data = np.zdf.n_rows
+#                 # retrieve data from each zdf object
+#                 return np.concatenate( list(   ) )
+        
         # initialize indexing
         flag_indexing_primary_axis = False # a boolean flag indicating whether an indexing is active
         flag_coords_in_bool_mask = False
@@ -4161,7 +4303,7 @@ class ZarrDataFrame( ) :
     def __repr__( self ) :
         """ # 2022-07-20 23:00:15 
         """
-        return f"<ZarrDataFrame object{'' if self._n_rows_unfiltered is None else ' containing '}{'' if self.filter is None else f'{self.n_rows}/'}{'' if self._n_rows_unfiltered is None else f'{self._n_rows_unfiltered} rows'} stored at {self._path_folder_zdf}\n\twith the following columns: {sorted( self._dict_metadata[ 'columns' ] )}>"
+        return f"<ZarrDataFrame object{'' if self._n_rows_unfiltered is None else ' containing '}{'' if self.filter is None else f'{self.n_rows}/'}{'' if self._n_rows_unfiltered is None else f'{self._n_rows_unfiltered} rows'} stored at {self._path_folder_zdf}\n\twith the following columns: {sorted( self._dict_metadata[ 'columns' ] )}" + ( '\n\t[combined]-' + ( '(interleaved)' if self.is_interleaved else '(stacked)' ) + f" ZarrDataFrame, composed of the following ZarrDataFrame objects:\n[" + '\n'.join( str( zdf ) for zdf in self._l_zdf ) + "]" if self.is_combined else '' ) +  ">"
     @property
     def columns( self ) :
         ''' # 2022-07-20 23:01:48 
@@ -4390,6 +4532,62 @@ class ZarrDataFrame( ) :
             """
             shutil.rmtree( path_folder_lock )
         return za, __delete_locks
+''' class for integrative analysis '''
+class CombinedZarrDataFrame( ZarrDataFrame ) :
+    """ # 2022-08-23 21:18:00 
+    A class representing combined ZarrDataFrames.
+    There are two types of ZarrDataFrames, 'stacked' and 'interleaved'
+        * 'stacked' : rows of each ZarrDataFrame stacked on top of each other without interleaving
+            ----------
+            rows of ZDF-0
+            ----------
+            rows of ZDF-1
+            ----------
+            rows of ZDF-2
+            ...
+            
+        * 'interleaved' : rows of each ZarrDataFrame can be mapped to those of each other.
+    
+    'path_folder_czdf' : a path to the CombinedZarrDataFrame object.
+    'l_path_folder_zdf' : a list of ZarrDataFrame objects that will be combined
+    'index_zdf_data_source_when_interleaved' : the index of the zdf to retrieve data when combining mode is interleaved (rows shared between ZDFs)
+    'dict_index_mapping_interleaved' : dictionary of dictionaries mapping row indices of the combined ZarrDataFrame to row indices of each individual ZarrDataFrame. this argument should be set to non-None value only when the current combined ZarrDataFrame is interleaved. if None is given, the combined ZarrDataFrame will be considered 'stacked'
+    
+    for more descriptions about arguments, refer to class ZarrDataFrame
+    """
+    def __init__( self, path_folder_czdf, * l_path_folder_zdf, index_zdf_data_source_when_interleaved : int = 0, dict_index_mapping_interleaved : Union[ dict, None ] = None, ** kwargs ) :
+        """ # 2022-08-24 18:56:41 
+        """
+        super( ).__init__( path_folder_zdf = path_folder_czdf, ** kwargs ) # initialize ZarrDataFrame
+        
+        if 'is_interleaved' not in self.metadata : # if CombinedZarrDataFrame has been newly created, initialize the ZarrDataFrame metadata
+            self._dict_metadata[ 'is_interleaved' ] = dict_index_mapping_interleaved is not None # if non-None value has been given, consider current czdf as an interleaved
+            
+            # set attributes
+            self.dict_index_mapping_interleaved = dict_index_mapping_interleaved
+            self.index_zdf_data_source_when_interleaved = index_zdf_data_source_when_interleaved
+            self.l_path_folder_zdf = l_path_folder_zdf
+            
+            # open given list of zdf objects
+            self.l_zdf = list( ZarrDataFrame( path_folder_zdf = path_folder_zdf, ** kwargs ) for path_folder_zdf in l_path_folder_zdf )
+            
+            
+            # when pickle file is interleaved 
+            if self.is_interleaved :
+                # save a dictionary mapping row indices interleaved zdfs as a pickle file
+                bk.PICKLE_Write( 
+                    f"{path_folder_czdf}dict_index_mapping_interleaved.pickle", 
+                    dict_index_mapping_interleaved
+                )
+                
+        
+    @property
+    def is_interleaved( self ) :
+        ''' # 2022-08-24 18:58:19 
+        return a binary flag indicating whether the current CZDF is interleaved or not.
+        '''
+        return self._dict_metadata[ 'is_interleaved' ]
+        
 ''' a class for accessing Zarr-backed count matrix data (RAMtx, Random-Access matrix) '''
 class RAMtx( ) :
     """ # 2022-08-16 02:47:08 
@@ -5367,9 +5565,24 @@ class RamDataAxis( ) :
         if a filter is not active, return the return value of Axis.all( flag_return_valid_entries_in_the_currently_active_layer = True )
         """
         return self.all( flag_return_valid_entries_in_the_currently_active_layer = True ) if self.filter is None else self.filter
+    def get_str( self, queries, int_index_col = None ) :
+        """ # 2022-08-23 08:53:49 
+        get string representations of the queries
+        """
+        # set default value for 'int_index_col'
+        if int_index_col is None :
+            int_index_col = self.int_index_str_rep
+        # check whether string representation of the entries of the given axis is available 
+        path_folder_str_zarr = f"{self._path_folder}{self._name_axis}.str.zarr"
+        if not zarr_exists( path_folder_str_zarr ) :  # if the zarr object containing string representations are not available, exits
+            return None
+        
+        # open a zarr object containing the string representation of the entries
+        za = zarr.open( path_folder_str_zarr, 'r' )
+        return za.get_orthogonal_selection( ( queries, int_index_col ) )
     def load_str( self, int_index_col = None ) : 
         ''' # 2022-06-24 22:38:18 
-        load string representation of the entries of the current axis, and retrieve a mapping from string representation to integer representation
+        load string representation of all the active entries of the current axis, and retrieve a mapping from string representation to integer representation
         
         'int_index_col' : default value is 'self.int_index_str_rep'
         '''
@@ -5946,7 +6159,27 @@ class RamDataLayer( ) :
         if mode in self : # if a given mode is available
             if hasattr( self, f"ramtx_{mode}" ) : # if a given mode has been loaded
                 return getattr( self, f"ramtx_{mode}" ) # return the ramtx of the given mode
-
+    def __delitem__( self, mode ) :
+        """ # 2022-08-24 20:31:28 
+        """
+        # ignore if current mode is 'read-only'
+        if self._mode == 'r' :
+            return
+        if mode in self : # if a given mode is available
+            if hasattr( self, f"ramtx_{mode}" ) : # if a given mode has been loaded
+                # delete from memory
+                if 'dense' in mode : # handle 'dense' mode
+                    for mode_to_delete in [ 'dense_for_querying_features', 'dense_for_querying_barcodes', 'dense' ] :
+                        delattr( self, f"ramtx_{mode_to_delete}" )
+                        self._dict_metadata[ 'set_modes' ].remove( mode_to_delete )
+                    mode = 'dense'
+                else :
+                    delattr( self, f"ramtx_{mode}" ) # return the ramtx of the given mode
+                    self._dict_metadata[ 'set_modes' ].remove( mode )
+                self._save_metadata_( ) # update metadata
+                
+                # delete a RAMtx
+                shutil.rmtree( f'{self._path_folder_ramdata_layer_mask}{mode}/' )
 ''' class for storing RamData '''
 class RamData( ) :
     """ # 2022-08-21 00:43:30 
@@ -6117,6 +6350,23 @@ class RamData( ) :
 
                 if self.verbose :
                     print( f"'{name_layer}' layer has been loaded" )
+    def delete_layer( self, * l_name_layer ) :
+        """ # 2022-08-24 19:25:25 
+        delete a given list of layers from the current RamData
+        """
+        # ignore if current mode is read-only
+        if self._mode == 'r' :
+            return
+        for name_layer in l_name_layer : # for each name_layer
+            # ignore invalid 'name_layer'
+            if name_layer not in self.layers :
+                continue
+            # delete an entire layer
+            shutil.rmtree( f"{self._path_folder_ramdata}{name_layer}/" )
+            
+            # remove the current layer from the metadata
+            self.layers.remove( name_layer ) 
+            self._save_metadata_( )
     def __repr__( self ) :
         """ # 2022-07-20 00:38:24 
         display RamData
@@ -6367,7 +6617,7 @@ class RamData( ) :
             os.makedirs( path_folder_temp, exist_ok = True ) # create the temporary folder
             return path_folder_temp # return the path to the temporary folder
     def summarize( self, name_layer : str, axis : Union[ int, str ], summarizing_func, l_name_col_summarized = None ) :
-        ''' # 2022-07-20 23:40:02 
+        ''' # 2022-08-22 11:30:01 
         this function summarize entries of the given axis (0 = barcode, 1 = feature) using the given function
         
         example usage: calculate total sum, standard deviation, pathway enrichment score calculation, etc.
@@ -6377,11 +6627,11 @@ class RamData( ) :
         =========
         'name_layer' : name of the data in the given RamData object to summarize
         'axis': int or str. 
-               0 or 'barcode' for applying a given summarizing function for barcodes
-               1 or 'feature' for applying a given summarizing function for features
+               0, 'bc', 'barcode' or 'barcodes' for applying a given summarizing function for barcodes
+               1, 'ft', 'feature' or 'features' for applying a given summarizing function for features
         'summarizing_func' : function object. a function that takes a RAMtx output and return a dictionary containing 'name_of_summarized_data' as key and 'value_of_summarized_data' as value. the resulting summarized outputs will be added as metadata of the given Axis (self.bc.meta or self.ft.meta)
         
-                    summarizing_func( self, int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value ) -> dictionary containing 'key' as summarized metric name and 'value' as a summarized value for the entry
+                    summarizing_func( self, int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value ) -> dictionary containing 'key' as summarized metric name and 'value' as a summarized value for the entry. if None is returned, the summary result for the entry will be skipped.
                     
                     a list of pre-defined functions are the followings :
                     'sum' :
@@ -6421,14 +6671,14 @@ class RamData( ) :
             if self.verbose :
                 print( f"[ERROR] [RamData.summarize] invalid argument 'name_layer' : '{name_layer}' does not exist." )
             return -1 
-        if axis not in { 0, 'barcode', 1, 'feature' } :
+        if axis not in { 0, 'barcode', 1, 'feature', 'barcodes', 'features', 'bc', 'ft' } :
             if self.verbose :
-                print( f"[ERROR] [RamData.summarize] invalid argument 'axis' : '{name_layer}' is invalid. use one of { { 0, 'barcode', 1, 'feature' } }" )
+                print( f"[ERROR] [RamData.summarize] invalid argument 'axis' : '{name_layer}' is invalid." )
             return -1 
         # set layer
         self.layer = name_layer
         # handle inputs
-        flag_summarizing_barcode = axis in { 0, 'barcode', 'barcodes' } # retrieve a flag indicating whether the data is summarized for each barcode or not
+        flag_summarizing_barcode = axis in { 0, 'barcode', 'barcodes', 'bc' } # retrieve a flag indicating whether the data is summarized for each barcode or not
         
         # retrieve the total number of entries in the axis that was not indexed (if calculating average expression of feature across barcodes, divide expression with # of barcodes, and vice versa.)
         int_total_num_entries_not_indexed = self.ft.meta.n_rows if flag_summarizing_barcode else self.bc.meta.n_rows 
@@ -6513,32 +6763,36 @@ class RamData( ) :
             if int_num_entries_in_a_batch == 0 :
                 print( 'empty batch detected' )
             
-            # open an output file
-            path_file_output = f"{path_folder_temp}{UUID( )}.tsv.gz" # define path of the output file
-            newfile = gzip.open( path_file_output, 'wb' )
-            
             # iterate through the data of each entry
+            dict_data = dict( ( name_col, [ ] ) for name_col in l_name_col_summarized ) # collect results
+            l_int_entry_of_axis_for_querying = [ ] # collect list of queried entries with valid results
             for int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying, arr_value in zip( * rtx[ l_int_entry_current_batch ] ) : # retrieve data for the current batch
                 # retrieve summary for the entry
                 dict_res = summarizing_func( self, int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying, arr_value ) # summarize the data for the entry
-                # write the result to an output file
-                newfile.write( ( '\t'.join( map( str, [ int_entry_of_axis_for_querying ] + list( dict_res[ name_col ] if name_col in dict_res else np.nan for name_col in l_name_col_summarized ) ) ) + '\n' ).encode( ) ) # write an index for the current entry # 0>1 coordinate conversion for 'int_entry'
-            newfile.close( ) # close file
-            pipe_to_main_process.send( ( int_num_processed_records, path_file_output ) ) # send information about the output file
+                # if the result empty, does not collect the result
+                if dict_res is None :
+                    continue
+                # collect the result
+                # collect the int_entry with a valid result
+                l_int_entry_of_axis_for_querying.append( int_entry_of_axis_for_querying )
+                # collect the result
+                for name_col in l_name_col_summarized :
+                    dict_data[ name_col ].append( dict_res[ name_col ] if name_col in dict_res else np.nan )
+            pipe_to_main_process.send( ( int_num_processed_records, l_int_entry_of_axis_for_querying, dict_data ) ) # send information about the output file
         # initialize the progress bar
         pbar = progress_bar( total = rtx.get_total_num_records( int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ) )
         def post_process_batch( res ) :
             """ # 2022-07-06 03:21:49 
             """
-            int_num_processed_records, path_file_result = res # parse result
+            int_num_processed_records, l_int_entry_of_axis_for_querying, dict_data = res # parse result
+            # exit if no result has been collected
+            if len( l_int_entry_of_axis_for_querying ) == 0 :
+                return
+            
             pbar.update( int_num_processed_records ) # update the progress bar
-            try :
-                df = pd.read_csv( path_file_result, sep = '\t', index_col = 0, header = None ) # read summarized output file, using the first column as the integer indices of the entries
-                df.columns = l_name_col_summarized_with_name_layer_prefix # name columns of the dataframe using 'name_col' with f'{name_layer}_' prefix
-                ax.meta.update( df, flag_use_index_as_integer_indices = True ) # update metadata using ZarrDataFrame method
-            except pd.errors.EmptyDataError : # if the given dataframe is empty
-                pass
-            os.remove( path_file_result ) # remove the output file
+
+            for name_col, name_col_with_prefix in zip( l_name_col_summarized, l_name_col_summarized_with_name_layer_prefix ) : 
+                ax.meta[ name_col_with_prefix, l_int_entry_of_axis_for_querying ] = dict_data[ name_col ]
         # summarize the RAMtx using multiple processes
         bk.Multiprocessing_Batch( rtx.batch_generator( ax.filter, int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, int_total_weight_for_each_batch = self.int_total_weight_for_each_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 )
         pbar.close( ) # close the progress bar
@@ -6569,6 +6823,11 @@ class RamData( ) :
                           X_new = log_10(X_old + 1)
                  'ident' or None :
                           X_new = X_old
+                          
+                separate functions for processing feature-by-feature data and barcode-by-barcode data can be given using either dictionary or tuple.
+                    func = ( func_bc, func_ft )
+                                or
+                    func = { 'barcodes' : func_bc, 'features' : func_ft }
         
         'mode_instructions' : instructions for converting modes of the ramtx objects. 
                 it is a nested list with the following structure
@@ -6590,21 +6849,21 @@ class RamData( ) :
 
                 mode_instructions = [ [ 'sparse_for_querying_features', 'sparse_for_querying_features' ], 
                                       [ 'sparse_for_querying_features', 'dense' ] ]
-                --> 'sparse_for_querying_features' ramtx object of the 'name_layer' layer converted to 'sparse_for_querying_features' and 'dense' ramtx object of the 'name_layer_new' layer. however, for this instruction, 'sparse_for_querying_features' will be read twice, which will be redundant.
+                --> 'sparse_for_querying_features' ramtx object of the 'name_layer' layer converted to 'sparse_for_querying_features' and 'dense' ramtx object of the 'name_layer_new' layer. however, for this instruction, 'sparse_for_querying_features' will be read twice, which will be redundant and less efficient.
         
                 mode_instructions = [ [ 'sparse_for_querying_features' ],
                                       [ 'dense', [ 'sparse_for_querying_features', 'dense', 'sparse_for_querying_barcodes' ] ] ]
                 --> 'sparse_for_querying_features' > 'sparse_for_querying_features'
-                    'dense' > 'dense' # by default, dense is set for querying features, but it can be changed so that dense matrix can be constructed by querying barcodes from the source dense ramtx object.
+                    'dense_for_querying_features' > 'sparse_for_querying_features', 'dense' (1 read, 2 write) # by default, dense is set for querying features, but it can be changed so that dense matrix can be constructed by querying barcodes from the source dense ramtx object.
                     'dense_for_querying_barcodes' > 'sparse_for_querying_barcodes' of 'name_layer_new'
                 
                 mode_instructions = [ [ 'dense_for_querying_features', 'dense_for_querying_barcode' ],
                                       [ 'dense', [ 'sparse_for_querying_features', 'dense', 'sparse_for_querying_barcodes' ] ] ]
                 --> 'dense_for_querying_features' > 'dense'
-                    'dense_for_querying_features' > 'sparse_for_querying_features'
+                    'dense_for_querying_features' > 'sparse_for_querying_features' # since 'dense' > 'dense' conversion already took place, (1 read, 1 write) operation will be performed
                     'dense_for_querying_barcodes' > 'sparse_for_querying_barcodes'
                     
-                in summary, (1) up to three operations will be performed, to construct three ramtx modes of the resulting layer, (2) the instructions at the front has higher priority, and (3) querying axis of dense can be specified or skipped (default will be used)
+                in summary, (1) up to three operations will be performed, to construct three ramtx modes of the resulting layer, (2) the instructions at the front has higher priority, and (3) querying axis of dense can be specified or skipped (in those cases, default will be used)
         
         'int_num_threads' : the number of CPUs to use. by default, the number of CPUs set by the RamData attribute 'int_num_cpus' will be used.
         'dtype_of_row_and_col_indices', 'dtype_of_value' : the dtype of the output matrix
@@ -6648,8 +6907,8 @@ class RamData( ) :
             func_bc = func
             func_ft = func
         elif isinstance( func, dict ) : # if 'func' is dictionary, parse functions for each axes
-            func_bc = func[ 'barcode' ]
-            func_ft = func[ 'feature' ]
+            func_bc = func[ 'barcodes' ]
+            func_ft = func[ 'features' ]
         elif isinstance( func, tuple ) :
             assert len( func ) == 2 # if 'func' is tuple, the length of 'func' should be 2
             func_bc, func_ft = func
@@ -6984,8 +7243,9 @@ class RamData( ) :
         if flag_new_layer_added_to_the_current_ramdata and not flag_update_a_layer :
             self.layers.add( name_layer_new )
             self._save_metadata_( )
-    def subset( self, path_folder_ramdata_output, l_name_layer = [ ], int_num_threads = None, flag_simultaneous_processing_of_paired_ramtx = True, int_num_entries_for_each_weight_calculation_batch = 1000, int_total_weight_for_each_batch = 10000000 ) :
+    def subset( self, path_folder_ramdata_output, l_name_layer = [ ], int_num_threads = None, ** kwargs ) :
         ''' # 2022-07-05 23:20:02 
+        Under Construction!
         this function will create a new RamData object on disk by creating a subset of the current RamData according to the current filters
 
         =========
@@ -7013,7 +7273,7 @@ class RamData( ) :
         ''' filter each layer '''
         self.load_dict_change( ) # load 'dict_change' for coordinate conversion according to the given filter
         for name_layer in set_name_layer : # for each valid name_layer
-            self.apply( name_layer, name_layer_new = None, func = 'ident', path_folder_ramdata_output = path_folder_ramdata_output, flag_simultaneous_processing_of_paired_ramtx = flag_simultaneous_processing_of_paired_ramtx, int_num_threads = int_num_threads, int_num_entries_for_each_weight_calculation_batch = int_num_entries_for_each_weight_calculation_batch, int_total_weight_for_each_batch = int_total_weight_for_each_batch ) # flag_dtype_output = None : use the same dtype as the input RAMtx object
+            self.apply( name_layer, name_layer_new = None, func = 'ident', path_folder_ramdata_output = path_folder_ramdata_output, int_num_threads = int_num_threads, ** kwargs ) # flag_dtype_output = None : use the same dtype as the input RAMtx object
         self.unload_dict_change( ) # unload 'dict_change' after the conversion process
         
         # compose metadata
@@ -7027,7 +7287,7 @@ class RamData( ) :
             'layers' : list( set_name_layer ),
             'version' : _version_,
         }
-    def normalize( self, name_layer = 'raw', name_layer_new = 'normalized', name_col_total_count = 'raw_sum', int_total_count_target = 10000, flag_simultaneous_processing_of_paired_ramtx = True, int_num_threads = None, ** args ) :
+    def normalize( self, name_layer = 'raw', name_layer_new = 'normalized', name_col_total_count = 'raw_sum', int_total_count_target = 10000, mode_instructions = [ [ 'sparse_for_querying_features', 'sparse_for_querying_features' ], [ 'sparse_for_querying_barcodes', 'sparse_for_querying_barcodes' ] ], int_num_threads = None, ** kwargs ) :
         ''' # 2022-07-06 23:58:15 
         this function perform normalization of a given data and will create a new data in the current RamData object.
 
@@ -7039,13 +7299,16 @@ class RamData( ) :
         'name_layer_new' : name of the output (normalized) data
         'name_col_total_count' : name of column of barcode metadata (ZarrDataFrame) to use as total counts of barcodes
         'int_total_count_target' : the target total count. the count data will be normalized according to the total counts of barcodes so that the total counts of each barcode after normalization becomes 'int_total_count_target'.
-        'flag_simultaneous_processing_of_paired_ramtx' : (Default: True) process the paired RAMtx simultaneously using two processes at a time.
+        'mode_instructions' : please refer to the RamData.apply method
         'int_num_threads' : the number of CPUs to use. by default, the number of CPUs set by the RamData attribute 'int_num_cpus' will be used.
         
-        ** args : arguments for 'self.apply' method
+        ** kwargs : arguments for 'RamData.apply' method
         '''
         # check validity of inputs
-        assert name_col_total_count in self.bc.meta # 'name_col_total_count' column should be available in the metadata
+        if name_col_total_count not in self.bc.meta : # 'name_col_total_count' column should be available in the metadata
+            if self.verbose :
+                print( f"[RamData.normalize] 'name_col_total_count' '{name_col_total_count}' does not exist in the 'barcodes' metadata, exiting" )
+            return
         
         # load total count data
         flag_name_col_total_count_already_loaded = name_col_total_count in self.bc.meta.dict # a flag indicating that the total count data of barcodes has been already loaded
@@ -7072,11 +7335,11 @@ class RamData( ) :
             return int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value
         
         ''' normalize the RAMtx matrices '''
-        self.apply( name_layer, name_layer_new, func = ( func_norm_barcode_indexed, func_norm_feature_indexed ), flag_simultaneous_processing_of_paired_ramtx = flag_simultaneous_processing_of_paired_ramtx, int_num_threads = int_num_threads, ** args ) # flag_dtype_output = None : use the same dtype as the input RAMtx object
+        self.apply( name_layer, name_layer_new, func = ( func_norm_barcode_indexed, func_norm_feature_indexed ), int_num_threads = int_num_threads, mode_instructions = mode_instructions, ** kwargs ) # flag_dtype_output = None : use the same dtype as the input RAMtx object
     
         if not flag_name_col_total_count_already_loaded : # unload count data of barcodes from memory if the count data was not loaded before calling this method
             del self.bc.meta.dict[ name_col_total_count ]
-    def scale( self, name_layer = 'normalized_log1p', name_layer_new = 'normalized_log1p_scaled', name_col_variance = 'normalized_log1p_variance', name_col_mean = 'normalized_log1p_mean', max_value = 10, flag_simultaneous_processing_of_paired_ramtx = True, int_num_threads = None, ** args ) :
+    def scale( self, name_layer = 'normalized_log1p', name_layer_new = 'normalized_log1p_scaled', name_col_variance = 'normalized_log1p_variance', name_col_mean = 'normalized_log1p_mean', max_value = 10, mode_instructions = [ [ 'sparse_for_querying_features', 'sparse_for_querying_features' ], [ 'sparse_for_querying_barcodes', 'sparse_for_querying_barcodes' ] ], int_num_threads = None, ** kwargs ) :
         """ # 2022-07-27 16:32:26 
         current implementation only allows output values to be not zero-centered. the zero-value will remain zero, while Z-scores of the non-zero values will be increased by Z-score of zero values, enabling processing of sparse count data
 
@@ -7085,10 +7348,17 @@ class RamData( ) :
         'name_col_variance' : name of feature metadata containing variance informatin
         'name_col_mean' : name of feature metadata containing mean informatin
         'max_value' : clip values larger than 'max_value' to 'max_value'
+        'mode_instructions' : please refer to the RamData.apply method
+        'int_num_threads' : the number of CPUs to use. by default, the number of CPUs set by the RamData attribute 'int_num_cpus' will be used.
+        
+        ** kwargs : arguments for 'RamData.apply' method
         """
         # check validity of inputs
         # column names should be available in the metadata
-        assert name_col_variance in self.ft.meta 
+        if name_col_variance not in self.ft.meta : # 'name_col_variance' column should be available in the metadata
+            if self.verbose :
+                print( f"[RamData.scale] 'name_col_variance' '{name_col_total_count}' does not exist in the 'barcodes' metadata, exiting" )
+            return
     #     assert name_col_mean in self.ft.meta 
 
         # load feature data
@@ -7127,7 +7397,7 @@ class RamData( ) :
             return int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value
 
         ''' process the RAMtx matrices '''
-        self.apply( name_layer, name_layer_new, func = ( func_barcode_indexed, func_feature_indexed ), flag_simultaneous_processing_of_paired_ramtx = flag_simultaneous_processing_of_paired_ramtx, int_num_threads = int_num_threads, ** args ) # flag_dtype_output = None : use the same dtype as the input RAMtx object
+        self.apply( name_layer, name_layer_new, func = ( func_barcode_indexed, func_feature_indexed ), int_num_threads = int_num_threads, mode_instructions = mode_instructions, ** kwargs ) # flag_dtype_output = None : use the same dtype as the input RAMtx object
 
         # unload count data of barcodes from memory if the count data was not loaded before calling this method
     #     if not flag_name_col_mean_already_loaded : 
@@ -7221,80 +7491,157 @@ class RamData( ) :
         self.ft.filter = ba
         self.ft.save_filter( name_col_filter ) # save the feature filter as a metadata
     ''' function for fast exploratory analysis '''
-    def prepare_dimension_reduction_from_raw( self, name_layer_raw = 'raw', name_layer_out = 'normalized_log1p_scaled', min_counts = 500, min_features = 100, int_total_count_target = 10000, int_num_highly_variable_features = 2000, max_value = 10, dict_kw_hv = { 'float_min_mean' : 0.01, 'float_min_variance' : 0.01, 'name_col_filter' : 'filter_normalized_log1p_highly_variable' } ) :
-        """ # 2022-08-10 09:55:26 
+    def prepare_dimension_reduction_from_raw( self, name_layer_raw : str = 'raw', name_layer_normalized : str = 'normalized', name_layer_log_transformed : str = 'normalized_log1p', name_layer_scaled : str = 'normalized_log1p_scaled', name_col_filter_filtered_barcode : str = 'filtered_barcodes', min_counts : int = 500, min_features : int = 100, int_total_count_target : int = 10000, int_num_highly_variable_features : int = 2000, max_value : float = 10, dict_kw_hv : dict = { 'float_min_mean' : 0.01, 'float_min_variance' : 0.01, 'name_col_filter' : 'filter_normalized_log1p_highly_variable' }, flag_use_fast_mode : bool = True ) :
+        """ # 2022-08-24 17:02:11 
+        assumes raw count data (or the equivalent of it) is available in 'dense' format
 
-        a method designed for fast exploratory analysis of the raw data, removing unncessary layer building operations as much as possible.
+        === general ===
+        flag_use_fast_mode : bool = True : if True, a fast method designed for fast global exploratory analysis (UMAP projection) of the raw data, removing unncessary layer building operations as much as possible. if False, every layer will be written to disk, unfiltered (containing all barcodes and features). 'slow' mode will be much slower but can be re-analyzed more efficiently later (subclustering, etc.)
 
-        'name_layer_raw' : the name of the layer containing 'raw' count data
-        'name_layer_out' : the name of the layer that will contain the log-normalized, scale gene expression data in a 'sparse_for_querying_barcodes' ramtx mode of only the highly variable genes, selected by the current filter settings, 'int_num_highly_variable_features', and 'dict_kw_hv' arguments. data will be scaled and capped according to 'max_value' arguments
+        === input/output layers ===
+        name_layer_raw : str = 'raw' # the name of the layer containing 'raw' count data
+        name_layer_normalized : str = 'normalized' # the name of the layer containing normalized raw count data
+        name_layer_log_transformed : str = 'normalized_log1p' # the name of the layer containing log-transformed normalized raw count data
+        name_layer_scaled : str = 'normalized_log1p_scaled' : the name of the layer that will contain the log-normalized, scale gene expression data in a 'sparse_for_querying_barcodes' ramtx mode of only the highly variable genes, selected by the current filter settings, 'int_num_highly_variable_features', and 'dict_kw_hv' arguments. data will be scaled and capped according to 'max_value' arguments
+        
+        === barcode filtering ===
+        name_col_filter_filtered_barcode : str = 'filtered_barcodes' # the name of metadata column that will contain filter containing active barcode entries after barcode filtering
         
         'int_total_count_target' : total count target for normalization
         'min_counts' = 500, 'min_features' = 100 : for barcode filtering
         'int_num_highly_variable_features' : the number of highly variable genes to retrieve
-        'max_value' = 10 : capping at this value after scaling
+        'max_value' = 10 : capping at this value during scaling
         """
+        # load a raw count layer
+        self.layer = name_layer_raw 
+        self.layer[ 'dense' ].survey_number_of_records_for_each_entry( ) # prepare operation on dense RAMtx
+        
+        # in 'slow' mode, use sparse matrix for more efficient operation
+        if not flag_use_fast_mode :
+            """ %% SLOW MODE %% """
+            if self.verbose :
+                print( f"[RamData.prepare_dimension_reduction_from_raw] [SLOW MODE] converting dense to sparse formats ... " )
+            # dense -> sparse conversion
+            self.apply( name_layer_raw, name_layer_raw, 'ident', mode_instructions = [ [ 'dense', 'sparse_for_querying_features' ], [ 'dense', 'sparse_for_querying_barcodes' ] ] )
+
+        # calculate total counts for each barcode
+        if self.verbose :
+            print( f"[RamData.prepare_dimension_reduction_from_raw] summarizing total count for each barcode ... " )
         self.summarize( name_layer_raw, 'barcode', 'sum' )
 
         # filter cells
+        if self.verbose :
+            print( f"[RamData.prepare_dimension_reduction_from_raw] filtering barcodes ... " )
         self.bc.filter = ( self.bc.all( ) if self.bc.filter is None else self.bc.filter ) & BA.to_bitarray( self.bc.meta[ f'{name_layer_raw}_sum', : ] > min_counts ) & BA.to_bitarray( self.bc.meta[ f'{name_layer_raw}_num_nonzero_values', : ] > min_features )
-        self.bc.save_filter( 'filtered_barcodes' ) # save filter for later analysis
+        self.bc.save_filter( name_col_filter_filtered_barcode ) # save filter for later analysis
 
-        # retrieve total raw count data for normalization
-        self.bc.meta.load_as_dict( f'{name_layer_raw}_sum' )
-        dict_count = self.bc.meta.dict[ f'{name_layer_raw}_sum' ] # retrieve total counts for each barcode as a dictionary
+        if flag_use_fast_mode :
+            """ %% FAST MODE %% """
+            # retrieve total raw count data for normalization
+            self.bc.meta.load_as_dict( f'{name_layer_raw}_sum' )
+            dict_count = self.bc.meta.dict[ f'{name_layer_raw}_sum' ] # retrieve total counts for each barcode as a dictionary
 
-        # retrieve the total number of barcodes
-        int_total_num_barcodes = self.bc.meta.n_rows
+            # retrieve the total number of barcodes
+            int_total_num_barcodes = self.bc.meta.n_rows
 
-        def func( self, int_entry_of_axis_for_querying : int, arr_int_entries_of_axis_not_for_querying : np.ndarray, arr_value : np.ndarray ) : # normalize count data of a single feature containing (possibly) multiple barcodes
-            """ # 2022-07-06 23:58:38 
-            """
-            # perform normalization in-place
-            for i, e in enumerate( arr_int_entries_of_axis_not_for_querying.astype( int ) ) : # iterate through barcodes
-                arr_value[ i ] = arr_value[ i ] / dict_count[ e ] # perform normalization using the total count data for each barcode
-            arr_value *= int_total_count_target
+            def func( self, int_entry_of_axis_for_querying : int, arr_int_entries_of_axis_not_for_querying : np.ndarray, arr_value : np.ndarray ) : # normalize count data of a single feature containing (possibly) multiple barcodes
+                """ # 2022-07-06 23:58:38 
+                """
+                # perform normalization in-place
+                for i, e in enumerate( arr_int_entries_of_axis_not_for_querying.astype( int ) ) : # iterate through barcodes
+                    arr_value[ i ] = arr_value[ i ] / dict_count[ e ] # perform normalization using the total count data for each barcode
+                arr_value *= int_total_count_target
 
-            # perform log1p transformation 
-            arr_value = np.log10( arr_value + 1 )
+                # perform log1p transformation 
+                arr_value = np.log10( arr_value + 1 )
 
-            # calculate deviation
-            int_num_records = len( arr_value ) # retrieve the number of records of the current entry
-            dict_summary = { 'normalized_log1p_sum' : np.sum( arr_value ) if int_num_records > 30 else sum( arr_value ) } # if an input array has more than 30 elements, use np.sum to calculate the sum
-            dict_summary[ 'normalized_log1p_mean' ] = dict_summary[ 'normalized_log1p_sum' ] / int_total_num_barcodes # calculate the mean
-            arr_dev = ( arr_value - dict_summary[ 'normalized_log1p_mean' ] ) ** 2 # calculate the deviation
-            dict_summary[ 'normalized_log1p_deviation' ] = np.sum( arr_dev ) if int_num_records > 30 else sum( arr_dev )
-            dict_summary[ 'normalized_log1p_variance' ] = dict_summary[ 'normalized_log1p_deviation' ] / ( int_total_num_barcodes - 1 ) if int_total_num_barcodes > 1 else np.nan
-            return dict_summary    
+                # calculate deviation
+                int_num_records = len( arr_value ) # retrieve the number of records of the current entry
+                dict_summary = { 'normalized_log1p_sum' : np.sum( arr_value ) if int_num_records > 30 else sum( arr_value ) } # if an input array has more than 30 elements, use np.sum to calculate the sum
+                dict_summary[ 'normalized_log1p_mean' ] = dict_summary[ 'normalized_log1p_sum' ] / int_total_num_barcodes # calculate the mean
+                arr_dev = ( arr_value - dict_summary[ 'normalized_log1p_mean' ] ) ** 2 # calculate the deviation
+                dict_summary[ 'normalized_log1p_deviation' ] = np.sum( arr_dev ) if int_num_records > 30 else sum( arr_dev )
+                dict_summary[ 'normalized_log1p_variance' ] = dict_summary[ 'normalized_log1p_deviation' ] / ( int_total_num_barcodes - 1 ) if int_total_num_barcodes > 1 else np.nan
+                return dict_summary    
 
-        # calculate the metric for identifying highly variable genes
-        self.summarize( name_layer_raw, 'feature', func, l_name_col_summarized = [ 'normalized_log1p_sum', 'normalized_log1p_mean', 'normalized_log1p_deviation', 'normalized_log1p_variance' ] )
+            # calculate the metric for identifying highly variable genes
+            if self.verbose :
+                print( f"[RamData.prepare_dimension_reduction_from_raw] [FAST MODE] calculating metrics for highly variable feature detection ... " )
+            self.summarize( name_layer_raw, 'feature', func, l_name_col_summarized = [ 'normalized_log1p_sum', 'normalized_log1p_mean', 'normalized_log1p_deviation', 'normalized_log1p_variance' ] )
 
-        # identify highly variable genes
-        self.identify_highly_variable_features( name_layer = f'{name_layer_raw}_normalized_log1p', int_num_highly_variable_features = int_num_highly_variable_features, flag_show_graph = True, ** dict_kw_hv )
+            # identify highly variable genes
+            self.identify_highly_variable_features( 
+                name_layer = f'{name_layer_raw}_normalized_log1p', 
+                int_num_highly_variable_features = int_num_highly_variable_features, 
+                flag_show_graph = True,
+                ** dict_kw_hv
+            )
 
-        # retrieve variance
-        self.ft.meta.load_as_dict( f'{name_layer_raw}_normalized_log1p_variance' )
-        dict_var = self.ft.meta.dict[ f'{name_layer_raw}_normalized_log1p_variance' ] # retrieve total counts for each barcode as a dictionary
+            # retrieve variance
+            self.ft.meta.load_as_dict( f'{name_layer_raw}_normalized_log1p_variance' )
+            dict_var = self.ft.meta.dict[ f'{name_layer_raw}_normalized_log1p_variance' ] # retrieve total counts for each barcode as a dictionary
 
-        # write log-normalized, scaled data for the selected highly variable features
-        def func( self, int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value ) : 
-            """ # 2022-07-06 23:58:38 
-            """
-            # perform normalization 
-            arr_value *= int_total_count_target / dict_count[ int_entry_of_axis_for_querying ] # perform normalization using the total count data for each barcode
+            # write log-normalized, scaled data for the selected highly variable features
+            def func( self, int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value ) : 
+                """ # 2022-07-06 23:58:38 
+                """
+                # perform normalization 
+                arr_value *= int_total_count_target / dict_count[ int_entry_of_axis_for_querying ] # perform normalization using the total count data for each barcode
 
-            # perform log1p transformation 
-            arr_value = np.log10( arr_value + 1 )
+                # perform log1p transformation 
+                arr_value = np.log10( arr_value + 1 )
 
-            # perform scaling in-place
-            for i, e in enumerate( arr_int_entries_of_axis_not_for_querying.astype( int ) ) : # iterate through features
-                arr_value[ i ] = arr_value[ i ] / dict_var[ e ] ** 0.5
-            arr_value[ arr_value > max_value ] = max_value # capping values above 'max_value'
+                # perform scaling in-place
+                for i, e in enumerate( arr_int_entries_of_axis_not_for_querying.astype( int ) ) : # iterate through features
+                    arr_value[ i ] = arr_value[ i ] / dict_var[ e ] ** 0.5
+                arr_value[ arr_value > max_value ] = max_value # capping values above 'max_value'
 
-            # return results
-            return int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value
-        self.apply( name_layer_raw, name_layer_out, func, [ [ 'dense', 'sparse_for_querying_barcodes' ] ] )
+                # return results
+                return int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value
+            if self.verbose :
+                print( f"[RamData.prepare_dimension_reduction_from_raw] [FAST MODE] write log-normalized, scaled data for the selected highly variable features ... " )
+            self.apply( name_layer_raw, name_layer_scaled, func, [ [ 'dense', 'sparse_for_querying_barcodes' ] ] )
+        else :
+            """ %% SLOW MODE %% """
+            self.bc.filter = None # clear barcode filter (in order to preserve every record in the output layers)
+            
+            # normalize
+            self.normalize( 
+                name_layer_raw, 
+                name_layer_normalized, 
+                name_col_total_count = f'{name_layer_raw}_sum',
+                int_total_count_target = int_total_count_target,
+                mode_instructions = [ [ 'sparse_for_querying_features', 'sparse_for_querying_features' ], [ 'sparse_for_querying_barcodes', 'sparse_for_querying_barcodes' ] ]
+            ) 
+
+            # log-transform
+            self.apply( 
+                name_layer_normalized, 
+                name_layer_log_transformed, 
+                'log1p',
+                mode_instructions = [ [ 'sparse_for_querying_features', 'sparse_for_querying_features' ], [ 'sparse_for_querying_barcodes', 'sparse_for_querying_barcodes' ] ]
+            ) 
+            
+            # load filter for filtered barcodes
+            self.bc.change_filter( name_col_filter_filtered_barcode )
+
+            # identify highly variable features (with filtered barcodes)
+            self.identify_highly_variable_features( 
+                name_layer_log_transformed, 
+                int_num_highly_variable_features = int_num_highly_variable_features,
+                flag_show_graph = True,
+                ** dict_kw_hv
+            )
+
+            # scale data (with metrics from the filtered barcodes)
+            self.scale( 
+                name_layer_log_transformed,
+                name_layer_scaled, 
+                name_col_variance = f'{name_layer_log_transformed}_variance',
+                name_col_mean = f'{name_layer_log_transformed}_mean',
+                max_value = max_value,
+                mode_instructions = [ [ 'sparse_for_querying_features', 'sparse_for_querying_features' ], [ 'sparse_for_querying_barcodes', 'sparse_for_querying_barcodes' ] ]
+            ) # scale data
     ''' utility functions for filter '''
     def change_filter( self, name_col_filter = None, name_col_filter_bc = None, name_col_filter_ft = None ) -> None :
         """ # 2022-07-16 17:27:58 
@@ -8481,10 +8828,11 @@ class RamData( ) :
             # prepare next batch
             self.change_filter( name_col_filter_subsampled ) # change filter to currently subsampled entries for the next round
     ''' for marker detection analysis '''
-    def find_markers( self, name_col_label : str = 'subsampling_label', index_name_col_label : int = -1, l_name_cluster : Union[ list, np.ndarray, tuple, set, None ] = None, name_col_auroc : str = 'marker_auroc', name_col_log2fc : str = 'marker_log2fc', name_col_pval : str = 'marker_pval', method_pval : str = 'wilcoxon' ) :
+    def find_markers( self, name_layer : str = 'normalized_log1p_scaled', name_col_label : str = 'subsampling_label', index_name_col_label : int = -1, l_name_cluster : Union[ list, np.ndarray, tuple, set, None ] = None, name_col_auroc : str = 'marker_auroc', name_col_log2fc : str = 'marker_log2fc', name_col_pval : str = 'marker_pval', method_pval : str = 'wilcoxon', int_chunk_size_secondary = 10 ) :
         """ # 2022-08-21 13:37:02 
-        find marker features for each cluster label by calculating a AUROC metric
+        find marker features for each cluster label by calculating a AUROC metric, log2FC, and Wilcoxon (or alternatively, t-test or Mann-Whitney-U rank test)
         
+        name_layer : str = 'normalized_log1p_scaled' : a layer containing expression data to use for finding marker. scaled data is recommended
         name_col_label : str = 'subsampling_label' : the name of the column of 'barcodes' metadata containing cluster labels
         index_name_col_label : int = -1 : the index of the column (secondary axis) of the 'name_col_label' metadata column. if no secondary axis is available, this argument will be ignored.
         l_name_cluster : Union[ list, np.ndarray, tuple, None ] = None : the list of cluster labels that will be included 
@@ -8494,61 +8842,208 @@ class RamData( ) :
         name_col_auroc : str = 'marker_auroc' : the name of the output column name in the 'features' metadata ZDF. This column contains Area Under Receiver Operating Characteristic (Sensitivity/Specificity) curve values for each cluster and feature pair. if None is given, AUROC will be not calculated
         name_col_log2fc : str = 'marker_log2fc' : the name of the output column name in the 'features' metadata ZDF. This column contains Log_2 fold change values of the cells of the cluster label of interest versus the rest of the cells.
         name_col_pval : str = 'marker_pval' : the name of the output column name in the 'features' metadata ZDF. This column contains uncorrected p-value from the wilcoxon or t-test results
-        method_pval : str = 'wilcoxon' : one of the test methods in { 'wilcoxon', 't-test' }
+        method_pval : str = 'wilcoxon' : one of the test methods in { 'wilcoxon', 't-test', 'mann-whitney-u' }
+        int_chunk_size_secondary : int = 10 : the chunk size of the output columns along the secondary axis
         
         an array with a shape of ( the number of all features ) X ( the number of all cluster labels ), stored in the feature metadata using the given column name
         information about which column of the output array represent which cluster label is available in the column metadata.
         """
         # handle inputs
-        if name_col_label not in self.bc.meta :
+        if name_col_label not in self.bc.meta : # check input label
             if self.verbose  :
                 print( f"[Error] [RamData.find_markers] 'name_col_label' {name_col_label} does not exist in barcode metadata, exiting" )
             return
-        
-        # retrieve labels
-        arr_cluster_label = self.bc.meta[ name_col_label ]
-        
+
+        if name_layer not in self.layers : # check input layer
+            if self.verbose  :
+                print( f"[Error] [RamData.find_markers] 'name_layer' {name_layer} does not exist in the layers, exiting" )
+            return
+        self.layer = name_layer # load layer
         
         # retrieve flags
         flag_calcualte_auroc = name_col_auroc is not None
         flag_calculate_pval = name_col_pval is not None
-        if flag_calculate_pval and method_pval not in { 'wilcoxon', 't-test' } :
-            if self.verbose  :
-                print( f"[Error] [RamData.find_markers] 'name_col_label' {name_col_label} does not exist in barcode metadata, exiting" )
-            return
+        assert name_col_log2fc is not None # 'name_col_log2fc' should not be None
+        
+        # retrieve function for testing p-value
+        test = None
+        if flag_calculate_pval :
+            if method_pval not in { 'wilcoxon', 't-test', 'mann-whitney-u' } :
+                if self.verbose  :
+                    print( f"[Error] [RamData.find_markers] 'method_pval' {method_pval} is invalid, exiting" )
+                return
+            if method_pval == 't-test' :
+                test = scipy.stats.ttest_ind
+            elif method_pval == 'wilcoxon' :
+                test = scipy.stats.ranksums
+            elif method_pval == 'mann-whitney-u' :
+                test = scipy.stats.mannwhitneyu
+        
+        # compose 'l_name_col_summarized', a list of output column names
+        l_name_col_summarized = [ name_col_log2fc ]
+        l_fill_value = [ np.nan ] # for 'col_log2fc', fill_value = 0
+        if flag_calcualte_auroc :
+            l_name_col_summarized.append( name_col_auroc )
+            l_fill_value.append( 0 )
+        if flag_calculate_pval :
+            l_name_col_summarized.append( name_col_pval )
+            l_fill_value.append( -1 )
+        
+        # retrieve labels (considering filters)
+        n_dims_non_primary = len( self.bc.meta.get_shape( name_col_label ) )
+        arr_cluster_label = self.bc.meta[ name_col_label ] if n_dims_non_primary == 0 else self.bc.meta[ name_col_label, None, index_name_col_label ] # retrieve cluster labels
+        int_num_barcodes = len( arr_cluster_label ) # retrieve the number of active barcodes
+        l_unique_cluster_label = sorted( convert_numpy_dtype_number_to_number( e ) for e in set( arr_cluster_label ) ) # retrieve a list of unique cluster labels
+        dict_cluster_label_to_index = dict( ( e, i ) for i, e in enumerate( l_unique_cluster_label ) ) # map cluster labels to integer indices
+        int_num_cluster_labels = len( l_unique_cluster_label ) # retrieve the total number of cluster labels
+        
+        if l_name_cluster is not None : # if 'l_name_cluster' is given, analyze only the labels in the given list of cluster labels
+            set_cluster_label = set( l_name_cluster )
+            l_unique_cluster_label_to_analyze = list( e for e in l_unique_cluster_label if e in set_cluster_label )
+            del set_cluster_label
+        else : # by default, analyze all cluster labels
+            l_unique_cluster_label_to_analyze = l_unique_cluster_label
             
+        # initialize output columns
+        for name_col, fill_value in zip( l_name_col_summarized, l_fill_value ) : # for each column, retrieve name_col and fill_value
+            name_col = f"{name_layer}_{name_col}" # compose the name of the destination column
+            self.ft.meta.initialize_column( name_col, dtype = np.float64, shape_not_primary_axis = ( int_num_cluster_labels, ), chunks = ( int_chunk_size_secondary, ), fill_value = fill_value ) 
+            dict_metadata = self.ft.meta.get_column_metadata( name_col ) # retrieve metadata
+            dict_metadata[ 'l_labels_1' ] = l_unique_cluster_label # add cluster label information
+            self.ft.meta._set_column_metadata( name_col, dict_metadata ) # update column metadata
+            
+        # create view
+        flag_view_was_not_active = not self.bc.is_view_active # retrieve a flag indicating a view was not active
+        if flag_view_was_not_active : # create view
+            self.bc.create_view( )
         
-        
-        
-        
-        
-        # retrieve the total number of barcodes
-        int_total_num_barcodes = self.bc.meta.n_rows
-
         def func( self, int_entry_of_axis_for_querying : int, arr_int_entries_of_axis_not_for_querying : np.ndarray, arr_value : np.ndarray ) : # normalize count data of a single feature containing (possibly) multiple barcodes
-            """ # 2022-07-06 23:58:38 
+            """ # 2022-08-22 11:25:57 
+            find markers
             """
-            # perform normalization in-place
-            for i, e in enumerate( arr_int_entries_of_axis_not_for_querying.astype( int ) ) : # iterate through barcodes
-                arr_value[ i ] = arr_value[ i ] / dict_count[ e ] # perform normalization using the total count data for each barcode
-            arr_value *= int_total_count_target
-
-            # perform log1p transformation 
-            arr_value = np.log10( arr_value + 1 )
-
-            # calculate deviation
-            int_num_records = len( arr_value ) # retrieve the number of records of the current entry
-            dict_summary = { 'normalized_log1p_sum' : np.sum( arr_value ) if int_num_records > 30 else sum( arr_value ) } # if an input array has more than 30 elements, use np.sum to calculate the sum
-            dict_summary[ 'normalized_log1p_mean' ] = dict_summary[ 'normalized_log1p_sum' ] / int_total_num_barcodes # calculate the mean
-            arr_dev = ( arr_value - dict_summary[ 'normalized_log1p_mean' ] ) ** 2 # calculate the deviation
-            dict_summary[ 'normalized_log1p_deviation' ] = np.sum( arr_dev ) if int_num_records > 30 else sum( arr_dev )
-            dict_summary[ 'normalized_log1p_variance' ] = dict_summary[ 'normalized_log1p_deviation' ] / ( int_total_num_barcodes - 1 ) if int_total_num_barcodes > 1 else np.nan
+            if len( arr_value ) == 0 : # handle when no expression values are available, exit
+                return
+            
+            dict_summary = dict( ( name_col, [ fill_value ] * int_num_cluster_labels ) for name_col, fill_value in zip( l_name_col_summarized, l_fill_value ) ) # initialize output dictionary
+            
+            arr_expr = np.zeros( int_num_barcodes ) # initialize expression values in dense format
+            arr_expr[ arr_int_entries_of_axis_not_for_querying ] = arr_value # convert sparse to dense format
+            
+            # for each cluster
+            for name_clus in l_unique_cluster_label_to_analyze :
+                index_clus = dict_cluster_label_to_index[ name_clus ] # retrieve index of the current cluster
+                # retrieve expression values of cluster and the rest of the barcodes
+                mask = arr_cluster_label == name_clus
+                arr_expr_clus = arr_expr[ mask ]
+                arr_expr_rest = arr_expr[ ~ mask ]
+                
+                # calculate log2fc values
+                mean_arr_expr_rest = arr_expr_rest.mean( )
+                if mean_arr_expr_rest != 0 :
+                    try :
+                        dict_summary[ name_col_log2fc ][ index_clus ] = math.log2( arr_expr_clus.mean( ) / mean_arr_expr_rest )
+                    except ValueError : # catch math.log2 domain error
+                        pass
+                
+                # calculate auroc
+                if flag_calcualte_auroc :
+                    dict_summary[ name_col_auroc ][ index_clus ] = skl.metrics.roc_auc_score( mask, arr_expr )
+                    
+                # calculate ttest
+                if flag_calculate_pval and test is not None :
+                    dict_summary[ name_col_pval ][ index_clus ] = test( arr_expr_clus, arr_expr_rest ).pvalue
             return dict_summary    
 
-        # calculate the metric for identifying highly variable genes
-        self.summarize( name_layer_raw, 'feature', func, l_name_col_summarized = [ 'normalized_log1p_sum', 'normalized_log1p_mean', 'normalized_log1p_deviation', 'normalized_log1p_variance' ] )
+        # calculate the metric for identifying marker features
+        self.summarize( name_layer, 'features', func, l_name_col_summarized = l_name_col_summarized )
 
-    
+        # destroy view if a view was not active
+        if flag_view_was_not_active :
+            self.bc.destroy_view( )
+    def get_marker_table( self, max_pval : float = 1e-10, min_auroc : float = 0.7, min_log2fc : float = 1, name_col_auroc : Union[ str, None ] = 'normalized_log1p_scaled_marker_auroc', name_col_log2fc : Union[ str, None ] = 'normalized_log1p_scaled_marker_log2fc', name_col_pval : Union[ str, None ] = 'normalized_log1p_scaled_marker_pval', int_num_chunks_in_a_batch : int = 10 ) :
+        """ # 2022-08-22 21:59:46 
+        retrieve marker table using the given thresholds
+
+        === arguments ===
+        max_pval : float = 1e-10 : maximum p-value for identification of marker features
+        min_auroc : float = 0.7 : minimum AUROC metric value for identification of marker features
+        min_log2fc : float = 1 : minimum Log2 fold change metric value for identification of marker features
+        name_col_auroc : Union[ str, None ] = 'normalized_log1p_scaled_marker_auroc' : the name of the column containing AUROC metrics for each feature for each cluster label. if None is given, AUROC metric will be ignored
+        name_col_log2fc : Union[ str, None ] = 'normalized_log1p_scaled_marker_log2fc' : the name of the column containing AUROC metrics for each feature for each cluster label. if None is given, Log2FC values will be ignored
+        name_col_pval : Union[ str, None ] = 'normalized_log1p_scaled_marker_pval' : the name of the column containing p-value significance for null-hypothesis testing for each feature for each cluster label. if None is given, p-value will be ignored
+        int_num_chunks_in_a_batch : int = 10 : the number of chunks in a batch
+        """
+        # retrieve the maximum number of entries in a batch
+        int_num_entries_in_a_batch = self.bc.meta.int_num_rows_in_a_chunk * int_num_chunks_in_a_batch
+
+        # handle inputs
+        flag_use_auroc = name_col_auroc is not None
+        flag_use_log2fc = name_col_log2fc is not None
+        flag_use_pval = name_col_pval is not None
+
+        if not ( flag_use_auroc or flag_use_log2fc or flag_use_pval ) : 
+            if self.verbose :
+                print( f"[RamData.get_marker_table] at least one metric should be used for filtering markers but none were given, exiting." )
+            return
+
+        # retrieve 'features' axis
+        ax = self.ft
+
+        # retrieve a list of unique cluster labels
+        for name_col in [ name_col_auroc, name_col_log2fc, name_col_pval ] :
+            if name_col in ax.meta :
+                l_unique_cluster_label = ax.meta.get_column_metadata( name_col )[ 'l_labels_1' ]
+                break
+        # retrieve the number of cluster labels
+        int_num_cluster_labels = len( l_unique_cluster_label )
+
+        # collect the result
+        l_l = [ ]
+
+        int_num_entries_searched = 0 # initialize the position
+        int_num_entries_total = self.ft.int_num_entries # retrieve the total number of entries to search
+        while int_num_entries_searched <= int_num_entries_total : # until all entries were searched
+            mask = np.ones( ( min( int_num_entries_in_a_batch, int_num_entries_total - int_num_entries_searched ), int_num_cluster_labels ), dtype = bool ) # initialize the mask # include all records by default
+            sl = slice( int_num_entries_searched, int_num_entries_searched + mask.shape[ 0 ] ) # retrieve a slice for the batch
+            if flag_use_auroc :
+                arr_data = ax.meta[ name_col_auroc, sl, : ] # retrieve data
+                mask &= arr_data >= min_auroc # apply filter using AUROC metrics
+                arr_data_auroc = arr_data
+            if flag_use_log2fc :
+                arr_data = ax.meta[ name_col_log2fc, sl, : ] # retrieve data
+                mask &= ~ np.isnan( arr_data ) # apply filter using valid log2fc values
+                mask &= arr_data >= min_log2fc  # apply filter using log2fc values 
+                arr_data_log2fc = arr_data
+            if flag_use_pval :
+                arr_data = ax.meta[ name_col_pval, sl, : ] # retrieve data
+                mask &= arr_data != -1 # apply filter using valid p-values
+                mask &= arr_data <= max_pval  # apply filter using p-values
+                arr_data_pval = arr_data
+
+            # retrieve coordinates of filtered records
+            coords_filtered = np.where( mask )
+            int_num_records_filtered = len( coords_filtered[ 0 ] ) # retrieve the number of records after filtering for the current batch
+
+            # retrieve data of filtered records
+            arr_data_auroc = arr_data_auroc[ coords_filtered ] if flag_use_auroc else np.full( int_num_records_filtered, np.nan )
+            arr_data_log2fc = arr_data_log2fc[ coords_filtered ] if flag_use_log2fc else np.full( int_num_records_filtered, np.nan )
+            arr_data_pval = arr_data_pval[ coords_filtered ] if flag_use_pval else np.full( int_num_records_filtered, np.nan )
+
+            arr_int_entry_ft_filtered, arr_int_name_cluster_filtered = coords_filtered # parse coordinates
+            arr_int_entry_ft_filtered += int_num_entries_searched # correct 'arr_int_entry_ft_filtered'
+            for int_entry_ft, int_name_cluster, value_auroc, value_log2fc, value_pval in zip( arr_int_entry_ft_filtered, arr_int_name_cluster_filtered, arr_data_auroc, arr_data_log2fc, arr_data_pval ) : # for each record
+                l_l.append( [ int_entry_ft, l_unique_cluster_label[ int_name_cluster ], value_auroc, value_log2fc, value_pval ] ) # collect metrics and cluster label
+
+            int_num_entries_searched += int_num_entries_in_a_batch # update positions
+        df_marker = pd.DataFrame( l_l, columns = [ 'name_feature', 'name_cluster', 'value_auroc', 'value_log2fc', 'value_pval' ] ) # retrieve marker table as a dataframe
+        if len( df_marker ) == 0 : # handle the case when no records exist after filtering
+            return df_marker
+
+        arr_int_entry_ft = np.sort( df_marker.name_feature.unique( ) ) # retrieve integer representation of features
+        arr_str_entry_ft = self.ft.get_str( arr_int_entry_ft ) # retrieve string representations of the features
+        dict_mapping = dict( ( i, s ) for i, s in zip( arr_int_entry_ft, arr_str_entry_ft ) ) # retrieve a mapping of int > str repr. of features
+        df_marker[ 'name_feature' ] = list( dict_mapping[ i ] for i in df_marker[ 'name_feature' ].values ) # retrieve string representations of the features of the marker table
+        return df_marker
     ''' scarab-associated methods for analyzing RamData '''
     def _classify_feature_of_scarab_output_( self, int_min_num_occurrence_to_identify_valid_feature_category = 1000 ) :
         """ # 2022-05-30 12:39:01 
