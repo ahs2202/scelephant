@@ -44,7 +44,7 @@ import igraph as ig
 # define version
 _version_ = '0.0.5'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-08-25 16:18:53'
+_last_modified_time_ = '2022-08-27 10:26:26'
 
 """ # 2022-07-21 10:35:42  realease note
 
@@ -152,6 +152,11 @@ RamData.get_marker_table : retrieve markers as table from the results produced b
 
 # 2022-08-25 16:18:04 
 initialized ZarrDataFrame class with an additional functionality (combined mode)
+
+# 2022-08-27 10:21:45 
+ZarrDataFrame class now support combined mode, where data are retrieved across multiple zdf conmponents, either sharing rows ('interleaved' type) or each has unique rows ('stacked' type).
+currently supported operations are __getitem__
+Also, fill_value of categorical column is now -1, interpreting empty values as np.nan by default
 
 """
 
@@ -3340,7 +3345,7 @@ def zarr_copy( path_folder_zarr_source, path_folder_zarr_sink, int_num_chunks_pe
     """
     # open zarr objects
     za = zarr.open( path_folder_zarr_source )
-    za_sink = zarr.open( path_folder_zarr_sink, mode = 'w', shape = za.shape, chunks = za.chunks, dtype = za.dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # open the output zarr
+    za_sink = zarr.open( path_folder_zarr_sink, mode = 'w', shape = za.shape, chunks = za.chunks, dtype = za.dtype, fill_value = za.fill_value, synchronizer = zarr.ThreadSynchronizer( ) ) # open the output zarr
     
     # copy count data
     int_total_num_rows = za.shape[ 0 ]
@@ -3592,7 +3597,7 @@ class ShelveContainer( ) :
 
 ''' a class for Zarr-based DataFrame object '''
 class ZarrDataFrame( ) :
-    """ # 2022-07-22 02:05:09 
+    """ # 2022-08-27 10:21:20 
     storage-based persistant DataFrame backed by Zarr persistent arrays.
     each column can be separately loaded, updated, and unloaded.
     a filter can be set, which allows updating and reading ZarrDataFrame as if it only contains the rows indicated by the given filter.
@@ -3632,10 +3637,14 @@ class ZarrDataFrame( ) :
     'flag_is_read_only' : read-only status of the storage
     'flag_use_mask_for_caching' : use mask for not only storing modifications, but also save retrieved data from (remote) sources for faster access. this behavior can be turned on/off at any time
     
+    === settings for controlling buffer (batch) size ===
+    'int_max_num_entries_per_batch' = 1000000 # the maximum number of entries to be processed in a batch (determines memory usage)
+    
     === settings for combined ZarrDataFrame ===
     settings for combined ZarrDataFrames.
     When a list of ZarrDataFrame objects were given through the 'l_zdf' argument, 'combined' ZarrDataFrame mode will be activated.
     Briefly, combined ZarrDataFrame works by retrieving data from individual zdf objects, combined the data, and write a combined data as a column of 'combined' ZarrDataFrame.
+    A combined column will be written to the current ZarrDataFrame every time data values were retrieved across the given list of zdf objects and combined (which can serve as a local cache, if one of the zdf object reside in remote location). 
     
     There are two types of combined ZarrDataFrames, 'stacked' and 'interleaved'
         * 'stacked' : rows of each ZarrDataFrame stacked on top of each other without interleaving
@@ -3652,7 +3661,7 @@ class ZarrDataFrame( ) :
     'l_zdf' : a list of ZarrDataFrame objects that will be combined
     'index_zdf_data_source_when_interleaved' : the index of the zdf to retrieve data when combining mode is interleaved (rows shared between ZDFs)
     'l_dict_index_mapping_interleaved' : list of dictionaries mapping row indices of the combined ZarrDataFrame to row indices of each individual ZarrDataFrame. this argument should be set to non-None value only when the current combined ZarrDataFrame is interleaved. if None is given, the combined ZarrDataFrame will be considered 'stacked'
-    'flag_write_after_combining' : a flag indicating whether a combined column should be written to the current ZarrDataFrame every time data values were retrieved across the given list of zdf objects and combined (which can serve as a local cache, if one of the zdf object reside in remote location). 
+    
     
     # arguments that works differently in combined zdf object
     'path_folder_zdf' : a path to the 'combined' ZarrDataFrame object.
@@ -3660,7 +3669,7 @@ class ZarrDataFrame( ) :
     
     
     """
-    def __init__( self, path_folder_zdf : str, l_zdf : Union[ list, np.ndarray, None ] = None, index_zdf_data_source_when_interleaved : int = 0, l_dict_index_mapping_interleaved : Union[ list, None ] = None, flag_write_after_combining : bool = False, df = None, int_num_rows = None, int_num_rows_in_a_chunk = 10000, ba_filter = None, flag_enforce_name_col_with_only_valid_characters = False, flag_store_string_as_categorical = True, flag_retrieve_categorical_data_as_integers = False, flag_load_data_after_adding_new_column = True, mode = 'a', path_folder_mask = None, flag_is_read_only = False, flag_use_mask_for_caching = True, verbose = True ) :
+    def __init__( self, path_folder_zdf : str, l_zdf : Union[ list, np.ndarray, None ] = None, index_zdf_data_source_when_interleaved : int = 0, l_dict_index_mapping_interleaved : Union[ list, None ] = None, int_max_num_entries_per_batch = 1000000, df = None, int_num_rows = None, int_num_rows_in_a_chunk = 10000, ba_filter = None, flag_enforce_name_col_with_only_valid_characters = False, flag_store_string_as_categorical = True, flag_retrieve_categorical_data_as_integers = False, flag_load_data_after_adding_new_column = True, mode = 'a', path_folder_mask = None, flag_is_read_only = False, flag_use_mask_for_caching = True, verbose = True ) :
         """ # 2022-07-20 10:50:23 
         """
         # handle path
@@ -3678,12 +3687,12 @@ class ZarrDataFrame( ) :
         self._flag_load_data_after_adding_new_column = flag_load_data_after_adding_new_column
         self._ba_filter = None # initialize the '_ba_filter' attribute
         self.verbose = verbose
+        self.int_max_num_entries_per_batch = int_max_num_entries_per_batch
         
         # %% COMBINED MODE %%
         self._l_zdf = l_zdf
         self.index_zdf_data_source_when_interleaved = index_zdf_data_source_when_interleaved
         self._l_dict_index_mapping_interleaved = l_dict_index_mapping_interleaved
-        self.flag_write_after_combining = flag_write_after_combining
 
         # %% COMBINED = STACKED %%
         if self.is_combined and not self.is_interleaved :
@@ -3692,7 +3701,7 @@ class ZarrDataFrame( ) :
         
         if self.is_combined and int_num_rows is None : # infer 'int_num_rows' from the given arguments
             if self.is_interleaved : # infer 'int_num_rows' for interleaved czdf
-                int_num_rows = max( max( dict_index ) for dict_index in self._l_dict_index_mapping_interleaved )
+                int_num_rows = max( max( dict_index ) for dict_index in self._l_dict_index_mapping_interleaved ) + 1 # 0 based -> 1 based length
             else : # infer 'int_num_rows' for stacked czdf (combined zdf)
                 int_num_rows = sum( self._l_n_rows_unfiltered ) # assumes given zdf has valid number of rows
                 
@@ -3739,7 +3748,6 @@ class ZarrDataFrame( ) :
                 l_zdf = l_zdf,
                 index_zdf_data_source_when_interleaved = index_zdf_data_source_when_interleaved,
                 dict_index_mapping_interleaved = dict_index_mapping_interleaved,
-                flag_write_after_combining = flag_write_after_combining,
             ) # the mask ZarrDataFrame shoud not have mask, should be modifiable, and not mode == 'r'.
         
         # handle input arguments
@@ -3812,7 +3820,7 @@ class ZarrDataFrame( ) :
         return self._ba_filter
     @filter.setter
     def filter( self, ba_filter ) :
-        """ # 2022-07-21 08:58:16 
+        """ # 2022-08-25 17:17:58 
         change filter, and empty the cache
         """
         if ba_filter is None : # if filter is removed, 
@@ -3853,17 +3861,24 @@ class ZarrDataFrame( ) :
                     zdf.filter = None
             else : # if filter is being set
                 if self.is_interleaved :
-                    pass
+                    # %% COMBINED - INTERLEAVED %%
+                    for zdf, dict_index_mapping_interleaved in zip( self._l_zdf, self._l_dict_index_mapping_interleaved ) :
+                        # initialize filter for the current zdf object
+                        ba_zdf = bitarray( zdf._n_rows_unfiltered )
+                        ba_zdf.setall( 0 )
+                        # compose filter
+                        for int_entry_combined in bk.BA.find( ba_filter ) : # iterate active entries in the combined axis
+                            if int_entry_combined in dict_index_mapping_interleaved : # if the active entry also exists in the current axis, update the filter
+                                ba_zdf[ dict_index_mapping_interleaved[ int_entry_combined ] ] = 1
+                                
+                        zdf.filter = ba_zdf # set filter
                 else :
                     # %% COMBINED - STACKED %%
                     # for stacked czdf, split the given filter into smaller filters for each zdf
                     int_pos = 0
                     for zdf in self._l_zdf :
-                        # zdf.filter = 
-                        pl( ba_filter[ int_pos : int_pos + zdf._n_rows_unfiltered ] ) # apply a subset of filter
+                        zdf.filter = ba_filter[ int_pos : int_pos + zdf._n_rows_unfiltered ] # apply a subset of filter
                         int_pos += zdf._n_rows_unfiltered # update 'int_pos'
-
-        
     def get_column_metadata( self, name_col ) :
         """ # 2022-08-02 11:21:24 
         get metadata of a given column
@@ -3889,7 +3904,34 @@ class ZarrDataFrame( ) :
             # read metadata
             za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'a' ) # read data from the Zarr object
             za.attrs[ 'dict_col_metadata' ] = dict_col_metadata # retrieve metadata of the current column
-    def initialize_column( self, name_col, dtype = np.float64, shape_not_primary_axis = ( ), chunks = ( ), categorical_values = None, fill_value = 0 ) : 
+    def _get_column_path( self, name_col ) :
+        """ # 2022-08-26 10:34:35 
+        if 'name_col' column exists in the current ZDF object, return the path of the column
+        
+        === arguments ===
+        'name_col' : the name of the column to search
+        
+        the column will be searched in the following order: main zdf object --> mask zdf object --> component zdf objects, in the order specified in the list.
+        """
+        path_col = None # set default value
+        if name_col is not None and name_col in self : # use 'name_col' as a template if valid name_col has been given
+            if name_col in self._dict_metadata[ 'columns' ] : # search the current zdf
+                path_col = f"{self._path_folder_zdf}{name_col}/" 
+            elif self._mask is not None and name_col in self._mask._dict_metadata[ 'columns' ] : # search mask (if available)
+                path_col = f"{self._mask._path_folder_zdf}{name_col}/"
+            elif self.is_combined : # search component zdf(s) (if combined mode is active)
+                if self.is_interleaved :
+                    # %% COMBINED INTERLEAVED %%
+                    zdf = self._l_zdf[ self.index_zdf_data_source_when_interleaved ] # retrieve data source zdf
+                    path_col = f"{zdf._path_folder_zdf}{name_col}/"
+                else :
+                    # %% COMBINED STACKED %%
+                    for zdf in self._l_zdf : # for each zdf component
+                        if name_col in zdf : # when the column was identified
+                            path_col = f"{zdf._path_folder_zdf}{name_col}/"
+                            break
+        return path_col # return the path of the matched column
+    def initialize_column( self, name_col, dtype = np.float64, shape_not_primary_axis = ( ), chunks = ( ), categorical_values = None, fill_value = 0, zdf_template : Union[ None, ZarrDataFrame ] = None, name_col_template : Union[ str, None ] = None, path_col_template : Union[ str, None ] = None ) : 
         """ # 2022-08-22 16:30:48 
         initialize columns with a given shape and given dtype
         'dtype' : initialize the column with this 'dtype'
@@ -3901,16 +3943,37 @@ class ZarrDataFrame( ) :
         'chunks' : chunk size of the zarr object. length of the chunk along the primary axis can be skipped, which will be replaced by 'int_num_rows_in_a_chunk' of the current ZarrDataFrame attribute
         'categorical_values' : if 'categorical_values' has been given, set the column as a column containing categorical data
         'fill_value' : fill value of zarr object
+        'zdf_template' : zdf object from which to search 'name_col_template' column. by default, 
+        'name_col_template' : the name of the column to use as a template. if given, 'path_col_template' will be ignored, and use the column as a template to initialize the current column. the column will be searched in the following order: main zdf object --> mask zdf object --> component zdf objects, in the order specified in the list.
+        'path_col_template' : the (remote) path to the column to be used as a template. if given, the metadata available in the path will be used to initialize the current column
         """
         # hand over to mask if mask is available
         if self._mask is not None : # if mask is available, save new data to the mask # overwriting on the mask
-            self._mask.initialize_column( name_col, dtype = dtype, shape_not_primary_axis = shape_not_primary_axis, chunks = chunks, categorical_values = categorical_values, fill_value = fill_value )
+            self._mask.initialize_column( name_col, dtype = dtype, shape_not_primary_axis = shape_not_primary_axis, chunks = chunks, categorical_values = categorical_values, fill_value = fill_value, zdf_template = zdf_template, name_col_template = name_col_template, path_col_template = path_col_template )
             return
         
         if self._n_rows_unfiltered is None : # if length of zdf has not been set, exit
             return
-                
-        if name_col not in self : # if the column does not exists in the current ZarrDataFrame
+        
+        if name_col in self.columns_excluding_components : # if the column exists in the current ZarrDataFrame (excluding component zdf objects), ignore the call and exit
+            return
+        
+        # retrieve metadata information from the template column object
+        if not isinstance( zdf_template, ZarrDataFrame ) : # by default, use self as template zdf object
+            zdf_template = self
+        if name_col_template is not None and name_col_template in zdf_template : # use 'name_col_template' as a template if valid name_col has been given
+            path_col_template = zdf_template._get_column_path( name_col_template ) # retrieve path of the template column from the template zdf               
+        if path_col_template is not None and zarr_exists( path_col_template ) : # use 'path_col_template' as a template, retrieve settings
+            za = zarr.open( path_col_template ) # open zarr object
+            dtype = za.dtype
+            shape_not_primary_axis = za.shape[ 1 : ]
+            chunks = za.chunks
+            fill_value = za.fill_value
+            # retrieve column metadata
+            dict_metadata = za.attrs[ 'dict_col_metadata' ]
+            categorical_values = dict_metadata[ 'l_value_unique' ] if 'flag_categorical' in dict_metadata and dict_metadata[ 'flag_categorical' ] else None # retrieve categorical values
+            
+        if name_col not in self.columns_excluding_components : # if the column does not exists in the current ZarrDataFrame (excluding component zdf objects )
             # check whether the given name_col contains invalid characters(s)
             for char_invalid in self._str_invalid_char :
                 if char_invalid in name_col :
@@ -3960,33 +4023,21 @@ class ZarrDataFrame( ) :
             # add column to zdf (and update the associated metadata)
             self._add_column( name_col )
     def __getitem__( self, args ) :
-        ''' # 2022-08-02 23:40:47 
+        ''' # 2022-08-26 14:23:38 
         retrieve data of a column.
         partial read is allowed through indexing (slice/integer index/boolean mask/bitarray is supported)
         if mask is set, retrieve data from the mask if the column is available in the mask. 
         also, when the 'flag_use_mask_for_caching' setting is active, use mask for caching data from source data (possibly remote source).
+        
+        when combined mode is active, all data of the queried column will be retrieved across the component columns, and saved as a combined column in the current zdf object. Then, the query will be used to retrieve data from the combined column
         '''
         """
-        1) parse arguments
+        # parse arguments
         
         'name_col' : the name of the column
         'coords' : coordinates/slice/mask for the primary axis
         'coords_rest' : coordinates/slices for axis other than the primary axis
         """
-        
-#         if self.is_combined :
-#             # %% COMBINED MODE %%
-#             if is_interleaved :
-#             else :
-#                 # retrieve data from stacked czdf 
-#                 l_data = [ ] 
-#                 for zdf in self._l_zdf :
-#                     data = zdf[ args ]
-#                     if data is None :
-#                         data = np.zdf.n_rows
-#                 # retrieve data from each zdf object
-#                 return np.concatenate( list(   ) )
-        
         # initialize indexing
         flag_indexing_primary_axis = False # a boolean flag indicating whether an indexing is active
         flag_coords_in_bool_mask = False
@@ -4018,18 +4069,61 @@ class ZarrDataFrame( ) :
             else : # only column name was given
                 name_col, coords_rest = args, None 
         flag_indexing_in_non_primary_axis = coords_rest is not None # a flag indicating indexing in non-primary axis is active
-
+        
         """
-        2) retrieve data
+        # retrieve data
         """
         if name_col not in self : # if name_col is not valid (name_col does not exists in current ZDF, including the mask), exit by returning None
             return None
+        # off load to mask
         if self._mask is not None : # if mask is available
             if self.flag_use_mask_for_caching and name_col not in self._mask : # if 'flag_use_mask_for_caching' option is active and the column is not available in the mask, copy the column from the source to the mask
                 zarr_copy( f"{self._path_folder_zdf}{name_col}/", f"{self._mask._path_folder_zdf}{name_col}/" ) # copy zarr object from the source to the mask
                 self._mask._add_column( name_col ) # manually add column label to the mask
             if name_col in self._mask : # if 'name_col' is available in the mask, retrieve data from the mask.
                 return self._mask[ args ]
+        # collect data from component zdfs and compose a combined column
+        if self.is_combined and name_col not in self.columns_excluding_components : # if data reside only in the component zdf objects, retrieve data from the component objects and save as a column in the current zdf object 
+            # %% COMBINED MODE %%
+            # if the queried column does not exist in the current zdf or mask zdf, fetch data from component zdf objects and save the data to the current zdf or the mask of it
+            if self.is_interleaved :
+                # %% COMBINED INTERLEAVED %%
+                zdf = self._l_zdf[ self.index_zdf_data_source_when_interleaved ] # retrieve source zdf
+                dict_index_mapping_interleaved = self._l_dict_index_mapping_interleaved[ self.index_zdf_data_source_when_interleaved ] # retrieve index-mapping dictionary of source zdf
+                assert name_col in zdf # the name_col should exist in the zdf object
+                # initialize the 'name_col' column of the current zdf object using the column from the current component zdf
+                self.initialize_column( name_col = name_col, zdf_template = zdf, name_col_template = name_col ) 
+                
+                # transfer data from the source zdf to the combined column of the current zdf 
+                l_int_entry_combined, l_int_entry_component = [ ], [ ] # initialize the array 
+                for int_entry_combined in dict_index_mapping_interleaved :
+                    l_int_entry_combined.append( int_entry_combined )
+                    l_int_entry_component.append( dict_index_mapping_interleaved[ int_entry_combined ] )
+                    if len( l_int_entry_component ) >= self.int_max_num_entries_per_batch : # if a batch is full, flush the buffer
+                        self[ name_col, l_int_entry_combined ] = zdf[ name_col, l_int_entry_component ] # transfer data from the source zdf to the combined column of the current zdf for the current batch
+                        l_int_entry_combined, l_int_entry_component = [ ], [ ] # initialize the next batch
+                if len( l_int_entry_component ) >= 0 : # if the current batch is not empty, flush the buffer
+                    self[ name_col, l_int_entry_combined ] = zdf[ name_col, l_int_entry_component ] # transfer data from the source zdf to the combined column of the current zdf for the current batch
+                del l_int_entry_combined, l_int_entry_component
+            else :
+                # %% COMBINED STACKED %%
+                # collect data from stacked czdf 
+                int_pos = 0 # initialize the position
+                for zdf in self._l_zdf :
+                    if name_col in zdf : # if the 'name_col' exist in the current component zdf
+                        # initialize the 'name_col' column of the current zdf object using the column from the current component zdf
+                        self.initialize_column( name_col = name_col, zdf_template = zdf, name_col_template = name_col ) 
+                        
+                        # transfer data from component zdf to the combined column of the current zdf object batch by batch
+                        st, en = int_pos, int_pos + zdf._n_rows_unfiltered # retrieve start and end coordinates for the current component
+                        int_pos_current_component = 0 # initialize the position of current entry in the current batch
+                        while st + int_pos_current_component < en : # until all entries for the current component have been processed
+                            # transfer data from component zdf to the combined column of the current zdf object for the current batch
+                            self[ name_col, slice( st + int_pos_current_component, min( en, st + int_pos_current_component + self.int_max_num_entries_per_batch ) ) ] =  zdf[ name_col, slice( int_pos_current_component, min( en - st, int_pos_current_component + self.int_max_num_entries_per_batch ) ) ] # update the combined column using the values retrieved from the current zdf object
+                            int_pos_current_component += self.int_max_num_entries_per_batch # update 'int_pos_current_component' for the next batch
+                    int_pos += zdf._n_rows_unfiltered # update 'int_pos'
+        
+        # retrieve data from zdf objects excluding components (current zdf and mask zdf)
         if name_col in self : # if name_col is valid
             if name_col in self._loaded_data and not flag_indexing_primary_axis : # if a loaded data (filtered/unfiltered, according to the self.filter) is available and indexing is not active, return the cached data
                 """ if (filtered), preloaded data is available """
@@ -4062,7 +4156,7 @@ class ZarrDataFrame( ) :
                         values[ t_coord ] = l_value_unique[ val ] if val >= 0 else np.nan # convert integer representations to its original string values # -1 (negative integers) encodes np.nan
                     return values
     def __setitem__( self, args, values ) :
-        ''' # 2022-08-10 03:13:44 
+        ''' # 2022-08-27 10:21:01 
         save/update a column at indexed positions.
         when a filter is active, only active entries will be saved/updated automatically.
         boolean mask/integer arrays/slice indexing is supported. However, indexing will be applied to the original column with unfiltered rows (i.e., when indexing is active, filter will be ignored)
@@ -4136,6 +4230,8 @@ class ZarrDataFrame( ) :
         """
         retrieve metadata and infer dtypes
         """
+        # set default fill_value
+        fill_value = 0 # set default fill_value
         # define zarr object directory
         path_folder_col = f"{self._path_folder_zdf}{name_col}/" # compose the output folder
         # retrieve/initialize metadata
@@ -4195,7 +4291,9 @@ class ZarrDataFrame( ) :
         
         # print( shape, chunks, dtype, self._dict_metadata[ 'flag_store_string_as_categorical' ] )
         # write categorical data
-        if dtype is str and self._dict_metadata[ 'flag_store_string_as_categorical' ] : # storing categorical data            
+        if dtype is str and self._dict_metadata[ 'flag_store_string_as_categorical' ] : # storing categorical data   
+            # default fill_value for categorical data is -1 (representing np.nan values)
+            fill_value = -1
             # compose metadata of the column
             dict_col_metadata[ 'flag_categorical' ] = True # set metadata for categorical datatype
             
@@ -4226,7 +4324,7 @@ class ZarrDataFrame( ) :
                 dtype = np.int32
             
             # open Zarr object representing the current column
-            za = zarr.open( path_folder_col, mode = 'a', synchronizer = zarr.ThreadSynchronizer( ) ) if zarr_exists( path_folder_col ) else zarr.open( path_folder_col, mode = 'w', shape = shape, chunks = chunks, dtype = dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object if the object does not exist.
+            za = zarr.open( path_folder_col, mode = 'a', synchronizer = zarr.ThreadSynchronizer( ) ) if zarr_exists( path_folder_col ) else zarr.open( path_folder_col, mode = 'w', shape = shape, chunks = chunks, dtype = dtype, fill_value = fill_value, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object if the object does not exist.
             
             # if dtype changed from the previous zarr object, re-write the entire Zarr object with changed dtype. (this will happens very rarely, and will not significantly affect the performance)
             if dtype != za.dtype : # dtype should be larger than za.dtype if they are not equal (due to increased number of bits required to encode categorical data)
@@ -4245,11 +4343,11 @@ class ZarrDataFrame( ) :
             # perform encoding 
             values_before_encoding = values
             values = np.zeros_like( values_before_encoding, dtype = dtype ) # initialize encoded values
-            for t_coord, val in np.ndenumerate( values_before_encoding ) :
-                values[ t_coord ] = dict_encode_category[ val ] if val in dict_encode_category else -1 # encode strings into integer representations # -1 (negative integers) encodes np.nan
+            for t_coord, val in np.ndenumerate( values_before_encoding ) : # np.ndarray object can be encoded.
+                values[ t_coord ] = dict_encode_category[ val ] if val in dict_encode_category else -1 # encode strings into integer representations # -1 (negative integers) encodes np.nan, which is a fill_value for zarr object containing categorical data
             
         # open zarr object and write data
-        za = zarr.open( path_folder_col, mode = 'a', synchronizer = zarr.ThreadSynchronizer( ) ) if zarr_exists( path_folder_col ) else zarr.open( path_folder_col, mode = 'w', shape = shape, chunks = chunks, dtype = dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object if the object does not exist.
+        za = zarr.open( path_folder_col, mode = 'a', synchronizer = zarr.ThreadSynchronizer( ) ) if zarr_exists( path_folder_col ) else zarr.open( path_folder_col, mode = 'w', shape = shape, chunks = chunks, dtype = dtype, fill_value = fill_value, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object if the object does not exist.
         
         if flag_coords_in_bool_mask and isinstance( coords, np.ndarray ) and za.shape == coords.shape : 
             # use mask selection
@@ -4306,21 +4404,41 @@ class ZarrDataFrame( ) :
         return f"<ZarrDataFrame object{'' if self._n_rows_unfiltered is None else ' containing '}{'' if self.filter is None else f'{self.n_rows}/'}{'' if self._n_rows_unfiltered is None else f'{self._n_rows_unfiltered} rows'} stored at {self._path_folder_zdf}\n\twith the following columns: {sorted( self._dict_metadata[ 'columns' ] )}" + ( '\n\t[combined]-' + ( '(interleaved)' if self.is_interleaved else '(stacked)' ) + f" ZarrDataFrame, composed of the following ZarrDataFrame objects:\n[" + '\n'.join( str( zdf ) for zdf in self._l_zdf ) + "]" if self.is_combined else '' ) +  ">"
     @property
     def columns( self ) :
-        ''' # 2022-07-20 23:01:48 
-        return available column names as a set
+        ''' # 2022-08-25 17:33:18 
+        return available column names (including mask and components) as a set
         '''
+        # retrieve columns
+        columns = self._dict_metadata[ 'columns' ]
+        # add columns of mask
         if self._mask is not None : # if mask is available :
-            return self._dict_metadata[ 'columns' ].union( self._mask._dict_metadata[ 'columns' ] ) # return the column names of the current ZDF and the mask ZDF
-        else :
-            return self._dict_metadata[ 'columns' ]
+            columns = columns.union( self._mask._dict_metadata[ 'columns' ] ) # return the column names of the current ZDF and the mask ZDF
+        # add columns from zdf components
+        if self.is_combined :
+            if self.is_interleaved :
+                # %% COMBINED INTERLEAVED %%
+                zdf = self._l_zdf[ self.index_zdf_data_source_when_interleaved ] # retrieve data source zdf
+                columns = columns.union( zdf.columns ) # add columns of the data source zdf
+            else :
+                # %% COMBINED STACKED %%
+                for zdf in self._l_zdf : # for each zdf component
+                    columns = columns.union( zdf.columns ) # add columns of the zdf component
+        return columns
+    @property
+    def columns_excluding_components( self ) :
+        ''' # 2022-08-26 14:23:27 
+        return available column names (including mask but excluding components) as a set
+        '''
+        # retrieve columns
+        columns = self._dict_metadata[ 'columns' ]
+        # add columns of mask
+        if self._mask is not None : # if mask is available :
+            columns = columns.union( self._mask._dict_metadata[ 'columns' ] ) # return the column names of the current ZDF and the mask ZDF
+        return columns
     def __contains__( self, name_col ) :
-        """ # 2022-07-20 22:56:19 
+        """ # 2022-08-25 17:33:22 
         check whether a column name exists in the given ZarrDataFrame
         """
-        if self._mask is not None : # if mask is available :
-            return name_col in self.columns or name_col in self._mask # search columns in the current ZDF and the mask ZDF
-        else :
-            return name_col in self.columns
+        return name_col in self.columns
     def __iter__( self ) :
         """ # 2022-07-20 22:57:19 
         iterate name of columns in the current ZarrDataFrame
@@ -4463,7 +4581,8 @@ class ZarrDataFrame( ) :
             l_name_col = self.columns # if no column name is given, copy all columns in the current ZarrDataFrame to the new ZarrDataFrame
         
         for name_col in self.columns.intersection( l_name_col ) : # copy column by column to the output ZarrDataFrame object
-            zdf[ name_col ] = self[ name_col ]
+            zdf.initialize_column( name_col, zdf_template = self, name_col_template = name_col ) # initialize the column using the column of the current zdf object 
+            zdf[ name_col ] = self[ name_col ] # copy data (with filter applied)
     def load_as_dict( self, * l_name_col, float_min_proportion_of_active_rows_for_using_array_as_dict = 0.1 ) :
         """ # 2022-07-06 01:29:51 
         load columns as dictionaries, which is accessible through the self.dict attribute, where keys are integer representation of rows and values are data values
@@ -4532,61 +4651,6 @@ class ZarrDataFrame( ) :
             """
             shutil.rmtree( path_folder_lock )
         return za, __delete_locks
-''' class for integrative analysis '''
-class CombinedZarrDataFrame( ZarrDataFrame ) :
-    """ # 2022-08-23 21:18:00 
-    A class representing combined ZarrDataFrames.
-    There are two types of ZarrDataFrames, 'stacked' and 'interleaved'
-        * 'stacked' : rows of each ZarrDataFrame stacked on top of each other without interleaving
-            ----------
-            rows of ZDF-0
-            ----------
-            rows of ZDF-1
-            ----------
-            rows of ZDF-2
-            ...
-            
-        * 'interleaved' : rows of each ZarrDataFrame can be mapped to those of each other.
-    
-    'path_folder_czdf' : a path to the CombinedZarrDataFrame object.
-    'l_path_folder_zdf' : a list of ZarrDataFrame objects that will be combined
-    'index_zdf_data_source_when_interleaved' : the index of the zdf to retrieve data when combining mode is interleaved (rows shared between ZDFs)
-    'dict_index_mapping_interleaved' : dictionary of dictionaries mapping row indices of the combined ZarrDataFrame to row indices of each individual ZarrDataFrame. this argument should be set to non-None value only when the current combined ZarrDataFrame is interleaved. if None is given, the combined ZarrDataFrame will be considered 'stacked'
-    
-    for more descriptions about arguments, refer to class ZarrDataFrame
-    """
-    def __init__( self, path_folder_czdf, * l_path_folder_zdf, index_zdf_data_source_when_interleaved : int = 0, dict_index_mapping_interleaved : Union[ dict, None ] = None, ** kwargs ) :
-        """ # 2022-08-24 18:56:41 
-        """
-        super( ).__init__( path_folder_zdf = path_folder_czdf, ** kwargs ) # initialize ZarrDataFrame
-        
-        if 'is_interleaved' not in self.metadata : # if CombinedZarrDataFrame has been newly created, initialize the ZarrDataFrame metadata
-            self._dict_metadata[ 'is_interleaved' ] = dict_index_mapping_interleaved is not None # if non-None value has been given, consider current czdf as an interleaved
-            
-            # set attributes
-            self.dict_index_mapping_interleaved = dict_index_mapping_interleaved
-            self.index_zdf_data_source_when_interleaved = index_zdf_data_source_when_interleaved
-            self.l_path_folder_zdf = l_path_folder_zdf
-            
-            # open given list of zdf objects
-            self.l_zdf = list( ZarrDataFrame( path_folder_zdf = path_folder_zdf, ** kwargs ) for path_folder_zdf in l_path_folder_zdf )
-            
-            
-            # when pickle file is interleaved 
-            if self.is_interleaved :
-                # save a dictionary mapping row indices interleaved zdfs as a pickle file
-                bk.PICKLE_Write( 
-                    f"{path_folder_czdf}dict_index_mapping_interleaved.pickle", 
-                    dict_index_mapping_interleaved
-                )
-                
-        
-    @property
-    def is_interleaved( self ) :
-        ''' # 2022-08-24 18:58:19 
-        return a binary flag indicating whether the current CZDF is interleaved or not.
-        '''
-        return self._dict_metadata[ 'is_interleaved' ]
         
 ''' a class for accessing Zarr-backed count matrix data (RAMtx, Random-Access matrix) '''
 class RAMtx( ) :
