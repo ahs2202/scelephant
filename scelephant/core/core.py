@@ -2,7 +2,7 @@
 # from memory_profiler import profile # for testing
 
 import typing # import typing
-from typing import Union
+from typing import Union, List, Literal
 from biobookshelf.main import *
 from biobookshelf import *
 import biobookshelf as bk
@@ -44,7 +44,7 @@ import igraph as ig
 # define version
 _version_ = '0.0.5'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-08-27 10:26:26'
+_last_modified_time_ = '2022-08-29 12:50:29'
 
 """ # 2022-07-21 10:35:42  realease note
 
@@ -158,6 +158,9 @@ ZarrDataFrame class now support combined mode, where data are retrieved across m
 currently supported operations are __getitem__
 Also, fill_value of categorical column is now -1, interpreting empty values as np.nan by default
 
+# 2022-08-29 12:46:18 
+RamDataAxis now supports combined mode, either sharing rows ('interleaved' type) or each has unique rows ('stacked' type), backed by the combined ZarrDataFrame object.
+RamDataAxis can automatically determines combined type, and build index mapping dictionaries for the 'interleaved' type.
 """
 
 ''' previosuly written for biobookshelf '''
@@ -3147,7 +3150,7 @@ def create_ramtx_from_mtx( path_folder_mtx_10x_input, path_folder_output, mode =
     """
     prepare data for the axes (features/barcodes)
     """
-    ''' write sorted barcodes and features files to zarr objects'''
+    ''' write barcodes and features files to zarr objects'''
     for name_axis, int_num_entries in zip( [ 'barcodes', 'features' ], [ int_num_barcodes, int_num_features ] ) : # retrieve a flag whether the entry was used for sorting.
         flag_axis_initialized = False # initialize the flag to False 
         for index_chunk, df in enumerate( pd.read_csv( f"{path_folder_mtx_10x_input}{name_axis}.tsv.gz", sep = '\t', header = None, chunksize = int_num_of_entries_in_a_chunk_metadata ) ) : # read chunk by chunk
@@ -3669,7 +3672,7 @@ class ZarrDataFrame( ) :
     
     
     """
-    def __init__( self, path_folder_zdf : str, l_zdf : Union[ list, np.ndarray, None ] = None, index_zdf_data_source_when_interleaved : int = 0, l_dict_index_mapping_interleaved : Union[ list, None ] = None, int_max_num_entries_per_batch = 1000000, df = None, int_num_rows = None, int_num_rows_in_a_chunk = 10000, ba_filter = None, flag_enforce_name_col_with_only_valid_characters = False, flag_store_string_as_categorical = True, flag_retrieve_categorical_data_as_integers = False, flag_load_data_after_adding_new_column = True, mode = 'a', path_folder_mask = None, flag_is_read_only = False, flag_use_mask_for_caching = True, verbose = True ) :
+    def __init__( self, path_folder_zdf : str, l_zdf : Union[ list, tuple, None ] = None, index_zdf_data_source_when_interleaved : int = 0, l_dict_index_mapping_interleaved : Union[ List[ dict ], None ] = None, int_max_num_entries_per_batch = 1000000, df = None, int_num_rows = None, int_num_rows_in_a_chunk = 10000, ba_filter = None, flag_enforce_name_col_with_only_valid_characters = False, flag_store_string_as_categorical = True, flag_retrieve_categorical_data_as_integers = False, flag_load_data_after_adding_new_column = True, mode = 'a', path_folder_mask = None, flag_is_read_only = False, flag_use_mask_for_caching = True, verbose = True ) :
         """ # 2022-07-20 10:50:23 
         """
         # handle path
@@ -3931,7 +3934,7 @@ class ZarrDataFrame( ) :
                             path_col = f"{zdf._path_folder_zdf}{name_col}/"
                             break
         return path_col # return the path of the matched column
-    def initialize_column( self, name_col, dtype = np.float64, shape_not_primary_axis = ( ), chunks = ( ), categorical_values = None, fill_value = 0, zdf_template : Union[ None, ZarrDataFrame ] = None, name_col_template : Union[ str, None ] = None, path_col_template : Union[ str, None ] = None ) : 
+    def initialize_column( self, name_col, dtype = np.float64, shape_not_primary_axis = ( ), chunks = ( ), categorical_values = None, fill_value = 0, zdf_template = None, name_col_template : Union[ str, None ] = None, path_col_template : Union[ str, None ] = None ) : 
         """ # 2022-08-22 16:30:48 
         initialize columns with a given shape and given dtype
         'dtype' : initialize the column with this 'dtype'
@@ -4651,835 +4654,39 @@ class ZarrDataFrame( ) :
             """
             shutil.rmtree( path_folder_lock )
         return za, __delete_locks
-        
-''' a class for accessing Zarr-backed count matrix data (RAMtx, Random-Access matrix) '''
-class RAMtx( ) :
-    """ # 2022-08-16 02:47:08 
-    This class represent a random-access mtx format for memory-efficient exploration of extremely large single-cell transcriptomics/genomics data.
-    This class use a count matrix data stored in a random read-access compatible format, called RAMtx, enabling exploration of a count matrix with hundreds of millions cells with hundreds of millions of features.
-    Also, the RAMtx format is supports multi-processing, and provide convenient interface for parallel processing of single-cell data
-    Therefore, for exploration of count matrix produced from 'scarab count', which produces dozens of millions of features extracted from both coding and non coding regions, this class provides fast front-end application for exploration of exhaustive data generated from 'scarab count'
-    
-    
-    # 'mode' of RAMtx objects
-    There are three valid 'mode' (or internal structures) for RAMtx object : {'dense' or 'sparse_for_querying_barcodes', 'sparse_for_querying_features'}
-    
-    (sparse_for_querying_barcodes) <---> (dense) <---> (sparse_for_querying_features)
-    *fast barcode data retrieval                       *fast feature data retrieval
-    
-    As shown above, RAMtx objects are interconvertible. Of note, for the converion between sparse ramtx sorted by barcodes and features, 'dense' ramtx object should be used in the conversion process.
-    - dense ramtx object can be used to retrieve data of a single barcode or feature (with moderate efficiency)
-    - sparse ramtx object can only be used data of either a single barcode ('sparse_for_querying_barcodes') or a single feature ('sparse_for_querying_features') very efficiently.
-    
-    
-    arguments:
-    'path_folder_ramtx' : a folder containing RAMtx object
-    'ba_filter_features' : a bitarray filter object for features. active element is marked by 1 and inactive element is marked by 0
-    'ba_filter_barcodes' : a bitarray filter object for barcodes. active element is marked by 1 and inactive element is marked by 0
-    'dtype_of_feature_and_barcode_indices' : dtype of feature/barcode indices 
-    'dtype_of_values' : dtype of values. 
-    'int_num_cpus' : the number of processes that will be used for random accessing of the data
-    'mode' : file mode. 'r' for read-only mode and 'a' for a mode allowing modifications
-    'flag_is_read_only' : read-only status of RamData
-    'path_folder_ramtx_mask' : a local (local file system) path to the mask of the RAMtx object that allows modifications to be written without modifying the source. if a valid local path to a mask is given, all modifications will be written to the mask
-    'is_for_querying_features' : a flag for indicating whether the current RAMtx will be used for querying features. for sparse matrix, this attribute will be fixed. However, for dense matrix, this atrribute can be changed any time.
-    'int_total_number_of_values_in_a_batch_for_dense_matrix' : the total number of values that will be loaded in dense format for each minibatch (subbatch) when retrieving sparse data from the dense matrix using multiple number of processes. this setting can be changed later
-    
-    """
-    def __init__( self, path_folder_ramtx, ramdata = None, dtype_of_feature_and_barcode_indices = np.uint32, dtype_of_values = np.float64, int_num_cpus = 1, verbose = False, flag_debugging = False, mode = 'a', flag_is_read_only = False, path_folder_ramtx_mask = None, is_for_querying_features = True, int_total_number_of_values_in_a_batch_for_dense_matrix = 10000000 ) :
-        """ # 2022-07-31 00:49:59 
-        """
-        # read metadata
-        self._root = zarr.open( path_folder_ramtx, 'a' )
-        self._dict_metadata = self._root.attrs[ 'dict_metadata' ] # retrieve the metadata
-        
-        # parse the metadata of the RAMtx object
-        self._int_num_features, self._int_num_barcodes, self._int_num_records = self._dict_metadata[ 'int_num_features' ], self._dict_metadata[ 'int_num_barcodes' ], self._dict_metadata[ 'int_num_records' ]
-        
-        # set attributes 
-        self._dtype_of_feature_and_barcode_indices = dtype_of_feature_and_barcode_indices
-        self._dtype_of_values = dtype_of_values
-        self._path_folder_ramtx = path_folder_ramtx
-        self.verbose = verbose 
-        self.flag_debugging = flag_debugging
-        self.int_num_cpus = int_num_cpus
-        self._ramdata = ramdata
-        self._mode = mode
-        self._flag_is_read_only = flag_is_read_only
-        self._path_folder_ramtx_mask = path_folder_ramtx_mask
-        self.int_total_number_of_values_in_a_batch_for_dense_matrix = int_total_number_of_values_in_a_batch_for_dense_matrix
-        
-        # set filters using RamData
-        self.ba_filter_features = ramdata.ft.filter if ramdata is not None else None
-        self.ba_filter_barcodes = ramdata.bc.filter if ramdata is not None else None
-        
-        self._is_sparse = self.mode != 'dense' # retrieve a flag indicating whether ramtx is dense
-        if self.is_sparse :
-            self._is_for_querying_features = self._dict_metadata[ 'flag_ramtx_sorted_by_id_feature' ] # for sparse matrix, this attribute is fixed
-            # open Zarr object containing matrix and matrix indices
-            self._za_mtx_index = zarr.open( f'{self._path_folder_ramtx}matrix.index.zarr', 'r' )
-            self._za_mtx = zarr.open( f'{self._path_folder_ramtx}matrix.zarr', 'r' )
-        else :
-            self.is_for_querying_features = is_for_querying_features # set this attribute
-            self._za_mtx = zarr.open( f'{self._path_folder_ramtx}matrix.zarr', 'r' )
-    @property
-    def is_sparse( self ) :
-        """ # 2022-08-04 13:59:15 
-        """
-        return self._is_sparse
-    @property
-    def mode( self ) :
-        """ # 2022-07-30 20:13:32 
-        """
-        return self._dict_metadata[ 'mode' ]
-    @property
-    def _path_folder_ramtx_modifiable( self ) :
-        """ # 2022-07-21 09:04:28 
-        return the path to the modifiable RAMtx object
-        """
-        return ( None if self._flag_is_read_only else self._path_folder_ramtx ) if self._path_folder_ramtx_mask is None else self._path_folder_ramtx_mask
-    @property
-    def ba_active_entries( self ) :
-        """ # 2022-08-04 23:42:23 
-        return a bitarray filter of the indexed axis where all the entries with valid count data is marked '1'
-        """
-        # retrieve axis of current ramtx
-        axis = 'features' if self.is_for_querying_features else 'barcodes'
-        
-        # skip if result is already available
-        flag_available = False # initialize
-        for path_folder in [ self._path_folder_ramtx, self._path_folder_ramtx_modifiable ] :
-            if path_folder is not None and zarr_exists( f'{path_folder}matrix.{axis}.active_entries.zarr/' ) :
-                path_folder_zarr = f"{path_folder}matrix.{axis}.active_entries.zarr/" # define an existing zarr object path
-                flag_available = True
-        if not flag_available and self._path_folder_ramtx_modifiable is not None : # if zarr object does not exists and modifiable ramtx path is available
-            # try constructing the zarr object 
-            path_folder_zarr = f"{self._path_folder_ramtx_modifiable}matrix.{axis}.active_entries.zarr/" # define zarr object path
-            self.survey_number_of_records_for_each_entry( ) # survey the number of records for each entry using default settings
-            if not zarr_exists( path_folder_zarr ) : # if the zarr object still does not exists
-                # create a full bitarray mask as a fall back
-                ba = bitarray( self.len_axis_for_querying )
-                ba.setall( 1 )
-                return ba
-            
-        za = zarr.open( path_folder_zarr, mode = 'r', synchronizer = zarr.ThreadSynchronizer( ) ) # open zarr object of the current RAMtx object
-        ba = bk.BA.to_bitarray( za[ : ] ) # return the boolean array of active entries as a bitarray object
 
-        # if metadata of the number of active entries is not available, update the metadata
-        if 'n_active_entries' in self._dict_metadata :
-            self._n_active_entries = ba.count( ) # calculate the number of active entries
-
-            # update metadata
-            self._dict_metadata[ 'n_active_entries' ] = self._n_active_entries 
-            self._save_metadata_( )
-
-        # return the mask
-        return ba
-    def survey_number_of_records_for_each_entry( self, axes = [ 'barcodes', 'features' ], int_num_chunks_in_a_batch_for_index_of_sparse_matrix = 100, int_num_chunks_in_a_batch_for_axis_for_querying_dense = 1, int_total_number_of_values_in_a_batch_for_dense_matrix = None, int_size_chunk = 1000, flag_ignore_dense = False, int_num_threads = 20 ) :
-        """ # 2022-08-16 11:20:41 
-        survey the number of records for each entry in the existing axis
-        'axes' : a list of axes to use for surveying the number of records for each entry
-        
-        === batch size control ===
-        'int_num_chunks_in_a_batch_for_index_of_sparse_matrix' : the number of chunks of the index zarr object to be processed once for sparse matrix RAMtx formats
-        'int_num_chunks_in_a_batch_for_axis_for_querying_dense' : the number of chunks in the axis for the axis for querying that will be processed together in a batch for each process
-        'int_total_number_of_values_in_a_batch_for_dense_matrix' : the total number of values that will be loaded during the suvery for each process for surveying dense matrix with multiple number of processes.
-        
-        'int_size_chunk' : chunk size for the output zarr objects
-        'flag_ignore_dense' : if True, does not survey the dense ramtx.
-        'int_num_threads' : the number of threads for surveying
-        """
-        # use default value when 'int_total_number_of_values_in_a_batch_for_dense_matrix' is None
-        if int_total_number_of_values_in_a_batch_for_dense_matrix is None :
-            int_total_number_of_values_in_a_batch_for_dense_matrix = self.int_total_number_of_values_in_a_batch_for_dense_matrix
-        
-        # for each axis 
-        for axis in axes :  
-            # check validity of the axis name
-            if axis not in { 'barcodes', 'features' } :
-                continue
-            flag_axis_is_barcode = axis == 'barcodes'
-            # skip if result is already available
-            flag_res_already_available = False # initialize
-            for path_folder in [ self._path_folder_ramtx, self._path_folder_ramtx_modifiable ] :
-                if path_folder is not None and zarr_exists( f'{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/' ) :
-                    flag_res_already_available = True
-                    break
-            if flag_res_already_available :
-                continue
-                
-            # if no modifiable ramtx object is available, exit
-            if self._path_folder_ramtx_modifiable is None :
-                continue
-            
-            # if the sparse matrix not for querying with the current axis, continue
-            if self.is_sparse and axis not in self.mode : 
-                continue
-            
-            # ignore dense ramtx object if 'flag_ignore_dense' is True
-            if flag_ignore_dense and not self.is_sparse :
-                continue
-            
-            # perform survey
-            len_axis = self._int_num_barcodes if flag_axis_is_barcode else self._int_num_features # retrieve the length of the axis for querying
-            
-            # open zarr objects
-            za = zarr.open( f'{self._path_folder_ramtx_modifiable}matrix.{axis}.number_of_records_for_each_entry.zarr/', mode = 'w', shape = ( len_axis, ), chunks = ( int_size_chunk, ), dtype = np.float64, synchronizer = zarr.ThreadSynchronizer( ) ) # open zarr object of the current RAMtx object
-            za_bool = zarr.open( f"{self._path_folder_ramtx_modifiable}matrix.{axis}.active_entries.zarr/", mode = 'w', shape = ( len_axis, ), chunks = ( int_size_chunk, ), dtype = bool, synchronizer = zarr.ThreadSynchronizer( ) ) # open zarr object of the current RAMtx object
-            
-            # start worker
-            def __write_result( pipe_receiver ) :
-                """ # 2022-08-16 11:20:34 
-                write survey results as zarr objects
-                """
-                while True :
-                    l_r = pipe_receiver.recv( )
-                    if l_r is None :
-                        break
-                    int_num_entries = sum( len( r[ 1 ] ) for r in l_r ) # retrieve the total number of entries in the 'l_r'
-                    pos = 0 # initialize 
-                    arr_coord_combined, arr_num_records_combined = np.zeros( int_num_entries, dtype = np.int64 ), np.zeros( int_num_entries, dtype = np.int64 )
-                    for r in l_r :
-                        sl, arr_num_records = r # parse r
-                        int_num_entries_in_r = len( arr_num_records )
-                        arr_coord_combined[ pos : pos + int_num_entries_in_r ] = np.arange( sl.start, sl.stop ) # update 'arr_coord_combined'
-                        arr_num_records_combined[ pos : pos + int_num_entries_in_r ] = arr_num_records # update 'arr_coord_combined'
-                        pos += int_num_entries_in_r # update 'pos'
-                    del l_r, r
-                    
-                    za.set_coordinate_selection( ( arr_coord_combined, ), arr_num_records_combined ) # save the number of records 
-                    za_bool.set_coordinate_selection( ( arr_coord_combined, ), arr_num_records_combined > 0 ) # active entry is defined by finding entries with at least one count record
-                    del arr_coord_combined, arr_num_records_combined
-            pipe_sender, pipe_receiver = mp.Pipe( )
-            p = mp.Process( target = __write_result, args = ( pipe_receiver, ) )
-            p.start( )
-            ns = { 'pipe_sender' : pipe_sender, 'l_buffer' : [ ], 'int_size_buffer' : 20 } # a namespace that will be shared between different scopes
-            
-            if self.is_sparse : # survey for sparse matrix
-                """ %% Sparse matrix %% """
-                # surveying on the axis of the sparse matrix
-                int_num_entries_processed = 0
-                int_num_entries_to_retrieve = int( self._za_mtx_index.chunks[ 0 ] * int_num_chunks_in_a_batch_for_index_of_sparse_matrix )
-                while int_num_entries_processed < len_axis :
-                    sl = slice( int_num_entries_processed, min( len_axis, int_num_entries_processed + int_num_entries_to_retrieve ) )
-                    arr_num_records = self._za_mtx_index[ sl ][ :, 1 ] - self._za_mtx_index[ sl ][ :, 0 ] # retrieve the number of records
-                    int_num_entries_processed += int_num_entries_to_retrieve # update the position
-                    # flush buffer
-                    ns[ 'l_buffer' ].append( ( sl, arr_num_records ) )
-                    if len( ns[ 'l_buffer' ] ) >= ns[ 'int_size_buffer' ] :
-                        ns[ 'pipe_sender' ].send( ns[ 'l_buffer' ] ) # send result to worker
-                        ns[ 'l_buffer' ] = [ ] # initialize the buffer
-                    del arr_num_records
-            else : # survey for dense matrix (multi-processed)
-                """ %% Dense matrix %% """
-                # prepare
-                len_axis_secondary = self._int_num_features if flag_axis_is_barcode else self._int_num_barcodes # retrieve the length of the axis not for querying
-                
-                # retrieve chunk size for each axis
-                int_size_chunk_axis_for_querying, int_size_chunk_axis_not_for_querying = self._za_mtx.chunks[ 0 if flag_axis_is_barcode else 1 ], self._za_mtx.chunks[ 1 if flag_axis_is_barcode else 0 ] 
-                
-                # retrieve entries for each axis for batch and a subbatch
-                int_num_entries_in_a_batch_in_axis_for_querying = int_size_chunk_axis_for_querying * int_num_chunks_in_a_batch_for_axis_for_querying_dense
-                int_num_entries_in_a_subbatch_in_axis_not_for_querying = max( 1, int( np.floor( int_total_number_of_values_in_a_batch_for_dense_matrix / int_num_entries_in_a_batch_in_axis_for_querying ) ) )
-                    
-                def __gen_batch( ) :
-                    """ # 2022-08-15 20:16:51 
-                    generate batch on the primary axis
-                    """
-                    # initialize looping through axis for querying (primary axis)
-                    int_num_entries_processed_in_axis_for_querying = 0
-                    while int_num_entries_processed_in_axis_for_querying < len_axis :
-                        sl = slice( int_num_entries_processed_in_axis_for_querying, min( len_axis, int_num_entries_processed_in_axis_for_querying + int_num_entries_in_a_batch_in_axis_for_querying ) ) # retrieve a slice along the primary axis
-                        yield { 'sl' : sl, 'int_num_entries_processed_in_axis_for_querying' : int_num_entries_processed_in_axis_for_querying }
-                        int_num_entries_processed_in_axis_for_querying += int_num_entries_in_a_batch_in_axis_for_querying # update the position
-                def __process_batch( batch, pipe_result_sender ) :
-                    """ # 2022-08-15 20:46:05 
-                    process batches containing entries on the primary axis
-                    """
-                    # parse batch
-                    sl, int_num_entries_processed_in_axis_for_querying = batch[ 'sl' ], batch[ 'int_num_entries_processed_in_axis_for_querying' ]
-                    
-                    # initialize looping through axis not for querying (secondary axis)
-                    int_num_entries_processed_in_axis_not_for_querying = 0
-                    arr_num_records = np.zeros( sl.stop - sl.start, dtype = np.int64 ) # initialize the list of the number of records for the entries in the current batch
-                    while int_num_entries_processed_in_axis_not_for_querying < len_axis_secondary :
-                        sl_secondary = slice( int_num_entries_processed_in_axis_not_for_querying, min( len_axis_secondary, int_num_entries_processed_in_axis_not_for_querying + int_num_entries_in_a_subbatch_in_axis_not_for_querying ) ) # retrieve a slice along the secondary axis
-                        arr_num_records += ( ( self._za_mtx.get_orthogonal_selection( ( sl, sl_secondary ) ).T if flag_axis_is_barcode else self._za_mtx.get_orthogonal_selection( ( sl_secondary, sl ) ) ) > 0 ).sum( axis = 0 ) # update 'arr_num_records'
-                        int_num_entries_processed_in_axis_not_for_querying += int_num_entries_in_a_subbatch_in_axis_not_for_querying # update the position
-                    # send the result
-                    pipe_result_sender.send( ( sl, arr_num_records ) )
-                def __post_process_batch( res ) :
-                    """ # 2022-08-15 21:03:59 
-                    process result from a batch
-                    """
-                    sl, arr_num_records = res # parse the result
-                    # flush buffer
-                    ns[ 'l_buffer' ].append( ( sl, arr_num_records ) )
-                    if len( ns[ 'l_buffer' ] ) >= ns[ 'int_size_buffer' ] :
-                        ns[ 'pipe_sender' ].send( ns[ 'l_buffer' ] ) # send result to worker
-                        ns[ 'l_buffer' ] = [ ] # initialize the buffer
-                    
-                # process batch by batch
-                bk.Multiprocessing_Batch( gen_batch = __gen_batch( ), process_batch = __process_batch, post_process_batch = __post_process_batch, int_num_threads = int_num_threads )
-                    
-            # flush the buffer
-            if len( ns[ 'l_buffer' ] ) > 0 :
-                pipe_sender.send( ns[ 'l_buffer' ] ) # send result to worker
-            # dismiss the worker
-            pipe_sender.send( None )
-            p.join( )
-    def _save_metadata_( self ) :
-        ''' # 2022-07-31 00:40:33 
-        a method for saving metadata to the disk 
-        '''
-        if not self._flag_is_read_only : # update metadata only when the current RamData object is not read-only
-            if hasattr( self, '_dict_metadata' ) : # if metadata has been loaded
-                # convert 'columns' to list before saving attributes
-                self._root.attrs[ 'dict_metadata' ] = self._dict_metadata # update metadata
-    @property
-    def n_active_entries( self ) :
-        ''' # 2022-07-31 00:46:40 
-        calculate the number of active entries
-        '''
-        # calculate the number of active entries if it has not been calculated.
-        if not 'n_active_entries' in self._dict_metadata :
-            self.ba_active_entries
-        return self._dict_metadata[ 'n_active_entries' ] if 'n_active_entries' in self._dict_metadata else self.len_axis_for_querying # if the number of active entries cannot be calculated, return the number of all entries
-    def __repr__( self ) :
-        return f"<RAMtx object ({self.mode}) for querying '{'features' if self.is_for_querying_features else  'barcodes'}' containing {self._int_num_records} records of {self._int_num_features} features X {self._int_num_barcodes} barcodes\n\tRAMtx path: {self._path_folder_ramtx}>"
-    @property
-    def ba_filter_features( self ) :
-        ''' # 2022-06-23 17:05:55 
-        returns 'ba_filter'
-        '''
-        return self._ba_filter_features
-    @ba_filter_features.setter
-    def ba_filter_features( self, ba_filter ) :
-        """ # 2022-06-23 17:06:36 
-        check whether the filter is valid
-        """
-        if ba_filter is not None :
-            assert len( ba_filter ) == self._int_num_features
-        self._ba_filter_features = ba_filter
-    @property
-    def ba_filter_barcodes( self ) :
-        ''' # 2022-06-23 17:18:56 
-        returns 'ba_filter'
-        '''
-        return self._ba_filter_barcodes
-    @ba_filter_barcodes.setter
-    def ba_filter_barcodes( self, ba_filter ) :
-        """ # 2022-06-23 17:19:00 
-        check whether the filter is valid
-        """
-        if ba_filter is not None :
-            assert len( ba_filter ) == self._int_num_barcodes
-        self._ba_filter_barcodes = ba_filter
-    @property
-    def is_for_querying_features( self ) :
-        """ # 2022-07-30 20:37:02 
-        """
-        return self._is_for_querying_features
-    @is_for_querying_features.setter
-    def is_for_querying_features( self, flag ) :
-        """ # 2022-07-30 20:37:37 
-        """
-        if self.is_sparse : # if current RAMtx is in sparse format, this property is fixed
-            return 
-        self._is_for_querying_features = flag # update property
-    @property
-    def flag_ramtx_sorted_by_id_feature( self ) :
-        ''' # 2022-06-23 09:06:51 
-        retrieve 'flag_ramtx_sorted_by_id_feature' setting from the RAMtx metadata
-        '''
-        return self._dict_metadata[ 'flag_ramtx_sorted_by_id_feature' ] if self.is_sparse else None
-    @property
-    def len_axis_for_querying( self ) :
-        ''' # 2022-06-23 09:08:44 
-        retrieve number of elements of the indexed axis
-        '''
-        return self._int_num_features if self.is_for_querying_features else self._int_num_barcodes
-    @property
-    def len_axis_not_for_querying( self ) :
-        ''' # 2022-06-23 09:08:44 
-        retrieve number of elements of the not indexed axis
-        '''
-        return self._int_num_barcodes if self.is_for_querying_features else self._int_num_features
-    @property
-    def axis_for_querying( self ) :
-        """
-        # 2022-06-30 21:45:48 
-        return 'Axis' object of the indexed axis
-        """
-        return None if self._ramdata is None else ( self._ramdata.ft if self.is_for_querying_features else self._ramdata.bc )
-    @property
-    def ba_filter_axis_for_querying( self ) :
-        ''' # 2022-06-23 09:08:44 
-        retrieve filter of the indexed axis
-        '''
-        return self.ba_filter_features if self.is_for_querying_features else self.ba_filter_barcodes
-    def __contains__( self, x ) -> bool :
-        ''' # 2022-06-23 09:13:31 
-        check whether an integer representation of indexed entry is available in the index. if filter is active, also check whether the entry is active '''
-        return ( 0 <= x < self.len_axis_for_querying ) and ( self.ba_filter_axis_for_querying is None or self.ba_filter_axis_for_querying[ x ] ) # x should be in valid range, and if it is, check whether x is an active element in the filter (if filter has been set)
-    def __iter__( self ) :
-        ''' # 2022-06-23 09:13:46 
-        yield each entry in the index upon iteration. if filter is active, ignore inactive elements '''
-        if self.ba_filter_axis_for_querying is None : # if filter is not set, iterate over all elements
-            return iter( range( self.len_axis_for_querying ) )
-        else : # if filter is active, yield indices of active elements only
-            return iter( bk.BA.to_integer_indices( self.ba_filter_axis_for_querying ) )
-    def __getitem__( self, l_int_entry ) : 
-        """ # 2022-08-16 01:54:36 
-        Retrieve data of a given list of entries from RAMtx as lists of values and arrays (i.e. sparse matrix), each value and array contains data of a single 'int_entry' of the indexed axis
-        '__getitem__' can be used to retrieve minimal number of values required to build a sparse matrix or dense matrix from it
-        
-        Returns:
-        l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying, l_arr_value :
-            'l_int_entry_of_axis_for_querying' only contains int_entry of valid entries
-        """
-        # retrieve settings
-        int_total_number_of_values_in_a_batch_for_dense_matrix = self.int_total_number_of_values_in_a_batch_for_dense_matrix
-        
-        # initialize the output data structures
-        l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying, l_arr_value = [ ], [ ], [ ]
-        
-        # wrap in a list if a single entry was queried
-        if isinstance( l_int_entry, ( int, np.int64, np.int32, np.int16, np.int8 ) ) : # check whether the given entry is an integer
-            l_int_entry = [ l_int_entry ]
-        ''' retrieve filters '''
-        is_for_querying_features = self.is_for_querying_features
-        ba_filter_axis_for_querying, ba_filter_not_axis_for_querying = ( self.ba_filter_features, self.ba_filter_barcodes ) if is_for_querying_features else ( self.ba_filter_barcodes, self.ba_filter_features )
-            
-        ''' filter 'int_entry', if a filter has been set '''
-        ''' handle when empty 'l_int_entry' has been given and filter has been set  '''
-        if ba_filter_axis_for_querying is not None :
-            l_int_entry = bk.BA.to_integer_indices( ba_filter_axis_for_querying ) if len( l_int_entry ) == 0 else list( int_entry for int_entry in l_int_entry if ba_filter_axis_for_querying[ int_entry ] ) # filter 'l_int_entry' or use the entries in the given filter (if no int_entry was given, use all active entries in the filter)
-                
-        # if no valid entries are available, return an empty result
-        if len( l_int_entry ) == 0 :
-            return l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying, l_arr_value
-            
-        ''' sort 'int_entry' so that closely located entries can be retrieved together '''
-        # sort indices of entries so that the data access can occur in the same direction across threads
-        int_num_entries = len( l_int_entry )
-        if int_num_entries > 30 : # use numpy sort function only when there are sufficiently large number of indices of entries to be sorted
-            l_int_entry = np.sort( l_int_entry )
-        else :
-            l_int_entry = sorted( l_int_entry )
-        
-        """
-        retrieve data from RAMtx data structure
-        """
-        # retrieve flags for dtype conversions
-        flag_change_dtype_of_values = self._za_mtx.dtype != self._dtype_of_values
-        
-        # retrieve dictionaries for changing coordinates
-        dict_change_int_entry_of_axis_for_querying, dict_change_int_entry_of_axis_not_for_querying = None, None # initialize the dictionaries
-        if self._ramdata is not None : # if RAMtx has been attached to RamData, retrieve dictionaries that can be used to change coordinate
-            if self.is_for_querying_features :
-                dict_change_int_entry_of_axis_for_querying = self._ramdata.ft.dict_change
-                dict_change_int_entry_of_axis_not_for_querying = self._ramdata.bc.dict_change
-            else :
-                dict_change_int_entry_of_axis_for_querying = self._ramdata.bc.dict_change
-                dict_change_int_entry_of_axis_not_for_querying = self._ramdata.ft.dict_change
-        # compose a vectorized function for the conversion of int_entries of the non-indexed axis.
-        def f( i ) :
-            return dict_change_int_entry_of_axis_not_for_querying[ i ]
-        vchange_int_entry_of_axis_not_for_querying = np.vectorize( f ) if dict_change_int_entry_of_axis_not_for_querying is not None else None
-        
-        ''' internal settings '''
-        int_num_chunks_for_a_batch = 2
-        
-        def __retrieve_data( pipe_from_main_thread = None, pipe_to_main_thread = None, flag_as_a_worker = True ) :
-            """ # 2022-08-16 01:54:31 
-            retrieve data as a worker in a worker process or in the main processs (in single-process mode)
-            """
-            ''' initialize '''
-            # handle inputs
-            l_int_entry = pipe_from_main_thread.recv( ) if flag_as_a_worker else pipe_from_main_thread  # receive work if 'flag_as_a_worker' is True or use 'pipe_from_main_thread' as a list of works
-            # for each int_entry, retrieve data and collect records
-            l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying, l_arr_value = [ ], [ ], [ ]
-            
-            def __process_entry( int_entry, arr_int_entry_of_axis_not_for_querying, arr_value ) :
-                """ # 2022-07-30 22:07:46 
-                process retrieve data. apply filter and change coordinates
-                """
-                ''' if a filter for not-indexed axis has been set, apply the filter to the retrieved records '''
-                if ba_filter_not_axis_for_querying is not None :
-                    arr_int_entry_of_axis_not_for_querying = arr_int_entry_of_axis_not_for_querying.astype( np.int64 ) # convert to integer type
-                    arr_mask = np.zeros( len( arr_int_entry_of_axis_not_for_querying ), dtype = bool ) # initialize the mask for filtering records
-                    for i, int_entry_of_axis_not_for_querying in enumerate( arr_int_entry_of_axis_not_for_querying ) : # iterate through each record
-                        if ba_filter_not_axis_for_querying[ int_entry_of_axis_not_for_querying ] : # check whether the current int_entry is included in the filter
-                            arr_mask[ i ] = True # include the record
-                    # if no valid data exists (all data were filtered out), continue to the next 'int_entry'
-                    if arr_mask.sum( ) == 0 :
-                        return
-
-                    # filter records using the mask
-                    arr_int_entry_of_axis_not_for_querying = arr_int_entry_of_axis_not_for_querying[ arr_mask ]
-                    arr_value = arr_value[ arr_mask ]
-
-                    # convert int_entry for the non-indexed axis if a mapping has been given
-                    if vchange_int_entry_of_axis_not_for_querying is not None :
-                        arr_int_entry_of_axis_not_for_querying = vchange_int_entry_of_axis_not_for_querying( arr_int_entry_of_axis_not_for_querying )
-
-                ''' convert dtypes of retrieved data '''
-                if flag_change_dtype_of_feature_and_barcode_indices :
-                    arr_int_entry_of_axis_not_for_querying = arr_int_entry_of_axis_not_for_querying.astype( self._dtype_of_feature_and_barcode_indices )
-                if flag_change_dtype_of_values :
-                    arr_value = arr_value.astype( self._dtype_of_values )
-
-                ''' append the retrieved data to the output results '''
-                l_int_entry_of_axis_for_querying.append( int_entry if dict_change_int_entry_of_axis_for_querying is None else dict_change_int_entry_of_axis_for_querying[ int_entry ] ) # convert int_entry for the indexed axis if a mapping has been given 
-                l_arr_int_entry_of_axis_not_for_querying.append( arr_int_entry_of_axis_not_for_querying )
-                l_arr_value.append( arr_value )
-            def __fetch_from_sparse_ramtx( l_int_entry_in_a_batch, l_index_in_a_batch ) :
-                """ # 2022-07-30 22:32:14 
-                fetch data from sparse ramtx for a batch
-                """
-                arr_index_of_a_batch = np.array( l_index_in_a_batch ) # convert index of the batch to a numpy array
-                st_batch, en_batch = arr_index_of_a_batch[ 0, 0 ], arr_index_of_a_batch[ - 1, 1 ] # retrieve start and end positions of the current batch
-                arr_int_entry_of_axis_not_for_querying, arr_value = self._za_mtx[ st_batch : en_batch ].T # fetch data from the Zarr object
-                
-                for int_entry, index in zip( l_int_entry_in_a_batch, arr_index_of_a_batch - st_batch ) : # substract the start position of the batch to retrieve the local index
-                    st, en = index
-                    sl = slice( st, en )
-                    __process_entry( int_entry, arr_int_entry_of_axis_not_for_querying[ sl ], arr_value[ sl ] )
-            def __fetch_from_dense_ramtx( l_int_entry_in_a_batch ) :
-                """ # 2022-08-16 01:54:21 
-                fetch data from dense ramtx for a batch in a memory-efficient manner using subbatches
-                """
-                # initialize the sparse data container for each entry
-                dict_data = dict( )
-                
-                # retrieve entries for a subbatch
-                int_num_entries_in_a_subbatch_in_axis_not_for_querying = max( 1, int( np.floor( int_total_number_of_values_in_a_batch_for_dense_matrix / len( l_int_entry_in_a_batch ) ) ) ) # minimum number of entries in a subbatch is 1
-                
-                # initialize looping through axis not for querying (secondary axis)
-                int_num_entries_processed_in_axis_not_for_querying = 0
-                while int_num_entries_processed_in_axis_not_for_querying < self.len_axis_not_for_querying : # iterate through each subbatch
-                    sl_secondary = slice( int_num_entries_processed_in_axis_not_for_querying, min( self.len_axis_not_for_querying, int_num_entries_processed_in_axis_not_for_querying + int_num_entries_in_a_subbatch_in_axis_not_for_querying ) ) # retrieve a slice along the secondary axis
-                    
-                    # iterate through each entry on the axis for querying for the current subbatch
-                    for int_entry, arr_data in zip( l_int_entry_in_a_batch, self._za_mtx.get_orthogonal_selection( ( sl_secondary, l_int_entry_in_a_batch ) ).T if is_for_querying_features else self._za_mtx.get_orthogonal_selection( ( l_int_entry_in_a_batch, sl_secondary ) ) ) : # fetch data from the Zarr object for the current subbatch and iterate through each entry and its data
-                        arr_int_entry_of_axis_not_for_querying = np.where( arr_data )[ 0 ] # retrieve coordinates of non-zero records
-                        if len( arr_int_entry_of_axis_not_for_querying ) == 0 : # if no non-zero records exist, continue to the next entry
-                            continue
-                        arr_value = arr_data[ arr_int_entry_of_axis_not_for_querying ] # retrieve non-zero records
-                        arr_int_entry_of_axis_not_for_querying += int_num_entries_processed_in_axis_not_for_querying # add offset 'int_num_entries_processed_in_axis_not_for_querying' to the coordinates retrieved from the subbatch
-                        del arr_data
-                        
-                        # initialize 'int_entry' for the sparse data container
-                        if int_entry not in dict_data :
-                            dict_data[ int_entry ] = { 'l_arr_int_entry_of_axis_not_for_querying' : [ ], 'l_arr_value' : [ ] }
-                        # add retrieved data from the subbatch to the sparse data container
-                        dict_data[ int_entry ][ 'l_arr_int_entry_of_axis_not_for_querying' ].append( arr_int_entry_of_axis_not_for_querying )
-                        dict_data[ int_entry ][ 'l_arr_value' ].append( arr_value )
-                        del arr_value, arr_int_entry_of_axis_not_for_querying
-                    
-                    int_num_entries_processed_in_axis_not_for_querying += int_num_entries_in_a_subbatch_in_axis_not_for_querying # update the position
-
-                for int_entry in dict_data : # iterate each entry
-                    __process_entry( int_entry, np.concatenate( dict_data[ int_entry ][ 'l_arr_int_entry_of_axis_not_for_querying' ] ), np.concatenate( dict_data[ int_entry ][ 'l_arr_value' ] ) ) # concatenate list of arrays into a single array
-                del dict_data
-            
-            ''' retrieve data '''
-            if self.is_sparse : # handle sparse ramtx
-                ''' %% Sparse ramtx %% '''
-                # prepare
-                int_num_records_in_a_chunk = self._za_mtx.chunks[ 0 ] # retrieve the number of records in a chunk
-                # retrieve flags for dtype conversions
-                flag_change_dtype_mtx_index = self._za_mtx_index.dtype != np.int64
-                flag_change_dtype_of_feature_and_barcode_indices = self._za_mtx.dtype != self._dtype_of_feature_and_barcode_indices
-                
-                # retrieve mtx_index data and remove invalid entries
-                arr_index = self._za_mtx_index.get_orthogonal_selection( l_int_entry ) # retrieve mtx_index data 
-                if flag_change_dtype_mtx_index : # convert dtype of retrieved mtx_index data
-                    arr_index = arr_index.astype( np.int64 )
-                
-                index_chunk_start_current_batch = None # initialize the index of the chunk at the start of the batch
-                l_int_entry_in_a_batch, l_index_in_a_batch = [ ], [ ] # several entries will be processed together as a batch if they reside in the same or nearby chunk ('int_num_chunks_for_a_batch' setting)
-                # iterate through each 'int_entry'
-                for int_entry, index in zip( l_int_entry, arr_index ) : # iterate through each entry
-                    st, en = index
-                    if st == en : # if there is no count data for the 'int_entry', continue on to the next 'int_entry' # drop 'int_entry' lacking count data (when start and end index is the same, the 'int_entry' does not contain any data)
-                        continue
-                    
-                    ''' if batch is full, flush the batch '''
-                    index_chunk_end = en - 1 // int_num_records_in_a_chunk # retrieve the index of the last chunk
-                    if index_chunk_start_current_batch is not None and index_chunk_end >= index_chunk_start_current_batch + int_num_chunks_for_a_batch : # if start has been set 
-                        __fetch_from_sparse_ramtx( l_int_entry_in_a_batch, l_index_in_a_batch )
-                        l_int_entry_in_a_batch, l_index_in_a_batch = [ ], [ ] # initialize the next batch
-                        index_chunk_start_current_batch = None # reset start
-                        
-                    ''' start the batch '''
-                    # if start has not been set, set the start of the current batch
-                    if index_chunk_start_current_batch is None : # start the batch
-                        index_chunk_start_current_batch = st // int_num_records_in_a_chunk 
-                    
-                    # add int_entry to the batch 
-                    l_int_entry_in_a_batch.append( int_entry ) 
-                    l_index_in_a_batch.append( [ st, en ] )
-                
-                if len( l_int_entry_in_a_batch ) > 0 : # if some entries remains unprocessed, flush the buffer
-                    __fetch_from_sparse_ramtx( l_int_entry_in_a_batch, l_index_in_a_batch )
-            else :
-                ''' %% Dense ramtx %% '''
-                # prepare
-                int_num_entries_in_a_chunk = self._za_mtx.chunks[ 1 ] if is_for_querying_features else self._za_mtx.chunks[ 0 ] # retrieve the number of entries in a chunk
-                flag_change_dtype_of_feature_and_barcode_indices = False # since indices from dense ramtx (return values of np.where) will be in np.int64 format, there will be no need to change dtype of indices
-                
-                index_chunk_start_current_batch = None # initialize the index of the chunk at the start of the batch
-                l_int_entry_in_a_batch = [ ] # several entries will be processed together as a batch if they reside in the same or nearby chunk ('int_num_chunks_for_a_batch' setting)
-                # iterate through each 'int_entry'
-                for int_entry in l_int_entry : # iterate through each entry
-                    ''' if batch is full, flush the batch '''
-                    index_chunk = int_entry // int_num_entries_in_a_chunk # retrieve the index of the chunk of the current entry
-                    if index_chunk_start_current_batch is not None and index_chunk >= index_chunk_start_current_batch + int_num_chunks_for_a_batch : # if batch has been started
-                        __fetch_from_dense_ramtx( l_int_entry_in_a_batch )
-                        l_int_entry_in_a_batch = [ ] # initialize the next batch
-                        index_chunk_start_current_batch = None # reset start
-                        
-                    ''' start the batch '''
-                    # if start has not been set, set the start of the current batch
-                    if index_chunk_start_current_batch is None : # start the batch
-                        index_chunk_start_current_batch = index_chunk
-                    
-                    # add int_entry to the batch 
-                    l_int_entry_in_a_batch.append( int_entry ) 
-                
-                if len( l_int_entry_in_a_batch ) > 0 : # if some entries remains unprocessed, flush the buffer
-                    __fetch_from_dense_ramtx( l_int_entry_in_a_batch )
-
-            
-            ''' return the retrieved data '''
-            # compose a output value
-            output = ( l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying, l_arr_value )
-            # if 'flag_as_a_worker' is True, send the result or return the result
-            if flag_as_a_worker :
-                pipe_to_main_thread.send( output ) # send unzipped result back
-            else :
-                return output
-        
-        # load data using multiprocessing
-        if self.int_num_cpus > 1 and int_num_entries > 1 : # enter multi-processing mode only more than one entry should be retrieved
-            # initialize workers
-            int_n_workers = min( self.int_num_cpus, int_num_entries ) # one thread for distributing records. Minimum numbers of workers for sorting is 1 # the number of workers should not be larger than the number of entries to retrieve.
-            l_l_int_entry_for_each_worker = list( l for l in LIST_Split( l_int_entry, int_n_workers, flag_contiguous_chunk = True ) if len( l ) > 0 ) # retrieve a list of valid work loads for the workers
-            int_n_workers = min( int_n_workers, len( l_l_int_entry_for_each_worker ) ) # adjust the number of workers according to the number of distributed workloads
-            
-            l_pipes_from_main_process_to_worker = list( mp.Pipe( ) for _ in range( int_n_workers ) ) # create pipes for sending records to workers # add process for receivers
-            l_pipes_from_worker_to_main_process = list( mp.Pipe( ) for _ in range( int_n_workers ) ) # create pipes for collecting results from workers
-            l_processes = list( mp.Process( target = __retrieve_data, args = ( l_pipes_from_main_process_to_worker[ index_worker ][ 1 ], l_pipes_from_worker_to_main_process[ index_worker ][ 0 ] ) ) for index_worker in range( int_n_workers ) ) # add a process for distributing fastq records
-            for p in l_processes :
-                p.start( )
-            # distribute works
-            for index_worker, l_int_entry_for_each_worker in enumerate( l_l_int_entry_for_each_worker ) : # distribute works # no load balacing for now
-                l_pipes_from_main_process_to_worker[ index_worker ][ 0 ].send( l_int_entry_for_each_worker )
-            # wait until all works are completed
-            int_num_workers_completed = 0
-            l_output = list( [ ] for i in range( int_n_workers ) ) # initialize a list that will collect output results
-            while int_num_workers_completed < int_n_workers : # until all works are completed
-                for index_worker, cxn in enumerate( l_pipes_from_worker_to_main_process ) :
-                    _, pipe_reciver = cxn # parse a connection
-                    if pipe_reciver.poll( ) :
-                        l_output[ index_worker ] = pipe_reciver.recv( ) # collect output 
-                        int_num_workers_completed += 1 # update the number of completed workers
-                time.sleep( 0.1 )
-            # dismiss workers once all works are completed
-            for p in l_processes :
-                p.join( )
-                
-            # ravel retrieved records
-            for output in l_output :
-                l_int_entry_of_axis_for_querying.extend( output[ 0 ] )
-                l_arr_int_entry_of_axis_not_for_querying.extend( output[ 1 ] )
-                l_arr_value.extend( output[ 2 ] )
-            del output, l_output
-        else : # single thread mode
-            l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying, l_arr_value = __retrieve_data( l_int_entry, flag_as_a_worker = False )
-        
-        return l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying, l_arr_value
-    def get_sparse_matrix( self, l_int_entry, flag_return_as_arrays = False ) :
-        """ # 2022-08-21 15:35:09 
-        
-        get sparse matrix for the given list of integer representations of the entries.
-        
-        'l_int_entry' : list of int_entries for query
-        'flag_return_as_arrays' : if True, return three arrays and a single list, 'l_int_barcodes', 'l_int_features', 'l_values', 'l_int_num_records'. 
-                'l_int_barcodes', 'l_int_features', 'l_values' : for building a sparse matrix
-                'l_int_num_records' : for building an index
-                if False, return a scipy.csr sparse matrix
-        """
-        l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying, l_arr_value = self[ l_int_entry ] # parse retrieved result
-        
-        # combine the arrays
-        arr_int_entry_of_axis_not_for_querying = np.concatenate( l_arr_int_entry_of_axis_not_for_querying )
-        arr_value = np.concatenate( l_arr_value )
-        del l_arr_value # delete intermediate objects
-        
-        # compose 'arr_int_entry_of_axis_for_querying'
-        arr_int_entry_of_axis_for_querying = np.zeros( len( arr_int_entry_of_axis_not_for_querying ), dtype = self._dtype_of_feature_and_barcode_indices ) # create an empty array
-        int_pos = 0
-        for int_entry_of_axis_for_querying, a in zip( l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying ) :
-            n = len( a )
-            arr_int_entry_of_axis_for_querying[ int_pos : int_pos + n ] = int_entry_of_axis_for_querying # compose 'arr_int_entry_of_axis_for_querying'
-            int_pos += n # update the current position
-        if flag_return_as_arrays :
-            l_int_num_records = list( len( a ) for a in l_arr_int_entry_of_axis_not_for_querying ) # when returning arrays instead of a scipy sparse matrix, additionally prepare records that can be utilized for build an index of the data
-        del l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying # delete intermediate objects
-        
-        # get 'arr_int_barcode' and 'arr_int_feature' based on 'self.is_for_querying_features'
-        if self.is_for_querying_features :
-            arr_int_barcode = arr_int_entry_of_axis_not_for_querying
-            arr_int_feature = arr_int_entry_of_axis_for_querying
-        else :
-            arr_int_barcode = arr_int_entry_of_axis_for_querying
-            arr_int_feature = arr_int_entry_of_axis_not_for_querying
-        del arr_int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying # delete intermediate objects
-        
-        if flag_return_as_arrays : # if 'flag_return_as_arrays' is True, return data as arrays
-            return arr_int_barcode, arr_int_feature, arr_value, l_int_num_records
-        # return data as a sparse matrix
-        n_bc, n_ft = ( self._int_num_barcodes, self._int_num_features ) if self._ramdata is None else ( len( self._ramdata.bc ), len( self._ramdata.ft ) ) # detect whether the current RAMtx has been attached to a RamData and retrieve the number of barcodes and features accordingly
-        X = scipy.sparse.csr_matrix( scipy.sparse.coo_matrix( ( arr_value, ( arr_int_barcode, arr_int_feature ) ), shape = ( n_bc, n_ft ) ) ) # convert count data to a sparse matrix
-        return X # return the composed sparse matrix 
-    def get_total_num_records( self, ba = None, int_num_entries_for_each_weight_calculation_batch = 1000, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = True ) :
-        """ # 2022-08-07 01:38:02 
-        get total number of records in the current RAMtx for the given entries ('ba' filter).
-        this function is mainly for the estimation of the total number of records to process for displaying progress information in the progress bar.
-        """
-        # set defaule arguments
-        if ba is None :
-            ba = self.ba_filter_axis_for_querying # if None is given, ba_filter of the currently indexed axis will be used.
-            if ba is None : # if filter is not set or the current RAMtx has not been attached to a RamData object, use the active entries
-                ba = self.ba_active_entries # if None is given, self.ba_active_entries bitarray will be used.
-        # initialize
-        # a namespace that can safely shared between function scopes
-        ns = { 'int_num_records' : 0, 'l_int_entry_for_weight_calculation_batch' : [ ] }
-        
-        # check if pre-calculated weights are available
-        axis = 'features' if self.is_for_querying_features else 'barcodes' # retrieve axis of current ramtx
-        flag_weight_available = False # initialize
-        for path_folder in [ self._path_folder_ramtx, self._path_folder_ramtx_modifiable ] :
-            if path_folder is not None and zarr_exists( f'{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/' ) :
-                path_folder_zarr_weight = f"{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/" # define an existing zarr object path
-                flag_weight_available = True
-                za_weight = zarr.open( path_folder_zarr_weight ) # open zarr object containing weights if available
-        
-        def __update_total_num_records( ) :
-            """ # 2022-08-05 00:56:12 
-            retrieve indices of the current 'weight_current_batch', calculate weights, and yield a batch
-            """
-            ''' retrieve weights '''
-            if flag_weight_available and ( self.mode != 'dense' or not flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ) : # if weight is available
-                # load weight for the batch
-                arr_weight = za_weight.get_orthogonal_selection( ns[ 'l_int_entry_for_weight_calculation_batch' ] ) # retrieve weights
-            else : # if weight is not available
-                arr_weight = np.full( len( ns[ 'l_int_entry_for_weight_calculation_batch' ] ), self.len_axis_not_for_querying ) # if weight is not available, assumes all records are available (number of entries in non-indexed axis) for each entry
-            ''' update total number of records '''
-            ns[ 'int_num_records' ] += arr_weight.sum( ) # update total number of records
-            ns[ 'l_int_entry_for_weight_calculation_batch' ] = [ ] # empty the weight calculation batch
-
-        for int_entry in bk.BA.find( ba ) : # iterate through active entries of the given bitarray
-            ns[ 'l_int_entry_for_weight_calculation_batch' ].append( int_entry ) # collect int_entry for the current 'weight_calculation_batch'
-            # once 'weight_calculation' batch is full, process the 'weight_calculation' batch
-            if len( ns[ 'l_int_entry_for_weight_calculation_batch' ] ) == int_num_entries_for_each_weight_calculation_batch :
-                __update_total_num_records( ) # update total number of records
-        __update_total_num_records( )
-        return int( ns[ 'int_num_records' ] ) # return the total number of records
-    def batch_generator( self, ba = None, int_num_entries_for_each_weight_calculation_batch = 1000, int_total_weight_for_each_batch = 10000000, int_chunk_size_for_checking_boundary = None, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = False ) :
-        ''' # 2022-08-05 23:37:03 
-        generate batches of list of integer indices of the active entries in the given bitarray 'ba'. 
-        Each bach has the following characteristics:
-            monotonous: active entries in a batch are in an increasing order
-            the total number of records of a batch is around (but not exactly) 'int_total_weight_for_each_batch'
-        
-        'ba' : (default None) if None is given, self.ba_active_entries bitarray will be used.
-        'int_chunk_size_for_checking_boundary' : if this argument is given, each batch will respect the chunk boundary of the given chunk size so that different batches share the same 'chunk'. setting this argument will override 'int_total_weight_for_each_batch' argument
-        'int_total_weight_for_each_batch' : total number of records in a batch. 
-        'flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx' : when iterating through a dense matrix, interpret the length of the axis not for querying as the total number of records for every entry in the axis for querying. This will be more useful for restricting the memory usage when analysing dense RAMtx matrix.
-        '''
-        # set defaule arguments
-        if ba is None :
-            ba = self.ba_filter_axis_for_querying # if None is given, ba_filter of the currently indexed axis will be used.
-            if ba is None : # if filter is not set or the current RAMtx has not been attached to a RamData object, use the active entries
-                ba = self.ba_active_entries # if None is given, self.ba_active_entries bitarray will be used.
-        # initialize
-        # a namespace that can safely shared between functions
-        ns = { 'int_accumulated_weight_current_batch' : 0, 'l_int_entry_current_batch' : [ ], 'l_int_entry_for_weight_calculation_batch' : [ ], 'index_chunk_end' : None, 'index_batch' : 0, 'int_num_of_previously_returned_entries' : 0 } # initialize 'index_batch'
-        
-        # check if pre-calculated weights are available
-        axis = 'features' if self.is_for_querying_features else 'barcodes' # retrieve axis of current ramtx
-        flag_weight_available = False # initialize
-        for path_folder in [ self._path_folder_ramtx, self._path_folder_ramtx_modifiable ] :
-            if path_folder is not None and zarr_exists( f'{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/' ) :
-                path_folder_zarr_weight = f"{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/" # define an existing zarr object path
-                flag_weight_available = True
-                za_weight = zarr.open( path_folder_zarr_weight ) # open zarr object containing weights if available
-        
-        def __compose_batch( ) :
-            """ # 2022-08-05 23:34:28 
-            compose batch from the values available in the namespace 'ns'
-            """
-            return { 'index_batch' : ns[ 'index_batch' ], 'l_int_entry_current_batch' : ns[ 'l_int_entry_current_batch' ], 'int_num_of_previously_returned_entries' : ns[ 'int_num_of_previously_returned_entries' ], 'int_accumulated_weight_current_batch' : ns[ 'int_accumulated_weight_current_batch' ] }
-        def find_batch( ) :
-            """ # 2022-08-05 00:56:12 
-            retrieve indices of the current 'weight_current_batch', calculate weights, and yield a batch
-            """
-            ''' retrieve weights '''
-            if flag_weight_available and ( self.mode != 'dense' or not flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ) : # if weight is available and if dense, 'flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx' is False
-                # load weight for the batch
-                arr_weight = za_weight.get_orthogonal_selection( ns[ 'l_int_entry_for_weight_calculation_batch' ] ) # retrieve weights
-            else : # if weight is not available
-                arr_weight = np.full( len( ns[ 'l_int_entry_for_weight_calculation_batch' ] ), self.len_axis_not_for_querying ) # if weight is not available, assumes all records are available (number of entries in non-indexed axis) for each entry
-            ''' search for batch '''
-            for int_entry, weight in zip( ns[ 'l_int_entry_for_weight_calculation_batch' ], arr_weight ) :
-                if ns[ 'index_chunk_end' ] is not None and ns[ 'index_chunk_end' ] != int_entry // int_chunk_size_for_checking_boundary : # if the chunk boundary has been set and the boundary has reached
-                    yield __compose_batch( ) # return a batch
-                    # initialize the next batch
-                    ns[ 'index_batch' ] += 1
-                    ns[ 'int_num_of_previously_returned_entries' ] += len( ns[ 'l_int_entry_current_batch' ] ) # update the total number of entries returned
-                    ns[ 'l_int_entry_current_batch' ] = [ ] 
-                    ns[ 'int_accumulated_weight_current_batch' ] = 0
-                    ns[ 'index_chunk_end' ] = None
-                        
-                # update the current batch
-                ns[ 'l_int_entry_current_batch' ].append( int_entry )
-                ns[ 'int_accumulated_weight_current_batch' ] += weight
-
-                # check whether the current batch is full
-                if ns[ 'int_accumulated_weight_current_batch' ] >= int_total_weight_for_each_batch and ns[ 'index_chunk_end' ] is None : # a current batch is full, yield the batch # when chunk boundary has not been set
-                    if int_chunk_size_for_checking_boundary is not None : # when chunk boundary checking is active
-                        ns[ 'index_chunk_end' ] = int_entry // int_chunk_size_for_checking_boundary # set the chunk boundary
-                    else :
-                        yield __compose_batch( ) # return a batch
-                        # initialize the next batch
-                        ns[ 'index_batch' ] += 1
-                        ns[ 'int_num_of_previously_returned_entries' ] += len( ns[ 'l_int_entry_current_batch' ] ) # update the total number of entries returned
-                        ns[ 'l_int_entry_current_batch' ] = [ ] 
-                        ns[ 'int_accumulated_weight_current_batch' ] = 0
-                
-            # initialize next 'weight_calculation_batch'
-            ns[ 'l_int_entry_for_weight_calculation_batch' ] = [ ]
-                
-
-        for int_entry in bk.BA.find( ba ) : # iterate through active entries of the given bitarray
-            ns[ 'l_int_entry_for_weight_calculation_batch' ].append( int_entry ) # collect int_entry for the current 'weight_calculation_batch'
-            # once 'weight_calculation' batch is full, process the 'weight_calculation' batch
-            if len( ns[ 'l_int_entry_for_weight_calculation_batch' ] ) == int_num_entries_for_each_weight_calculation_batch :
-                for e in find_batch( ) : # generate batch from the 'weight_calculation' batch
-                    yield e
-        for e in find_batch( ) : # generate batch from the last 'weight_calculation_batch'
-            yield e
-        # return the remaining int_entries as the last batch (if available)
-        if len( ns[ 'l_int_entry_current_batch' ] ) > 0 :
-            yield __compose_batch( ) # return a batch
 ''' a class for representing axis of RamData (barcodes/features) '''
+class IndexMappingDictionary( ) :
+    """ # 2022-08-30 22:52:15 
+    a light-weight class for representing dictionary for mapping integer indices
+    
+    'int_length_component_axis' : length of the component
+    'int_offset' : offset of the start of the component from the start of the combined axis
+    'flag_component_to_combined' : set this to True if mapping component to combined axis
+    """
+    def __init__( self, int_length_component_axis : int, int_offset : int, flag_component_to_combined = True ) :
+        """ # 2022-08-30 11:48:50 
+        """
+        # set attributes
+        self._int_length_component_axis = int_length_component_axis
+        self._int_offset = int_offset
+        self._flag_component_to_combined = flag_component_to_combined
+    def __getitem__( self, int_entry_component ) :
+        """ # 2022-08-30 11:57:21 
+        perform mapping
+        """
+        return int_entry_component + self._int_offset if self._flag_component_to_combined else int_entry_component - self._int_offset
+    def __contains__( self, e ) :
+        """ # 2022-08-30 11:57:40 
+        """
+        return 0 <= e <= self._int_length_component_axis if self._flag_component_to_combined else 0 + self._int_offset <= e <= self._int_length_component_axis + self._int_offset
 class RamDataAxis( ) :
-    """ # 2022-08-03 00:55:04 
+    """ # 2022-08-29 12:45:38 
     a memory-efficient container of features/barcodes and associated metadata for a given RamData object.
+    
+    # 2022-08-29 12:45:51 
+    Now supports combined axes, which identify combined axes type ('interleaved' or 'stacked') based on the string representations of the entries of each axis. 
+    For metadata, data will be retrieved across the metadata components of individual axis objects and saved to the current metadata (which can serve as a cache) 
     
     'path_folder' : a folder containing the axis
     'name_axis' : ['barcodes', 'features'] 
@@ -5487,9 +4694,25 @@ class RamDataAxis( ) :
     'mode' : file mode. 'r' for read-only mode and 'a' for mode allowing modifications
     'path_folder_mask' : a local (local file system) path to the mask of the current Axis that allows modifications to be written without modifying the source. if a valid local path to a mask is given, all modifications will be written to the mask
     'flag_is_read_only' : read-only status of RamData
+    
+    'dict_kw_zdf' : keworded arguments for ZarrDataFrame instances, which contains metadata. for more details, see ZarrDataFrame class description.
+    
+    === arguments controlling batch size ===
+    'int_max_num_entries_per_batch' = 1000000 # the maximum number of entries that will be processed as a batch for each (component) axis.
+    
+    === settings for combined RamDataAxis object ===
+    'l_ax' : a list of RamDataAxis objects that will be combined
+    'index_ax_data_source_when_interleaved' : the index of the axis object to retrieve data when combining mode is 'interleaved' (rows shared between axis objects)
+    'flag_check_combined_type' = False : Setting this flag to True will run a check whether the given list of axis objects do share common string representations. If each axis contains unique set of string representations,
+            the list of axis objects will be treated using 'stacked' option, and RamDataAxis.is_interleaved will show False value. Setting this value to True will consume a lot of memory linearly increasing
+            with the number of string representations that should be loaded for checking conditions for 'interleaved' mode.
+            
+    'flag_is_interleaved' = False # indicate the type of current 'combined' RamDataAxis, indicating whether to interpret the given list of RamDataAxis object as interleaved (if True) or stacked (if False). 
+            if True and the current RamDataAxis is in 'combined' mode, an index mapping dictionary will be constructed for each axis.
+    
     """
-    def __init__( self, path_folder, name_axis, ba_filter = None, ramdata = None, int_index_str_rep = 0, mode = 'a', path_folder_mask = None, flag_is_read_only = False, dict_kw_zdf = { 'flag_retrieve_categorical_data_as_integers' : False, 'flag_load_data_after_adding_new_column' : True, 'flag_enforce_name_col_with_only_valid_characters' : True }, dict_kw_view = { 'float_min_proportion_of_active_entries_in_an_axis_for_using_array' : 0.1, 'dtype' : np.int32 }, verbose = True ) :
-        """ # 2022-07-16 17:10:26 
+    def __init__( self, path_folder : str, name_axis : str, l_ax : Union[ list, tuple, None ] = None, index_ax_data_source_when_interleaved = 0, flag_check_combined_type = False, flag_is_interleaved : bool = False, int_max_num_entries_per_batch = 1000000, int_num_entries_in_a_chunk = 5000, ba_filter : Union[ bitarray, None ] = None, ramdata = None, int_index_str_rep : int = 0, mode : str = 'a', path_folder_mask : Union[ str, None ] = None, flag_is_read_only : bool = False, dict_kw_zdf : dict = { 'flag_retrieve_categorical_data_as_integers' : False, 'flag_load_data_after_adding_new_column' : True, 'flag_enforce_name_col_with_only_valid_characters' : True, 'int_max_num_entries_per_batch' : 1000000 }, dict_kw_view : dict = { 'float_min_proportion_of_active_entries_in_an_axis_for_using_array' : 0.1, 'dtype' : np.int32 }, verbose : bool = True ) :
+        """ # 2022-08-30 12:25:03 
         """
         # set attributes
         self._mode = mode
@@ -5498,13 +4721,234 @@ class RamDataAxis( ) :
         self.verbose = verbose
         self._name_axis = name_axis
         self._path_folder = path_folder
-        self.meta = ZarrDataFrame( f"{path_folder}{name_axis}.num_and_cat.zdf", ba_filter = ba_filter, mode = mode, path_folder_mask = None if path_folder_mask is None else f"{path_folder_mask}{name_axis}.num_and_cat.zdf", flag_is_read_only = self._flag_is_read_only, ** dict_kw_zdf ) # open a ZarrDataFrame with a given filter
-        self.int_num_entries = self.meta._n_rows_unfiltered # retrieve number of entries
+        self.int_max_num_entries_per_batch = int_max_num_entries_per_batch
+        self.int_num_entries_in_a_chunk = int_num_entries_in_a_chunk
         self.int_index_str_rep = int_index_str_rep # it can be changed later
+        self._ramdata = ramdata # initialize RamData reference
+        # setting for combined RamDataAxis
+        self._l_ax = l_ax
+        self._index_ax_data_source_when_interleaved = index_ax_data_source_when_interleaved
+        self._l_dict_index_mapping_interleaved = None # set default value for 'self._l_dict_index_mapping_interleaved', which is required for self.is_interleaved function. # similar to 'self._l_dict_index_mapping_from_combined_to_component' but specific to interleaved combined axis object
+        self._l_dict_index_mapping_from_combined_to_component = None 
+        self._l_dict_index_mapping_from_component_to_combined = None # set default value for list of dictionaries (or similar class) for mapping component indices to combined indices. this will be used for both combined-stacked and combined-interleaved.
+        
+        # %% COMBINED MODE %%
+        if self.is_combined :
+            # determines 'combined' type
+            ''' run test for determining combined mode ('interleaved' vs. 'stacked') '''
+            if flag_check_combined_type : # check combined type of the given list of RamDataAxis objects (it might be 'interleaved' or 'stacked')
+                # initialize 'flag_is_interleaved'
+                flag_is_interleaved = False # set 'flag_is_interleaved' to False by default
+                # initialize 'interleaved' combined axis type detection
+                int_num_entries_encountered = 0
+                set_str_rep_encountered = { }
+                for ax in self._l_ax : # for each axis
+                    int_pos_component = 0 # initialize position in the component
+                    while int_pos_component < ax.int_num_entries : # until all entries of the current component axis have been processed
+                        l_str_entry = ax.get_str( slice( int_pos_component, min( ax.int_num_entries, int_pos_component + self.int_max_num_entries_per_batch ) ) ) # retrieve string representations of the current batch
+                        int_num_entries_encountered += len( l_str_entry ) # update the number of encountered entries
+                        set_str_rep_encountered.update( l_str_entry ) # update currently encountered set of unique string representation
+                        
+                        # check 'interleaved' type
+                        if int_num_entries_encountered != len( set_str_rep_encountered ) : # if entries with duplicated string representation are detected, confirm the 'interleaved' combined axis type
+                            flag_is_interleaved = True
+                            break
+                        
+                        int_pos_component += self.int_max_num_entries_per_batch # update 'int_pos_component'
+                
+            ''' if current 'combined' type is 'interleaved', load/build an index-mapping dictionary '''
+            if flag_is_interleaved :
+                path_folder_interleaved_mapping = f"{path_folder}{name_axis}.interleaved.mapping/" # define a folder for saving mapping information for 'interleaved' 'combined' axis
+                if zarr_exists( path_folder_interleaved_mapping ) : # if an output zarr object exists
+                    # if folder exists, load index mapping dictionary
+                    za = zarr.open( path_folder_interleaved_mapping )
+                    # load metadata
+                    dict_metadata = za.attrs[ 'dict_metadata' ]
+                    l_int_num_records = dict_metadata[ 'l_int_num_records' ]
+                    
+                    l_dict_index_mapping_interleaved = [ ] # initialize 'l_dict_index_mapping_interleaved'
+                    l_dict_index_mapping_from_component_to_combined = [ ] # initialize 'l_dict_index_mapping_from_component_to_combined'
+                    # initialize 'dict_index_mapping_interleaved' for each axis object
+                    int_pos = 0
+                    for int_num_records in l_int_num_records : # for each length of axis object 
+                        arr_int_entry_combined, arr_int_entry_component = za[ int_pos : int_pos + int_num_records ].T.astype( int ) # retrieve data
+                        int_pos += int_num_records # update 'int_pos'
+                        dict_index_mapping_interleaved = dict( ( int_entry_combined, int_entry_component ) for int_entry_combined, int_entry_component in zip( arr_int_entry_combined, arr_int_entry_component ) ) # initialize the mapping
+                        dict_index_mapping_from_component_to_combined = dict( ( int_entry_component, int_entry_combined ) for int_entry_combined, int_entry_component in zip( arr_int_entry_combined, arr_int_entry_component ) ) # initialize the mapping from component to combined axis
+                        l_dict_index_mapping_interleaved.append( dict_index_mapping_interleaved ) # add index mapping dictionary
+                        l_dict_index_mapping_from_component_to_combined.append( dict_index_mapping_from_component_to_combined )
+                        del dict_index_mapping_interleaved, dict_index_mapping_from_component_to_combined
+                else :
+                    ''' build a mapping and write string representations of the combined axis '''
+                    # if an output zarr object does not exist
+                    za = zarr.open( path_folder_interleaved_mapping, 'w', dtype = np.float64, shape = ( sum( ax.int_num_entries for ax in self._l_ax ), 2 ), chunks = ( self.int_max_num_entries_per_batch, 2 ), fill_value = -1 )
+                    
+                    # The combined axis will contain automatically de-duplicated entries
+                    # Also, during de-duplication, only the unique entries that encountered first will be retained
+                    dict_str_entry_to_int_entry = dict( )
+                    int_entry_new_combined = 0 # new int_entry of the combined axis
+                    l_int_num_records = [ ] # the collect the number of mapping records for each axis object 
+                    int_pos_mapping = 0 # initialize the position of the mapping records for writing files
+                    l_dict_index_mapping_interleaved = [ ]
+                    l_dict_index_mapping_from_component_to_combined = [ ] # initialize 'l_dict_index_mapping_from_component_to_combined'
+                    for ax in self._l_ax : # for each axis component
+                        dict_index_mapping_interleaved = dict( ) # initialize the mapping
+
+                        # process string representations of the current axis component object for each batch
+                        int_pos_component = 0 # initialize position in the component
+                        while int_pos_component < ax.int_num_entries : # until all entries of the current component axis have been processed
+                            l_str_entry = ax.get_str( slice( int_pos_component, min( ax.int_num_entries, int_pos_component + self.int_max_num_entries_per_batch ) ) ) # retrieve string representations of the current batch
+                            for int_entry, str_entry in enumerate( l_str_entry ) : # for each entry of the current axis
+                                int_entry = int_entry + int_pos_component # retrieve a corrected integer representation of the current entry 
+                                # add the str_entry to the combined axis (if it does not exist)
+                                if str_entry not in dict_str_entry_to_int_entry :
+                                    dict_str_entry_to_int_entry[ str_entry ] = int_entry_new_combined # add the str_entry to the combined axis
+                                    int_entry_new_combined += 1 # update 'int_entry_new_combined'
+                                dict_index_mapping_interleaved[ dict_str_entry_to_int_entry[ str_entry ] ] = int_entry # retrieve int_entry of combined axis --> int_entry of individual axis mapping
+                            # update 'int_pos_component'
+                            int_pos_component += self.int_max_num_entries_per_batch
+                        l_dict_index_mapping_interleaved.append( dict_index_mapping_interleaved ) # update 'l_dict_index_mapping_interleaved'
+                        l_dict_index_mapping_from_component_to_combined.append( dict( ( dict_index_mapping_interleaved[ int_entry_combined ], int_entry_combined ) for int_entry_combined in dict_index_mapping_interleaved ) ) # retrieve mapping from component to combined axis coordinates
+                        
+                        int_num_records = len( dict_index_mapping_interleaved ) # retrieve the number of mapping records for the current axis object
+                        l_int_num_records.append( int_num_records ) # collect the number of records for the current axis object
+                        # convert 'dict_index_mapping_interleaved' to a numpy array
+                        arr = np.zeros( ( int_num_records, 2 ), dtype = np.float64 )
+                        for i, int_entry_combined in enumerate( dict_index_mapping_interleaved ) :
+                            arr[ i, 0 ] = int_entry_combined
+                            arr[ i, 1 ] = dict_index_mapping_interleaved[ int_entry_combined ]
+                        # write converted array containing the mapping to the zarr object
+                        za[ int_pos_mapping : int_pos_mapping + int_num_records ] = arr
+                        # update 'int_pos_mapping'
+                        int_pos_mapping += int_num_records
+                    
+                    # write collected metadata to the zarr object
+                    dict_metadata = { 'l_int_num_records' : l_int_num_records }
+                    za.attrs[ 'dict_metadata' ] = dict_metadata
+                    
+                    ''' write the combined axis '''
+                    ''' prepare data for the axis object write barcodes and features files to zarr objects '''
+                    # initialize
+                    int_num_entries = len( dict_str_entry_to_int_entry ) # retrieve the number of entries 
+                    index_chunk = 0 # initialize chunk size
+                    int_pos = 0 # initialize the start position
+
+                    # write zarr object for random access of string representation of the entries of the axis object
+                    
+                    num_available_columns_string_representation = self._l_ax[ 0 ].num_available_columns_string_representation # use the number of string representation columns from the first axis object as the number of available string representation columns of the combined axis
+                    za = zarr.open( f'{path_folder}{name_axis}.str.zarr', mode = 'w', shape = ( int_num_entries, num_available_columns_string_representation ), chunks = ( int_num_entries_in_a_chunk, 1 ), dtype = str, synchronizer = zarr.ThreadSynchronizer( ) ) # string object # individual columns will be chucked, so that each column can be retrieved separately.
+
+                    # create a folder to save a chunked string representations
+                    path_folder_str_chunks = f'{path_folder}{name_axis}.str.chunks/'
+                    os.makedirs( path_folder_str_chunks, exist_ok = True )
+                    za_str_chunks = zarr.group( path_folder_str_chunks )
+                    za_str_chunks.attrs[ 'dict_metadata' ] = { 'int_num_entries' : int_num_entries, 'int_num_of_entries_in_a_chunk' : int_num_entries_in_a_chunk } # write essential metadata for str.chunks
+
+                    while int_pos < int_num_entries : # until all entries were processed. 
+                        int_num_entries_chunk = min( int_num_entries_in_a_chunk, int_num_entries - int_pos ) # retrieve the number of entries in a chunk
+                        
+                        arr_str_chunk = np.zeros( ( int_num_entries_chunk, num_available_columns_string_representation ), dtype = object ) # initialize an array containing a chunk of string representations
+
+                        ba_flag_retrieved_chunk = bitarray( int_num_entries_chunk ) # initialize the bitarray of flags indicating which entry has been retrieved.
+                        ba_flag_retrieved_chunk.setall( 0 ) # all entries to False
+                        
+                        for ax, dict_index_mapping_interleaved in zip( self._l_ax, l_dict_index_mapping_interleaved ) : # for each component axis object, retrieve axis object and its mapping dictionary
+                            l_int_entry_combined, l_int_entry_component = [ ], [ ] # initialize list of 'int_entry_combined' and 'int_entry_component' for the current chunk
+                            for int_entry_combined in range( int_pos, min( int_num_entries, int_pos + int_num_entries_in_a_chunk ) ) :
+                                if int_entry_combined in dict_index_mapping_interleaved and not ba_flag_retrieved_chunk[ int_entry_combined - int_pos ] : # if the 'int_entry_combined' exist in the current axis and the data has not been retrieved.
+                                    # collect 'int_entry_component' for the current batch
+                                    l_int_entry_combined.append( int_entry_combined )
+                                    l_int_entry_component.append( dict_index_mapping_interleaved[ int_entry_combined ] )
+                                    # update bitarray mask
+                                    ba_flag_retrieved_chunk[ int_entry_combined - int_pos ] = 1 # indicate that the data for the current entry has been retrieved.
+                            if len( l_int_entry_combined ) > 0 : # if the current chunk for the current axis object contains valid entries 
+                                arr_str_chunk[ np.array( l_int_entry_combined, dtype = int ) - int_pos ] = ax.get_str( l_int_entry_component, np.arange( num_available_columns_string_representation ) ) # correct the coordinates # retrieve string representations and save to the combined array
+                                
+                        sl_chunk = slice( int_pos, min( int_num_entries, int_pos + int_num_entries_in_a_chunk ) )
+                        za[ sl_chunk ] = arr_str_chunk # set str.zarr
+                        # set str.chunks
+                        for index_col, arr_val in enumerate( arr_str_chunk.T ) :
+                            with open( f"{path_folder_str_chunks}{index_chunk}.{index_col}", 'wt' ) as newfile : # similar organization to zarr
+                                newfile.write( _base64_encode( _gzip_bytes( ( '\n'.join( arr_val ) + '\n' ).encode( ) ) ) )
+                        int_pos += int_num_entries_in_a_chunk # update 'int_pos'
+                        index_chunk += 1 # update 'index_chunk'
+                # set attributes
+                self._l_dict_index_mapping_interleaved = l_dict_index_mapping_interleaved # save a list of constructed dictionaries for indices mapping as an attribute
+                self._l_dict_index_mapping_from_component_to_combined = l_dict_index_mapping_from_component_to_combined # save a list of dictionaries mapping component coordinates to those of the combined axis.
+                self._l_dict_index_mapping_from_combined_to_component = self._l_dict_index_mapping_interleaved
+            else :
+                # %% COMBINED-STACKED %%
+                l_dict_index_mapping_from_component_to_combined = [ ] # retrieve component -> combined axis mapping
+                l_dict_index_mapping_from_combined_to_component = [ ] # retrieve combined -> component axis mapping
+                int_pos = 0 # initialize the start position
+                for ax in self._l_ax :
+                    l_dict_index_mapping_from_component_to_combined.append( IndexMappingDictionary( int_length_component_axis = ax.int_num_entries, int_offset = int_pos, flag_component_to_combined = True ) )
+                    l_dict_index_mapping_from_combined_to_component.append( IndexMappingDictionary( int_length_component_axis = ax.int_num_entries, int_offset = int_pos, flag_component_to_combined = False ) )
+                    int_pos += ax.int_num_entries # update 'int_pos'
+                # set attributes
+                self._l_dict_index_mapping_from_component_to_combined = l_dict_index_mapping_from_component_to_combined 
+                self._l_dict_index_mapping_from_combined_to_component = l_dict_index_mapping_from_combined_to_component 
+                
+                # compose/load string representations
+                path_folder_str_rep = f'{path_folder}{name_axis}.str.zarr' # define a folder where string representations will be saved
+                if not zarr_exists( path_folder_str_rep ) : # if the output zarr object does not exists
+                    ''' write the combined axis '''
+                    ''' prepare data for the axis object write barcodes and features files to zarr objects '''
+                    # initialize
+                    int_num_entries = sum( ax.int_num_entries for ax in self._l_ax ) # retrieve the total number of entries in the combined-stacked axis 
+                    index_chunk = 0 # initialize chunk size
+                    int_pos = 0 # initialize the start position
+                    num_available_columns_string_representation = self._l_ax[ 0 ].num_available_columns_string_representation # use the number of string representation columns from the first axis object as the number of available string representation columns of the combined axis
+                    arr_str_rep_buffer = np.zeros( ( int_num_entries_in_a_chunk * 2, num_available_columns_string_representation ), dtype = object ) # set buffer size as 2 * 'int_num_entries_in_a_chunk'
+                    len_arr_str_rep_buffer = 0 # track the number of entries in the buffer 'arr_str_rep_buffer'
+
+                    # write a zarr object for the random access of string representation of the entries of the axis object
+                    za = zarr.open( f'{path_folder}{name_axis}.str.zarr', mode = 'w', shape = ( int_num_entries, num_available_columns_string_representation ), chunks = ( int_num_entries_in_a_chunk, 1 ), dtype = str, synchronizer = zarr.ThreadSynchronizer( ) ) # string object # individual columns will be chucked, so that each column can be retrieved separately.
+
+                    # create a folder to save a chunked string representations (for web application)
+                    path_folder_str_chunks = f'{path_folder}{name_axis}.str.chunks/'
+                    os.makedirs( path_folder_str_chunks, exist_ok = True )
+                    za_str_chunks = zarr.group( path_folder_str_chunks )
+                    za_str_chunks.attrs[ 'dict_metadata' ] = { 'int_num_entries' : int_num_entries, 'int_num_of_entries_in_a_chunk' : int_num_entries_in_a_chunk } # write essential metadata for str.chunks
+
+                    for ax in self._l_ax : # iterate over each axis object 
+                        int_pos_component = 0 # initialize 'int_pos_component' for the iteration of the current axis object
+                        while int_pos_component < ax.int_num_entries : # until all entries of the current component were processed. 
+                            int_num_entries_batch = min( int_num_entries_in_a_chunk, ax.int_num_entries - int_pos_component ) # retrieve the number of entries in a batch (a chunk)
+                            # write zarr object
+                            arr_str_rep_batch = ax.get_str( slice( int_pos_component, int_pos_component + int_num_entries_batch ), np.arange( num_available_columns_string_representation ) ) # retrieve string representations for the current batch
+                            za[ int_pos + int_pos_component : int_pos + int_pos_component + int_num_entries_batch ] = arr_str_rep_batch
+
+                            # update the string representation buffer for 'str.chunks'
+                            arr_str_rep_buffer[ len_arr_str_rep_buffer : len_arr_str_rep_buffer + int_num_entries_batch ] = arr_str_rep_batch
+                            del arr_str_rep_batch
+                            len_arr_str_rep_buffer += int_num_entries_batch # update length of the buffer
+                            # write 'str.chunks'
+                            if len_arr_str_rep_buffer >= int_num_entries_in_a_chunk : # if more than a chunk of data is present in the buffer, write a chunk
+                                for index_col, arr_val in enumerate( arr_str_rep_buffer[ : int_num_entries_in_a_chunk ].T ) :
+                                    with open( f"{path_folder_str_chunks}{index_chunk}.{index_col}", 'wt' ) as newfile : # similar organization to zarr
+                                        newfile.write( _base64_encode( _gzip_bytes( ( '\n'.join( arr_val ) + '\n' ).encode( ) ) ) )
+                                arr_str_rep_buffer[ : int_num_entries_in_a_chunk ] = arr_str_rep_buffer[ int_num_entries_in_a_chunk : ] # remove the values written to the disk as a chunk from the buffer
+                                len_arr_str_rep_buffer -= int_num_entries_in_a_chunk # update length of the buffer
+                                index_chunk += 1 # update 'index_chunk'
+
+                            int_pos_component += int_num_entries_batch # update 'int_pos_component'
+                        int_pos += ax.int_num_entries # update 'int_pos'
+
+                    if len_arr_str_rep_buffer >= 0 : # if buffer is not empty, write the remaining data as a chunk
+                        for index_col, arr_val in enumerate( arr_str_rep_buffer[ : len_arr_str_rep_buffer ].T ) :
+                            with open( f"{path_folder_str_chunks}{index_chunk}.{index_col}", 'wt' ) as newfile : # similar organization to zarr
+                                newfile.write( _base64_encode( _gzip_bytes( ( '\n'.join( arr_val ) + '\n' ).encode( ) ) ) )
+                    del arr_str_rep_buffer
+                    
+                                
         # initialize the mapping dictionaries
         self._dict_str_to_i = None 
         self._dict_i_to_str = None 
-        self._ramdata = ramdata # initialize RamData reference
+        
+        self.meta = ZarrDataFrame( f"{path_folder}{name_axis}.num_and_cat.zdf", l_zdf = list( ax.meta for ax in self._l_ax ) if self._l_ax is not None else None, index_zdf_data_source_when_interleaved = self.index_ax_data_source_when_interleaved, l_dict_index_mapping_interleaved = self._l_dict_index_mapping_interleaved, ba_filter = ba_filter, mode = mode, path_folder_mask = None if path_folder_mask is None else f"{path_folder_mask}{name_axis}.num_and_cat.zdf", flag_is_read_only = self._flag_is_read_only, ** dict_kw_zdf ) # open a ZarrDataFrame with a given filter
+        self.int_num_entries = self.meta._n_rows_unfiltered # retrieve number of entries
+        
         self.filter = ba_filter # set filter
         
         # initialize viewer (coordinate converter, a dictionary for converting coordinates) 
@@ -5512,6 +4956,32 @@ class RamDataAxis( ) :
         self._dict_kw_view = dict_kw_view
         self.dict_change = None # initialize view
         self._dict_change_backup = None
+    @property
+    def index_ax_data_source_when_interleaved( self ) :
+        """ # 2022-08-28 15:11:47 
+        return the index of the axis to retrieve metadata when interleaved
+        """
+        return self._index_ax_data_source_when_interleaved
+    @index_ax_data_source_when_interleaved.setter
+    def index_ax_data_source_when_interleaved( self, index_ax_data_source_when_interleaved ) :
+        """ # 2022-08-28 15:11:47 
+        set the index of the axis to retrieve metadata when interleaved
+        """
+        assert 0 <= index_ax_data_source_when_interleaved < len( self._l_ax ) # check whether the 'index_ax_data_source_when_interleaved' is in a valid range
+        self._index_ax_data_source_when_interleaved = index_ax_data_source_when_interleaved # update 'index_ax_data_source_when_interleaved'
+        self.meta.index_zdf_data_source_when_interleaved = self._index_ax_data_source_when_interleaved # update 'index_zdf_data_source_when_interleaved' of the metadata
+    @property
+    def is_combined( self ) :
+        """ # 2022-08-27 11:35:09 
+        return True if current axis is in 'combined' mode
+        """
+        return self._l_ax is not None
+    @property
+    def is_interleaved( self ) :
+        """ # 2022-08-27 11:35:13 
+        return True if current axis is 'interleaved', 'combined' axis
+        """
+        return self._l_dict_index_mapping_interleaved is not None
     def _convert_to_bitarray( self, ba_filter ) :
         ''' # 2022-08-03 02:21:21 
         handle non-None filter objects and convert these formats to the bitarray filter object
@@ -5612,7 +5082,9 @@ class RamDataAxis( ) :
         
         if ba_filter is not None :
             ba_filter = self._convert_to_bitarray( ba_filter ) # convert mask to bitarray filter
-            ba_filter &= self.all( flag_return_valid_entries_in_the_currently_active_layer = True ) # only use the entries with a valid count data
+            # if current axis object has been attached to RamData object, retrieve intersection with the filter containing active entries
+            if self._ramdata is not None :
+                ba_filter &= self.all( flag_return_valid_entries_in_the_currently_active_layer = True ) # only use the entries with a valid count data
         
         # propagate the filter
         self.meta.filter = ba_filter # change filter of metadata zdf
@@ -5629,10 +5101,16 @@ class RamDataAxis( ) :
         if a filter is not active, return the return value of Axis.all( flag_return_valid_entries_in_the_currently_active_layer = True )
         """
         return self.all( flag_return_valid_entries_in_the_currently_active_layer = True ) if self.filter is None else self.filter
-    def get_str( self, queries, int_index_col = None ) :
-        """ # 2022-08-23 08:53:49 
+    def get_str( self, queries = None, int_index_col = None ) :
+        """ # 2022-08-28 12:28:41 
         get string representations of the queries
+        
+        'queries' : queries (slice, integer indices, bitarray, etc.) of the entries for which string representations will be loaded. if None is given, all entries will be retrieved.
+        'int_index_col' : the index of the column containing string representation to retrieve. if a single integer index is given, retrieve values from a single column. If a list or a tuple of integer indices are given, values of the columns will be retrieved.
         """
+        # retrieve all entries for the 'default' queries
+        if queries is None :
+            queries = slice( None, None )
         # set default value for 'int_index_col'
         if int_index_col is None :
             int_index_col = self.int_index_str_rep
@@ -5696,6 +5174,15 @@ class RamDataAxis( ) :
         """
         self._dict_str_to_i = None
         self._dict_i_to_str = None
+    @property
+    def num_available_columns_string_representation( self ) :
+        """ # 2022-08-28 11:49:04 
+        return the number of columns containing string representations
+        """
+        if not hasattr( self, '_num_available_columns_string_representation' ) : # if the attribute has not been calculated
+            # retrieve the number of available columns containing string representations
+            self._num_available_columns_string_representation = zarr.open( f"{self._path_folder}{self._name_axis}.str.zarr", 'r' ).shape[ 1 ]
+        return self._num_available_columns_string_representation
     @property
     def map_str( self ) :
         """ # 2022-06-25 09:31:32 
@@ -6015,6 +5502,1065 @@ class RamDataAxis( ) :
         
         # return subsampled entries
         return ba_subsampled
+
+''' a class for RAMtx '''
+''' a class for accessing Zarr-backed count matrix data (RAMtx, Random-Access matrix) '''
+class RAMtx( ) :
+    """ # 2022-09-01 00:47:23 
+    This class represent a random-access mtx format for memory-efficient exploration of extremely large single-cell transcriptomics/genomics data.
+    This class use a count matrix data stored in a random read-access compatible format, called RAMtx, enabling exploration of a count matrix with hundreds of millions cells with hundreds of millions of features.
+    Also, the RAMtx format is supports multi-processing, and provide convenient interface for parallel processing of single-cell data
+    Therefore, for exploration of count matrix produced from 'scarab count', which produces dozens of millions of features extracted from both coding and non coding regions, this class provides fast front-end application for exploration of exhaustive data generated from 'scarab count'
+    
+    
+    # 'mode' of RAMtx objects
+    There are three valid 'mode' (or internal structures) for RAMtx object : {'dense' or 'sparse_for_querying_barcodes', 'sparse_for_querying_features'}
+    
+    (sparse_for_querying_barcodes) <---> (dense) <---> (sparse_for_querying_features)
+    *fast barcode data retrieval                       *fast feature data retrieval
+    
+    As shown above, RAMtx objects are interconvertible. Of note, for the converion between sparse ramtx sorted by barcodes and features, 'dense' ramtx object should be used in the conversion process.
+    - dense ramtx object can be used to retrieve data of a single barcode or feature (with moderate efficiency)
+    - sparse ramtx object can only be used data of either a single barcode ('sparse_for_querying_barcodes') or a single feature ('sparse_for_querying_features') very efficiently.
+    
+    # 2022-08-30 11:44:49 
+    'combined' mode was initialized.
+    
+    
+    arguments:
+    'path_folder_ramtx' : a folder containing RAMtx object
+    'ba_filter_features' : a bitarray filter object for features. active element is marked by 1 and inactive element is marked by 0
+    'ba_filter_barcodes' : a bitarray filter object for barcodes. active element is marked by 1 and inactive element is marked by 0
+    'dtype_of_feature_and_barcode_indices' : dtype of feature/barcode indices 
+    'dtype_of_values' : dtype of values. 
+    'int_num_cpus' : the number of processes that will be used for random accessing of the data
+    'mode' : file mode. 'r' for read-only mode and 'a' for a mode allowing modifications
+    'flag_is_read_only' : read-only status of RamData
+    'path_folder_ramtx_mask' : a local (local file system) path to the mask of the RAMtx object that allows modifications to be written without modifying the source. if a valid local path to a mask is given, all modifications will be written to the mask
+    'is_for_querying_features' : a flag for indicating whether the current RAMtx will be used for querying features. for sparse matrix, this attribute will be fixed. However, for dense matrix, this atrribute can be changed any time.
+    'int_total_number_of_values_in_a_batch_for_dense_matrix' : the total number of values that will be loaded in dense format for each minibatch (subbatch) when retrieving sparse data from the dense matrix using multiple number of processes. this setting can be changed later
+    
+    === arguments for combined RAMtx === 
+    'l_rtx' : list of component RAMtx object for the 'combined' mode. to disable 'combined' mode, set this argument to None
+    
+    === arguments for component RAMtx === 
+    dict_index_mapping_from_component_to_combined_bc : mapping dictionary-line object.
+    dict_index_mapping_from_component_to_combined_ft : mapping dictionary-line object.
+    dict_index_mapping_from_combined_to_component_bc : mapping dictionary-line object.
+    dict_index_mapping_from_combined_to_component_ft : mapping dictionary-line object.
+    
+    
+    """
+    def __init__( self, path_folder_ramtx, l_rtx : Union[ list, tuple, None ] = None, dict_index_mapping_from_component_to_combined_bc : Union[ dict, None ] = None, dict_index_mapping_from_component_to_combined_ft : Union[ dict, None ] = None, dict_index_mapping_from_combined_to_component_bc : Union[ dict, None ] = None, dict_index_mapping_from_combined_to_component_ft : Union[ dict, None ] = None, ramdata = None, dtype_of_feature_and_barcode_indices = np.uint32, dtype_of_values = np.float64, int_num_cpus : int = 1, verbose : bool = False, flag_debugging : bool = False, mode : str = 'a', flag_is_read_only : bool = False, path_folder_ramtx_mask : Union[ str, None ] = None, is_for_querying_features : bool = True, int_total_number_of_values_in_a_batch_for_dense_matrix : int = 10000000 ) :
+        """ # 2022-07-31 00:49:59 
+        """
+        # set attributes 
+        self._dtype_of_feature_and_barcode_indices = dtype_of_feature_and_barcode_indices
+        self._dtype_of_values = dtype_of_values
+        self._path_folder_ramtx = path_folder_ramtx
+        self.verbose = verbose 
+        self.flag_debugging = flag_debugging
+        self.int_num_cpus = int_num_cpus
+        self._ramdata = ramdata
+        self._mode = mode
+        self._flag_is_read_only = flag_is_read_only
+        self._path_folder_ramtx_mask = path_folder_ramtx_mask
+        self.int_total_number_of_values_in_a_batch_for_dense_matrix = int_total_number_of_values_in_a_batch_for_dense_matrix
+        self._l_rtx = l_rtx
+        # mapping dictionaries
+        self._dict_index_mapping_from_component_to_combined_bc = dict_index_mapping_from_component_to_combined_bc
+        self._dict_index_mapping_from_component_to_combined_ft = dict_index_mapping_from_component_to_combined_ft
+        self._dict_index_mapping_from_combined_to_component_ft = dict_index_mapping_from_combined_to_component_ft
+        self._dict_index_mapping_from_combined_to_component_bc = dict_index_mapping_from_combined_to_component_bc
+        
+        # compose metadata for the combined ramtx
+        # %% COMBINED %%
+        if self.is_combined :
+            ''' write metadata '''
+            if not zarr_exists( path_folder_ramtx ) :
+                self._root = zarr.open( path_folder_ramtx, 'w' )
+                # compose metadata
+                self._dict_metadata = { 
+                    'path_folder_mtx_10x_input' : None,
+                    'mode' : 'combined',
+                    'str_completed_time' : TIME_GET_timestamp( True ),
+                    'int_num_features' : ramdata.ft.int_num_entries,
+                    'int_num_barcodes' : ramdata.bc.int_num_entries,
+                    'int_num_records' : sum( rtx._int_num_records for rtx in l_rtx if rtx is not None ), # calculate the total number of records
+                    'version' : _version_,
+                }
+                self._root.attrs[ 'dict_metadata' ] = self._dict_metadata # write the metadata
+            
+            # set component indices mapping dictionaries
+            for rtx, dict_index_mapping_from_component_to_combined_bc, dict_index_mapping_from_component_to_combined_ft, dict_index_mapping_from_combined_to_component_bc, dict_index_mapping_from_combined_to_component_ft in zip( l_rtx, ramdata.bc._l_dict_index_mapping_from_component_to_combined, ramdata.ft._l_dict_index_mapping_from_component_to_combined, ramdata.bc._l_dict_index_mapping_from_combined_to_component, ramdata.ft._l_dict_index_mapping_from_combined_to_component ) :
+                if rtx is not None :
+                    # set mapping dictionaries to each rtx component
+                    rtx._dict_index_mapping_from_component_to_combined_ft = dict_index_mapping_from_component_to_combined_ft
+                    rtx._dict_index_mapping_from_component_to_combined_bc = dict_index_mapping_from_component_to_combined_bc
+                    rtx._dict_index_mapping_from_combined_to_component_ft = dict_index_mapping_from_combined_to_component_ft
+                    rtx._dict_index_mapping_from_combined_to_component_bc = dict_index_mapping_from_combined_to_component_bc
+            
+        # read metadata
+        self._root = zarr.open( path_folder_ramtx, 'a' )
+        self._dict_metadata = self._root.attrs[ 'dict_metadata' ] # retrieve the metadata
+        
+        # parse the metadata of the RAMtx object
+        self._int_num_features, self._int_num_barcodes, self._int_num_records = self._dict_metadata[ 'int_num_features' ], self._dict_metadata[ 'int_num_barcodes' ], self._dict_metadata[ 'int_num_records' ]
+        
+        # set filters using RamData
+        self.ba_filter_features = ramdata.ft.filter if ramdata is not None else None
+        self.ba_filter_barcodes = ramdata.bc.filter if ramdata is not None else None
+        
+
+        if not self.is_combined :
+            # open zarr objects
+            self._is_sparse = self.mode != 'dense' # retrieve a flag indicating whether ramtx is dense
+            if self.is_sparse :
+                self._is_for_querying_features = self._dict_metadata[ 'flag_ramtx_sorted_by_id_feature' ] # for sparse matrix, this attribute is fixed
+                # open Zarr object containing matrix and matrix indices
+                self._za_mtx_index = zarr.open( f'{self._path_folder_ramtx}matrix.index.zarr', 'r' )
+                self._za_mtx = zarr.open( f'{self._path_folder_ramtx}matrix.zarr', 'r' )
+            else : # dense matrix
+                self.is_for_querying_features = is_for_querying_features # set this attribute
+                self._za_mtx = zarr.open( f'{self._path_folder_ramtx}matrix.zarr', 'r' )
+        else :
+            # %% COMBINED %%
+            self._is_sparse = None
+            self._za_mtx = None
+            self._is_for_querying_features = list( rtx for rtx in l_rtx if rtx is not None )[ 0 ].is_for_querying_features # use 'is_for_querying_features' of the first valid RAMtx component
+    @property
+    def is_component( self ) :
+        """ # 2022-08-30 11:46:15 
+        return True if current RAMtx is one of the components of a combined RAMtx object
+        """
+        return not ( self._dict_index_mapping_from_component_to_combined_ft is None or self._dict_index_mapping_from_component_to_combined_bc is None )
+    @property
+    def is_combined( self ) :
+        """ # 2022-08-30 11:46:15 
+        return True if current RAMtx is in 'combined' mode
+        """
+        return self._l_rtx is not None
+    @property
+    def is_sparse( self ) :
+        """ # 2022-08-04 13:59:15 
+        """
+        return self._is_sparse
+    @property
+    def mode( self ) :
+        """ # 2022-07-30 20:13:32 
+        """
+        return self._dict_metadata[ 'mode' ]
+    @property
+    def _path_folder_ramtx_modifiable( self ) :
+        """ # 2022-07-21 09:04:28 
+        return the path to the modifiable RAMtx object
+        """
+        return ( None if self._flag_is_read_only else self._path_folder_ramtx ) if self._path_folder_ramtx_mask is None else self._path_folder_ramtx_mask
+    @property
+    def ba_active_entries( self ) :
+        """ # 2022-08-04 23:42:23 
+        return a bitarray filter of the indexed axis where all the entries with valid count data is marked '1'
+        """
+        # retrieve axis of current ramtx
+        axis = 'features' if self.is_for_querying_features else 'barcodes'
+        
+        # skip if result is already available
+        flag_available = False # initialize
+        for path_folder in [ self._path_folder_ramtx, self._path_folder_ramtx_modifiable ] :
+            if path_folder is not None and zarr_exists( f'{path_folder}matrix.{axis}.active_entries.zarr/' ) :
+                path_folder_zarr = f"{path_folder}matrix.{axis}.active_entries.zarr/" # define an existing zarr object path
+                flag_available = True
+        if not flag_available and self._path_folder_ramtx_modifiable is not None : # if zarr object does not exists and modifiable ramtx path is available
+            # try constructing the zarr object 
+            path_folder_zarr = f"{self._path_folder_ramtx_modifiable}matrix.{axis}.active_entries.zarr/" # define zarr object path
+            self.survey_number_of_records_for_each_entry( ) # survey the number of records for each entry using default settings
+            if not zarr_exists( path_folder_zarr ) : # if the zarr object still does not exists
+                # create a full bitarray mask as a fall back
+                ba = bitarray( self.len_axis_for_querying )
+                ba.setall( 1 )
+                return ba
+            
+        za = zarr.open( path_folder_zarr, mode = 'r', synchronizer = zarr.ThreadSynchronizer( ) ) # open zarr object of the current RAMtx object
+        ba = bk.BA.to_bitarray( za[ : ] ) # return the boolean array of active entries as a bitarray object
+
+        # if metadata of the number of active entries is not available, update the metadata
+        if 'n_active_entries' in self._dict_metadata :
+            self._n_active_entries = ba.count( ) # calculate the number of active entries
+
+            # update metadata
+            self._dict_metadata[ 'n_active_entries' ] = self._n_active_entries 
+            self._save_metadata_( )
+
+        # return the mask
+        return ba
+    def _get_path_folder_number_of_records_for_each_entry( self, axis : Literal[ 'barcodes', 'features' ] ) :
+        """ # 2022-08-31 13:55:13 
+        return path of the folder where number of records for each entry resides for the given entry.
+        if the records are not available, None will be returned.
+        """
+        # skip if result is already available
+        flag_res_available = False # initialize
+        for path_folder in [ self._path_folder_ramtx, self._path_folder_ramtx_modifiable ] :
+            if path_folder is not None and zarr_exists( f'{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/' ) :
+                flag_res_available = True
+                break
+        return path_folder if flag_res_available else None # if result is not available, returns None. if result is available, return the folder where the result reside
+    def survey_number_of_records_for_each_entry( self, axes = [ 'barcodes', 'features' ], int_num_chunks_in_a_batch_for_index_of_sparse_matrix = 100, int_num_chunks_in_a_batch_for_axis_for_querying_dense = 1, int_total_number_of_values_in_a_batch_for_dense_matrix = None, int_size_chunk = 1000, flag_ignore_dense = False, int_num_threads = 20 ) :
+        """ # 2022-09-01 00:12:18 
+        survey the number of records for each entry in the existing axis
+        'axes' : a list of axes to use for surveying the number of records for each entry
+        
+        === batch size control ===
+        'int_num_chunks_in_a_batch_for_index_of_sparse_matrix' : the number of chunks of the index zarr object to be processed once for sparse matrix RAMtx formats
+        'int_num_chunks_in_a_batch_for_axis_for_querying_dense' : the number of chunks in the axis for the axis for querying that will be processed together in a batch for each process
+        'int_total_number_of_values_in_a_batch_for_dense_matrix' : the total number of values that will be loaded during the suvery for each process for surveying dense matrix with multiple number of processes.
+        
+        'int_size_chunk' : chunk size for the output zarr objects
+        'flag_ignore_dense' : if True, does not survey the dense ramtx.
+        'int_num_threads' : the number of threads for surveying
+        """
+        # handle combined mode
+        if self.is_combined :
+            # %% COMBINED %%
+            # (run the current function in individual ramdata)
+            for rtx in self._l_rtx :
+                if rtx is None :
+                    continue
+                rtx.survey_number_of_records_for_each_entry( axes = axes, int_num_chunks_in_a_batch_for_index_of_sparse_matrix = int_num_chunks_in_a_batch_for_index_of_sparse_matrix, int_num_chunks_in_a_batch_for_axis_for_querying_dense = int_num_chunks_in_a_batch_for_axis_for_querying_dense, int_total_number_of_values_in_a_batch_for_dense_matrix = int_total_number_of_values_in_a_batch_for_dense_matrix, int_size_chunk = int_size_chunk, flag_ignore_dense = flag_ignore_dense, int_num_threads = int_num_threads )
+        
+        # use default value when 'int_total_number_of_values_in_a_batch_for_dense_matrix' is None
+        if int_total_number_of_values_in_a_batch_for_dense_matrix is None :
+            int_total_number_of_values_in_a_batch_for_dense_matrix = self.int_total_number_of_values_in_a_batch_for_dense_matrix
+        
+        # summarized results of individual component RAMtx for 'combined' RAMtx
+        if self.is_combined :
+            # %% COMBINED %%
+            # (combine result and write summary for the combined RAMtx)
+            axis = 'features' if self.is_for_querying_features else 'barcodes' # retrieve axis for the current combined RAMtx object (will be always the axis for querying)
+            if self._ramdata is None : # if current combined ramtx is not attached to the ramdata, exit
+                return
+            if self._get_path_folder_number_of_records_for_each_entry( axis = axis ) is not None : # if the output already exists, exit
+                return
+            if self._path_folder_ramtx_modifiable is None : # if modifiable RAMtx does not exist, exit
+                return
+            ax = self._ramdata.ft if self.is_for_querying_features else self._ramdata.bc # retrieve axis for querying
+            len_axis = ax.int_num_entries # retrieve the length of the axis for querying
+            flag_is_interleaved = ax.is_interleaved # retrieve flag indicating whether the current axis for querying is interleaved.
+            int_num_entries_in_a_batch = int_num_chunks_in_a_batch_for_index_of_sparse_matrix * int_size_chunk # retrieve the number of entries in a batch
+            
+            # open zarr objects
+            za = zarr.open( f'{self._path_folder_ramtx_modifiable}matrix.{axis}.number_of_records_for_each_entry.zarr/', mode = 'w', shape = ( len_axis, ), chunks = ( int_size_chunk, ), dtype = np.float64, synchronizer = zarr.ThreadSynchronizer( ) ) # open zarr object of the current RAMtx object
+            za_bool = zarr.open( f"{self._path_folder_ramtx_modifiable}matrix.{axis}.active_entries.zarr/", mode = 'w', shape = ( len_axis, ), chunks = ( int_size_chunk, ), dtype = bool, synchronizer = zarr.ThreadSynchronizer( ) ) # open zarr object of the current RAMtx object
+            if flag_is_interleaved :
+                # %% COMBINED - INTERLEAVED %%
+                int_pos = 0
+                while int_pos < len_axis :
+                    # initialize batch
+                    st_batch, en_batch = int_pos, min( len_axis, int_pos + int_num_entries_in_a_batch )
+                    int_num_entries_batch = en_batch - st_batch # retrieve the number of entries in a batch
+                    arr_num_records = np.zeros( int_num_entries_batch, dtype = float )
+                    arr_num_active = np.zeros( int_num_entries_batch, dtype = bool )
+
+                    for rtx, dict_index_mapping_from_combined_to_component in zip( self._l_rtx, ax._l_dict_index_mapping_from_combined_to_component ) :
+                        if rtx is None : # ignore invalid rtx
+                            continue
+                        # open zarr objects of the current component RAMtx 
+                        path_folder = rtx._get_path_folder_number_of_records_for_each_entry( axis = axis ) 
+                        assert path_folder is not None # the ramtx object should have the summary result for the current axis
+                        za_component = zarr.open( f'{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/', mode = 'r' ) 
+                        za_bool_component = zarr.open( f"{path_folder}matrix.{axis}.active_entries.zarr/", mode = 'r' ) # open zarr object of the current RAMtx object
+
+                        # retrieve coordinate for the current batch for the current component
+                        l_int_entry_combined_batch, l_int_entry_component_batch = [ ], [ ] # initialize list of entries for a batch
+                        for int_entry_combined in range( st_batch, en_batch ) :
+                            if int_entry_combined in dict_index_mapping_from_combined_to_component :
+                                l_int_entry_combined_batch.append( int_entry_combined )
+                                l_int_entry_component_batch.append( dict_index_mapping_from_combined_to_component[ int_entry_combined ] )
+
+                        # update data for the batch
+                        if len( l_int_entry_combined_batch ) > 0 :
+                            arr_num_records[ l_int_entry_combined_batch ] += za_component.get_coordinate_selection( l_int_entry_component_batch )
+                            arr_num_active[ l_int_entry_combined_batch ] += za_bool_component.get_coordinate_selection( l_int_entry_component_batch )
+                    # write result for the batch
+                    za[ st_batch : en_batch ] = arr_num_records
+                    za_bool[ st_batch : en_batch ] = arr_num_active
+                    int_pos += int_num_entries_in_a_batch # update 'int_pos'
+            else :
+                # %% COMBINED - STACKED %%
+                int_pos_combined = 0 # initialize
+                for rtx, ax_component, dict_index_mapping_from_combined_to_component in zip( self._l_rtx, ax._l_ax, ax._l_dict_index_mapping_from_combined_to_component ) :
+                    if rtx is not None : # if rtx is valid
+                        int_pos_component = 0 # initialize component iteration
+                        # open zarr objects of the current component RAMtx 
+                        path_folder = rtx._get_path_folder_number_of_records_for_each_entry( axis = axis ) 
+                        assert path_folder is not None # the ramtx object should have the summary result for the current axis
+                        za_component = zarr.open( f'{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/', mode = 'r' ) 
+                        za_bool_component = zarr.open( f"{path_folder}matrix.{axis}.active_entries.zarr/", mode = 'r' ) # open zarr object of the current RAMtx object
+                        
+                        while int_pos_component < ax_component.int_num_entries :
+                            st_component, en_component = int_pos_component, min( ax_component.int_num_entries, int_pos_component + int_num_entries_in_a_batch )
+                            int_num_entries_in_a_batch = en_component - st_component
+                            
+                            # write summary for combined ramtx
+                            za[ int_pos_combined + st_component : int_pos_combined + en_component ] = za_component[ st_component : en_component ]
+                            za_bool[ int_pos_combined + st_component : int_pos_combined + en_component ] = za_bool_component[ st_component : en_component ]
+                            
+                            int_pos_component += int_num_entries_in_a_batch # update 'int_pos_component'
+                    int_pos_combined += ax_component.int_num_entries # update 'int_pos_combined'
+            return
+        
+        # for each axis 
+        for axis in axes :  
+            # check validity of the axis name
+            if axis not in { 'barcodes', 'features' } :
+                continue
+            flag_axis_is_barcode = axis == 'barcodes'
+            # skip if result is already available
+            flag_res_already_available = False # initialize
+            for path_folder in [ self._path_folder_ramtx, self._path_folder_ramtx_modifiable ] :
+                if path_folder is not None and zarr_exists( f'{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/' ) :
+                    flag_res_already_available = True
+                    break
+            if flag_res_already_available :
+                continue
+                
+            # if no modifiable ramtx object is available, exit
+            if self._path_folder_ramtx_modifiable is None :
+                continue                
+
+            # if the sparse matrix not for querying with the current axis, continue
+            if self.is_sparse and axis not in self.mode : 
+                continue
+            
+            # ignore dense ramtx object if 'flag_ignore_dense' is True
+            if flag_ignore_dense and not self.is_sparse :
+                continue
+            
+            # perform survey
+            len_axis = self._int_num_barcodes if flag_axis_is_barcode else self._int_num_features # retrieve the length of the axis for querying
+            
+            # open zarr objects
+            za = zarr.open( f'{self._path_folder_ramtx_modifiable}matrix.{axis}.number_of_records_for_each_entry.zarr/', mode = 'w', shape = ( len_axis, ), chunks = ( int_size_chunk, ), dtype = np.float64, synchronizer = zarr.ThreadSynchronizer( ) ) # open zarr object of the current RAMtx object
+            za_bool = zarr.open( f"{self._path_folder_ramtx_modifiable}matrix.{axis}.active_entries.zarr/", mode = 'w', shape = ( len_axis, ), chunks = ( int_size_chunk, ), dtype = bool, synchronizer = zarr.ThreadSynchronizer( ) ) # open zarr object of the current RAMtx object
+            
+            # perform survey
+            # start worker
+            def __write_result( pipe_receiver ) :
+                """ # 2022-08-16 11:20:34 
+                write survey results as zarr objects
+                """
+                while True :
+                    l_r = pipe_receiver.recv( )
+                    if l_r is None :
+                        break
+                    int_num_entries = sum( len( r[ 1 ] ) for r in l_r ) # retrieve the total number of entries in the 'l_r'
+                    pos = 0 # initialize 
+                    arr_coord_combined, arr_num_records_combined = np.zeros( int_num_entries, dtype = np.int64 ), np.zeros( int_num_entries, dtype = np.int64 )
+                    for r in l_r :
+                        sl, arr_num_records = r # parse r
+                        int_num_entries_in_r = len( arr_num_records )
+                        arr_coord_combined[ pos : pos + int_num_entries_in_r ] = np.arange( sl.start, sl.stop ) # update 'arr_coord_combined'
+                        arr_num_records_combined[ pos : pos + int_num_entries_in_r ] = arr_num_records # update 'arr_coord_combined'
+                        pos += int_num_entries_in_r # update 'pos'
+                    del l_r, r
+                    
+                    za.set_coordinate_selection( ( arr_coord_combined, ), arr_num_records_combined ) # save the number of records 
+                    za_bool.set_coordinate_selection( ( arr_coord_combined, ), arr_num_records_combined > 0 ) # active entry is defined by finding entries with at least one count record
+                    del arr_coord_combined, arr_num_records_combined
+            pipe_sender, pipe_receiver = mp.Pipe( )
+            p = mp.Process( target = __write_result, args = ( pipe_receiver, ) )
+            p.start( )
+            ns = { 'pipe_sender' : pipe_sender, 'l_buffer' : [ ], 'int_size_buffer' : 20 } # a namespace that will be shared between different scopes
+            
+            if self.is_sparse : # survey for sparse matrix
+                """ %% Sparse matrix %% """
+                # surveying on the axis of the sparse matrix
+                int_num_entries_processed = 0
+                int_num_entries_to_retrieve = int( self._za_mtx_index.chunks[ 0 ] * int_num_chunks_in_a_batch_for_index_of_sparse_matrix )
+                while int_num_entries_processed < len_axis :
+                    sl = slice( int_num_entries_processed, min( len_axis, int_num_entries_processed + int_num_entries_to_retrieve ) )
+                    arr_num_records = self._za_mtx_index[ sl ][ :, 1 ] - self._za_mtx_index[ sl ][ :, 0 ] # retrieve the number of records
+                    int_num_entries_processed += int_num_entries_to_retrieve # update the position
+                    # flush buffer
+                    ns[ 'l_buffer' ].append( ( sl, arr_num_records ) )
+                    if len( ns[ 'l_buffer' ] ) >= ns[ 'int_size_buffer' ] :
+                        ns[ 'pipe_sender' ].send( ns[ 'l_buffer' ] ) # send result to worker
+                        ns[ 'l_buffer' ] = [ ] # initialize the buffer
+                    del arr_num_records
+            else : # survey for dense matrix (multi-processed)
+                """ %% Dense matrix %% """
+                # prepare
+                len_axis_secondary = self._int_num_features if flag_axis_is_barcode else self._int_num_barcodes # retrieve the length of the axis not for querying
+                
+                # retrieve chunk size for each axis
+                int_size_chunk_axis_for_querying, int_size_chunk_axis_not_for_querying = self._za_mtx.chunks[ 0 if flag_axis_is_barcode else 1 ], self._za_mtx.chunks[ 1 if flag_axis_is_barcode else 0 ] 
+                
+                # retrieve entries for each axis for batch and a subbatch
+                int_num_entries_in_a_batch_in_axis_for_querying = int_size_chunk_axis_for_querying * int_num_chunks_in_a_batch_for_axis_for_querying_dense
+                int_num_entries_in_a_subbatch_in_axis_not_for_querying = max( 1, int( np.floor( int_total_number_of_values_in_a_batch_for_dense_matrix / int_num_entries_in_a_batch_in_axis_for_querying ) ) )
+                    
+                def __gen_batch( ) :
+                    """ # 2022-08-15 20:16:51 
+                    generate batch on the primary axis
+                    """
+                    # initialize looping through axis for querying (primary axis)
+                    int_num_entries_processed_in_axis_for_querying = 0
+                    while int_num_entries_processed_in_axis_for_querying < len_axis :
+                        sl = slice( int_num_entries_processed_in_axis_for_querying, min( len_axis, int_num_entries_processed_in_axis_for_querying + int_num_entries_in_a_batch_in_axis_for_querying ) ) # retrieve a slice along the primary axis
+                        yield { 'sl' : sl, 'int_num_entries_processed_in_axis_for_querying' : int_num_entries_processed_in_axis_for_querying }
+                        int_num_entries_processed_in_axis_for_querying += int_num_entries_in_a_batch_in_axis_for_querying # update the position
+                def __process_batch( batch, pipe_result_sender ) :
+                    """ # 2022-08-15 20:46:05 
+                    process batches containing entries on the primary axis
+                    """
+                    # parse batch
+                    sl, int_num_entries_processed_in_axis_for_querying = batch[ 'sl' ], batch[ 'int_num_entries_processed_in_axis_for_querying' ]
+                    
+                    # initialize looping through axis not for querying (secondary axis)
+                    int_num_entries_processed_in_axis_not_for_querying = 0
+                    arr_num_records = np.zeros( sl.stop - sl.start, dtype = np.int64 ) # initialize the list of the number of records for the entries in the current batch
+                    while int_num_entries_processed_in_axis_not_for_querying < len_axis_secondary :
+                        sl_secondary = slice( int_num_entries_processed_in_axis_not_for_querying, min( len_axis_secondary, int_num_entries_processed_in_axis_not_for_querying + int_num_entries_in_a_subbatch_in_axis_not_for_querying ) ) # retrieve a slice along the secondary axis
+                        arr_num_records += ( ( self._za_mtx.get_orthogonal_selection( ( sl, sl_secondary ) ).T if flag_axis_is_barcode else self._za_mtx.get_orthogonal_selection( ( sl_secondary, sl ) ) ) > 0 ).sum( axis = 0 ) # update 'arr_num_records'
+                        int_num_entries_processed_in_axis_not_for_querying += int_num_entries_in_a_subbatch_in_axis_not_for_querying # update the position
+                    # send the result
+                    pipe_result_sender.send( ( sl, arr_num_records ) )
+                def __post_process_batch( res ) :
+                    """ # 2022-08-15 21:03:59 
+                    process result from a batch
+                    """
+                    sl, arr_num_records = res # parse the result
+                    # flush buffer
+                    ns[ 'l_buffer' ].append( ( sl, arr_num_records ) )
+                    if len( ns[ 'l_buffer' ] ) >= ns[ 'int_size_buffer' ] :
+                        ns[ 'pipe_sender' ].send( ns[ 'l_buffer' ] ) # send result to worker
+                        ns[ 'l_buffer' ] = [ ] # initialize the buffer
+                    
+                # process batch by batch
+                bk.Multiprocessing_Batch( gen_batch = __gen_batch( ), process_batch = __process_batch, post_process_batch = __post_process_batch, int_num_threads = int_num_threads )
+                    
+            # flush the buffer
+            if len( ns[ 'l_buffer' ] ) > 0 :
+                pipe_sender.send( ns[ 'l_buffer' ] ) # send result to worker
+            # dismiss the worker
+            pipe_sender.send( None )
+            p.join( )
+    def _save_metadata_( self ) :
+        ''' # 2022-07-31 00:40:33 
+        a method for saving metadata to the disk 
+        '''
+        if not self._flag_is_read_only : # update metadata only when the current RamData object is not read-only
+            if hasattr( self, '_dict_metadata' ) : # if metadata has been loaded
+                # convert 'columns' to list before saving attributes
+                self._root.attrs[ 'dict_metadata' ] = self._dict_metadata # update metadata
+    @property
+    def n_active_entries( self ) :
+        ''' # 2022-08-30 13:45:34 
+        calculate the number of active entries
+        '''
+        if self.is_combined :
+            # %% COMBINED %%
+            return sum( rtx.n_active_entries for rtx in self._l_rtx ) # return the number of active entries of the combined ramtx object
+        else :
+            # calculate the number of active entries if it has not been calculated.
+            if not 'n_active_entries' in self._dict_metadata :
+                self.ba_active_entries
+            return self._dict_metadata[ 'n_active_entries' ] if 'n_active_entries' in self._dict_metadata else self.len_axis_for_querying # if the number of active entries cannot be calculated, return the number of all entries
+    def __repr__( self ) :
+        return f"<RAMtx object ({self.mode}) for querying '{'features' if self.is_for_querying_features else  'barcodes'}' containing {self._int_num_records} records of {self._int_num_features} features X {self._int_num_barcodes} barcodes\n\tRAMtx path: {self._path_folder_ramtx}>"
+    @property
+    def ba_filter_features( self ) :
+        ''' # 2022-06-23 17:05:55 
+        returns 'ba_filter'
+        '''
+        return self._ba_filter_features
+    @ba_filter_features.setter
+    def ba_filter_features( self, ba_filter ) :
+        """ # 2022-06-23 17:06:36 
+        check whether the filter is valid
+        """
+        if ba_filter is not None :
+            assert len( ba_filter ) == self._int_num_features
+        self._ba_filter_features = ba_filter
+    @property
+    def ba_filter_barcodes( self ) :
+        ''' # 2022-06-23 17:18:56 
+        returns 'ba_filter'
+        '''
+        return self._ba_filter_barcodes
+    @ba_filter_barcodes.setter
+    def ba_filter_barcodes( self, ba_filter ) :
+        """ # 2022-06-23 17:19:00 
+        check whether the filter is valid
+        """
+        if ba_filter is not None :
+            assert len( ba_filter ) == self._int_num_barcodes
+        self._ba_filter_barcodes = ba_filter
+    @property
+    def is_for_querying_features( self ) :
+        """ # 2022-07-30 20:37:02 
+        """
+        return self._is_for_querying_features
+    @is_for_querying_features.setter
+    def is_for_querying_features( self, flag ) :
+        """ # 2022-07-30 20:37:37 
+        """
+        if self.is_sparse : # if current RAMtx is in sparse format, this property is fixed
+            return 
+        self._is_for_querying_features = flag # update property
+    @property
+    def flag_ramtx_sorted_by_id_feature( self ) :
+        ''' # 2022-06-23 09:06:51 
+        retrieve 'flag_ramtx_sorted_by_id_feature' setting from the RAMtx metadata
+        '''
+        return self._dict_metadata[ 'flag_ramtx_sorted_by_id_feature' ] if self.is_sparse else None
+    @property
+    def len_axis_for_querying( self ) :
+        ''' # 2022-06-23 09:08:44 
+        retrieve number of elements of the indexed axis
+        '''
+        return self._int_num_features if self.is_for_querying_features else self._int_num_barcodes
+    @property
+    def len_axis_not_for_querying( self ) :
+        ''' # 2022-06-23 09:08:44 
+        retrieve number of elements of the not indexed axis
+        '''
+        return self._int_num_barcodes if self.is_for_querying_features else self._int_num_features
+    @property
+    def axis_for_querying( self ) :
+        """
+        # 2022-06-30 21:45:48 
+        return 'Axis' object of the indexed axis
+        """
+        return None if self._ramdata is None else ( self._ramdata.ft if self.is_for_querying_features else self._ramdata.bc )
+    @property
+    def ba_filter_axis_for_querying( self ) :
+        ''' # 2022-06-23 09:08:44 
+        retrieve filter of the indexed axis
+        '''
+        return self.ba_filter_features if self.is_for_querying_features else self.ba_filter_barcodes
+    def __contains__( self, x ) -> bool :
+        ''' # 2022-06-23 09:13:31 
+        check whether an integer representation of indexed entry is available in the index. if filter is active, also check whether the entry is active '''
+        return ( 0 <= x < self.len_axis_for_querying ) and ( self.ba_filter_axis_for_querying is None or self.ba_filter_axis_for_querying[ x ] ) # x should be in valid range, and if it is, check whether x is an active element in the filter (if filter has been set)
+    def __iter__( self ) :
+        ''' # 2022-06-23 09:13:46 
+        yield each entry in the index upon iteration. if filter is active, ignore inactive elements '''
+        if self.ba_filter_axis_for_querying is None : # if filter is not set, iterate over all elements
+            return iter( range( self.len_axis_for_querying ) )
+        else : # if filter is active, yield indices of active elements only
+            return iter( bk.BA.to_integer_indices( self.ba_filter_axis_for_querying ) )
+    def __getitem__( self, l_int_entry ) : 
+        """ # 2022-08-31 09:21:03 
+        Retrieve data of a given list of entries from RAMtx as lists of values and arrays (i.e. sparse matrix), each value and array contains data of a single 'int_entry' of the indexed axis
+        '__getitem__' can be used to retrieve minimal number of values required to build a sparse matrix or dense matrix from it
+        
+        Returns:
+        l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying, l_arr_value :
+            'l_int_entry_of_axis_for_querying' only contains int_entry of valid entries
+        """      
+        ''' prepare '''
+        # retrieve settings
+        int_total_number_of_values_in_a_batch_for_dense_matrix = self.int_total_number_of_values_in_a_batch_for_dense_matrix
+        
+        # initialize the output data structures
+        l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying, l_arr_value = [ ], [ ], [ ]
+        
+        # wrap in a list if a single entry was queried
+        if isinstance( l_int_entry, ( int, np.int64, np.int32, np.int16, np.int8 ) ) : # check whether the given entry is an integer
+            l_int_entry = [ l_int_entry ]
+        
+        flag_empty_input = len( l_int_entry ) == 0 # retrieve flag indicating empty input
+        
+        # %% COMBINED %% 
+        # translate query entries of the combined ramtx to the entries of a component ramtx
+        dict_index_mapping_from_combined_to_component_axis_for_querying = self._dict_index_mapping_from_combined_to_component_ft if self.is_for_querying_features else self._dict_index_mapping_from_combined_to_component_bc
+        if dict_index_mapping_from_combined_to_component_axis_for_querying is not None :
+            l_int_entry = list( dict_index_mapping_from_combined_to_component_axis_for_querying[ int( int_entry ) ] for int_entry in l_int_entry if int_entry in dict_index_mapping_from_combined_to_component_axis_for_querying )
+        
+        ''' retrieve filters '''
+        is_for_querying_features = self.is_for_querying_features
+        ba_filter_axis_for_querying, ba_filter_not_axis_for_querying = ( self.ba_filter_features, self.ba_filter_barcodes ) if is_for_querying_features else ( self.ba_filter_barcodes, self.ba_filter_features )
+            
+        ''' filter 'int_entry', if a filter has been set '''
+        ''' handle when empty 'l_int_entry' has been given and filter has been set  '''
+        if ba_filter_axis_for_querying is not None :
+            l_int_entry = bk.BA.to_integer_indices( ba_filter_axis_for_querying ) if flag_empty_input else list( int_entry for int_entry in l_int_entry if ba_filter_axis_for_querying[ int_entry ] ) # filter 'l_int_entry' or use the entries in the given filter (if no int_entry was given, use all active entries in the filter)
+                
+        # if no valid entries are available, return an empty result
+        if len( l_int_entry ) == 0 :
+            return l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying, l_arr_value
+            
+        ''' sort 'int_entry' so that closely located entries can be retrieved together '''
+        # sort indices of entries so that the data access can occur in the same direction across threads
+        int_num_entries = len( l_int_entry )
+        if int_num_entries > 30 : # use numpy sort function only when there are sufficiently large number of indices of entries to be sorted
+            l_int_entry = np.sort( l_int_entry )
+        else :
+            l_int_entry = sorted( l_int_entry )
+        
+        """
+        retrieve data from RAMtx data structure
+        """
+        # handle combined ramtx 
+        if self.is_combined :
+            # %% COMBINED %%
+            # collect data from each component 
+            dict_data = dict( )
+            for rtx in self._l_rtx :
+                if rtx is not None :
+                    for int_entry, arr_int_entry_of_axis_not_for_querying, arr_value in zip( * rtx[ l_int_entry ] ) : # retrieve data from the component
+                        # collect retrieved data
+                        if int_entry not in dict_data :
+                            dict_data[ int_entry ] = { 'l_arr_int_entry_of_axis_not_for_querying' : [ ], 'l_arr_value' : [ ] } # initialize
+                        dict_data[ int_entry ][ 'l_arr_int_entry_of_axis_not_for_querying' ].append( arr_int_entry_of_axis_not_for_querying )
+                        dict_data[ int_entry ][ 'l_arr_value' ].append( arr_value )
+                        
+            # combine data for each entry
+            for int_entry in sorted( dict_data ) : # sort 'int_entry' 
+                l_int_entry_of_axis_for_querying.append( int_entry )
+                l_arr_int_entry_of_axis_not_for_querying.append( np.concatenate( dict_data[ int_entry ][ 'l_arr_int_entry_of_axis_not_for_querying' ] ) )
+                l_arr_value.append( np.concatenate( dict_data[ int_entry ][ 'l_arr_value' ] ) )
+            return l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying, l_arr_value
+        
+        # retrieve flags for dtype conversions
+        flag_change_dtype_of_values = self._za_mtx.dtype != self._dtype_of_values
+        
+        # retrieve dictionaries for changing coordinates
+        dict_change_int_entry_of_axis_for_querying, dict_change_int_entry_of_axis_not_for_querying = None, None # initialize the dictionaries
+        if self._ramdata is not None : # if RAMtx has been attached to RamData, retrieve dictionaries that can be used to change coordinate
+            if self.is_for_querying_features :
+                dict_change_int_entry_of_axis_for_querying = self._ramdata.ft.dict_change
+                dict_change_int_entry_of_axis_not_for_querying = self._ramdata.bc.dict_change
+            else :
+                dict_change_int_entry_of_axis_for_querying = self._ramdata.bc.dict_change
+                dict_change_int_entry_of_axis_not_for_querying = self._ramdata.ft.dict_change
+        # compose a vectorized function for the conversion of int_entries of the non-indexed axis.
+        def f( i ) :
+            return dict_change_int_entry_of_axis_not_for_querying[ i ]
+        vchange_int_entry_of_axis_not_for_querying = np.vectorize( f ) if dict_change_int_entry_of_axis_not_for_querying is not None else None
+        
+        # retrieve dictionaries for changing coordinates for mapping components to combined data
+        dict_change_int_entry_component_of_axis_for_querying, dict_change_int_entry_component_of_axis_not_for_querying = None, None # initialize the dictionaries
+        if self.is_component : # if RAMtx is component of combined RAMtx
+            if self.is_for_querying_features :
+                dict_change_int_entry_component_of_axis_for_querying = self._dict_index_mapping_from_component_to_combined_ft
+                dict_change_int_entry_component_of_axis_not_for_querying = self._dict_index_mapping_from_component_to_combined_bc
+            else :
+                dict_change_int_entry_component_of_axis_for_querying = self._dict_index_mapping_from_component_to_combined_bc
+                dict_change_int_entry_component_of_axis_not_for_querying = self._dict_index_mapping_from_component_to_combined_ft
+        # compose a vectorized function for the conversion of int_entry_component of the non-indexed axis.
+        def f_component( i ) :
+            return dict_change_int_entry_component_of_axis_not_for_querying[ i ]
+        vchange_int_entry_component_of_axis_not_for_querying = np.vectorize( f_component ) if dict_change_int_entry_component_of_axis_not_for_querying is not None else None
+        
+        
+        ''' internal settings '''
+        int_num_chunks_for_a_batch = 2
+        
+        def __retrieve_data( pipe_from_main_thread = None, pipe_to_main_thread = None, flag_as_a_worker = True ) :
+            """ # 2022-08-16 01:54:31 
+            retrieve data as a worker in a worker process or in the main processs (in single-process mode)
+            """
+            ''' initialize '''
+            # handle inputs
+            l_int_entry = pipe_from_main_thread.recv( ) if flag_as_a_worker else pipe_from_main_thread  # receive work if 'flag_as_a_worker' is True or use 'pipe_from_main_thread' as a list of works
+            # for each int_entry, retrieve data and collect records
+            l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying, l_arr_value = [ ], [ ], [ ]
+            
+            def __process_entry( int_entry, arr_int_entry_of_axis_not_for_querying, arr_value ) :
+                """ # 2022-07-30 22:07:46 
+                process retrieve data. apply filter and change coordinates
+                """
+                ''' convert dtypes of retrieved data '''
+                if flag_change_dtype_of_feature_and_barcode_indices : # convert to integer type
+                    arr_int_entry_of_axis_not_for_querying = arr_int_entry_of_axis_not_for_querying.astype( self._dtype_of_feature_and_barcode_indices )
+                if flag_change_dtype_of_values :
+                    arr_value = arr_value.astype( self._dtype_of_values )
+                
+                # convert int_entry_component to int_entry for the non-indexed axis if a mapping has been given
+                if vchange_int_entry_component_of_axis_not_for_querying is not None :
+                    arr_int_entry_of_axis_not_for_querying = vchange_int_entry_component_of_axis_not_for_querying( arr_int_entry_of_axis_not_for_querying )
+                
+                ''' if a filter for not-indexed axis has been set, apply the filter to the retrieved records '''
+                if ba_filter_not_axis_for_querying is not None :
+                    arr_mask = np.zeros( len( arr_int_entry_of_axis_not_for_querying ), dtype = bool ) # initialize the mask for filtering records
+                    for i, int_entry_of_axis_not_for_querying in enumerate( arr_int_entry_of_axis_not_for_querying ) : # iterate through each record
+                        if ba_filter_not_axis_for_querying[ int_entry_of_axis_not_for_querying ] : # check whether the current int_entry is included in the filter
+                            arr_mask[ i ] = True # include the record
+                    # if no valid data exists (all data were filtered out), continue to the next 'int_entry'
+                    if arr_mask.sum( ) == 0 :
+                        return
+
+                    # filter records using the mask
+                    arr_int_entry_of_axis_not_for_querying = arr_int_entry_of_axis_not_for_querying[ arr_mask ]
+                    arr_value = arr_value[ arr_mask ]
+                    
+                # convert int_entry for the non-indexed axis if a mapping has been given
+                if vchange_int_entry_of_axis_not_for_querying is not None :
+                    arr_int_entry_of_axis_not_for_querying = vchange_int_entry_of_axis_not_for_querying( arr_int_entry_of_axis_not_for_querying )
+
+                ''' append the retrieved data to the output results '''
+                # component > combined axis
+                if dict_change_int_entry_component_of_axis_for_querying is not None :
+                    int_entry = dict_change_int_entry_component_of_axis_for_querying[ int_entry ]
+
+                # apply view
+                if dict_change_int_entry_of_axis_for_querying is not None :
+                    int_entry = dict_change_int_entry_of_axis_for_querying[ int_entry ]
+                    
+                l_int_entry_of_axis_for_querying.append( int_entry ) # convert int_entry for the indexed axis if a mapping has been given 
+                l_arr_int_entry_of_axis_not_for_querying.append( arr_int_entry_of_axis_not_for_querying )
+                l_arr_value.append( arr_value )
+            def __fetch_from_sparse_ramtx( l_int_entry_in_a_batch, l_index_in_a_batch ) :
+                """ # 2022-07-30 22:32:14 
+                fetch data from sparse ramtx for a batch
+                """
+                arr_index_of_a_batch = np.array( l_index_in_a_batch ) # convert index of the batch to a numpy array
+                st_batch, en_batch = arr_index_of_a_batch[ 0, 0 ], arr_index_of_a_batch[ - 1, 1 ] # retrieve start and end positions of the current batch
+                arr_int_entry_of_axis_not_for_querying, arr_value = self._za_mtx[ st_batch : en_batch ].T # fetch data from the Zarr object
+                
+                for int_entry, index in zip( l_int_entry_in_a_batch, arr_index_of_a_batch - st_batch ) : # substract the start position of the batch to retrieve the local index
+                    st, en = index
+                    sl = slice( st, en )
+                    __process_entry( int_entry, arr_int_entry_of_axis_not_for_querying[ sl ], arr_value[ sl ] )
+            def __fetch_from_dense_ramtx( l_int_entry_in_a_batch ) :
+                """ # 2022-08-16 01:54:21 
+                fetch data from dense ramtx for a batch in a memory-efficient manner using subbatches
+                """
+                # initialize the sparse data container for each entry
+                dict_data = dict( )
+                
+                # retrieve entries for a subbatch
+                int_num_entries_in_a_subbatch_in_axis_not_for_querying = max( 1, int( np.floor( int_total_number_of_values_in_a_batch_for_dense_matrix / len( l_int_entry_in_a_batch ) ) ) ) # minimum number of entries in a subbatch is 1
+                
+                # initialize looping through axis not for querying (secondary axis)
+                int_num_entries_processed_in_axis_not_for_querying = 0
+                while int_num_entries_processed_in_axis_not_for_querying < self.len_axis_not_for_querying : # iterate through each subbatch
+                    sl_secondary = slice( int_num_entries_processed_in_axis_not_for_querying, min( self.len_axis_not_for_querying, int_num_entries_processed_in_axis_not_for_querying + int_num_entries_in_a_subbatch_in_axis_not_for_querying ) ) # retrieve a slice along the secondary axis
+                    
+                    # iterate through each entry on the axis for querying for the current subbatch
+                    for int_entry, arr_data in zip( l_int_entry_in_a_batch, self._za_mtx.get_orthogonal_selection( ( sl_secondary, l_int_entry_in_a_batch ) ).T if is_for_querying_features else self._za_mtx.get_orthogonal_selection( ( l_int_entry_in_a_batch, sl_secondary ) ) ) : # fetch data from the Zarr object for the current subbatch and iterate through each entry and its data
+                        arr_int_entry_of_axis_not_for_querying = np.where( arr_data )[ 0 ] # retrieve coordinates of non-zero records
+                        if len( arr_int_entry_of_axis_not_for_querying ) == 0 : # if no non-zero records exist, continue to the next entry
+                            continue
+                        arr_value = arr_data[ arr_int_entry_of_axis_not_for_querying ] # retrieve non-zero records
+                        arr_int_entry_of_axis_not_for_querying += int_num_entries_processed_in_axis_not_for_querying # add offset 'int_num_entries_processed_in_axis_not_for_querying' to the coordinates retrieved from the subbatch
+                        del arr_data
+                        
+                        # initialize 'int_entry' for the sparse data container
+                        if int_entry not in dict_data :
+                            dict_data[ int_entry ] = { 'l_arr_int_entry_of_axis_not_for_querying' : [ ], 'l_arr_value' : [ ] }
+                        # add retrieved data from the subbatch to the sparse data container
+                        dict_data[ int_entry ][ 'l_arr_int_entry_of_axis_not_for_querying' ].append( arr_int_entry_of_axis_not_for_querying )
+                        dict_data[ int_entry ][ 'l_arr_value' ].append( arr_value )
+                        del arr_value, arr_int_entry_of_axis_not_for_querying
+                    
+                    int_num_entries_processed_in_axis_not_for_querying += int_num_entries_in_a_subbatch_in_axis_not_for_querying # update the position
+
+                for int_entry in dict_data : # iterate each entry
+                    __process_entry( int_entry, np.concatenate( dict_data[ int_entry ][ 'l_arr_int_entry_of_axis_not_for_querying' ] ), np.concatenate( dict_data[ int_entry ][ 'l_arr_value' ] ) ) # concatenate list of arrays into a single array
+                del dict_data
+            
+            ''' retrieve data '''
+            if self.is_sparse : # handle sparse ramtx
+                ''' %% Sparse ramtx %% '''
+                # prepare
+                int_num_records_in_a_chunk = self._za_mtx.chunks[ 0 ] # retrieve the number of records in a chunk
+                # retrieve flags for dtype conversions
+                flag_change_dtype_mtx_index = self._za_mtx_index.dtype != np.int64
+                flag_change_dtype_of_feature_and_barcode_indices = self._za_mtx.dtype != self._dtype_of_feature_and_barcode_indices
+                
+                # retrieve mtx_index data and remove invalid entries
+                arr_index = self._za_mtx_index.get_orthogonal_selection( l_int_entry ) # retrieve mtx_index data 
+                if flag_change_dtype_mtx_index : # convert dtype of retrieved mtx_index data
+                    arr_index = arr_index.astype( np.int64 )
+                
+                index_chunk_start_current_batch = None # initialize the index of the chunk at the start of the batch
+                l_int_entry_in_a_batch, l_index_in_a_batch = [ ], [ ] # several entries will be processed together as a batch if they reside in the same or nearby chunk ('int_num_chunks_for_a_batch' setting)
+                # iterate through each 'int_entry'
+                for int_entry, index in zip( l_int_entry, arr_index ) : # iterate through each entry
+                    st, en = index
+                    if st == en : # if there is no count data for the 'int_entry', continue on to the next 'int_entry' # drop 'int_entry' lacking count data (when start and end index is the same, the 'int_entry' does not contain any data)
+                        continue
+                    
+                    ''' if batch is full, flush the batch '''
+                    index_chunk_end = en - 1 // int_num_records_in_a_chunk # retrieve the index of the last chunk
+                    if index_chunk_start_current_batch is not None and index_chunk_end >= index_chunk_start_current_batch + int_num_chunks_for_a_batch : # if start has been set 
+                        __fetch_from_sparse_ramtx( l_int_entry_in_a_batch, l_index_in_a_batch )
+                        l_int_entry_in_a_batch, l_index_in_a_batch = [ ], [ ] # initialize the next batch
+                        index_chunk_start_current_batch = None # reset start
+                        
+                    ''' start the batch '''
+                    # if start has not been set, set the start of the current batch
+                    if index_chunk_start_current_batch is None : # start the batch
+                        index_chunk_start_current_batch = st // int_num_records_in_a_chunk 
+                    
+                    # add int_entry to the batch 
+                    l_int_entry_in_a_batch.append( int_entry ) 
+                    l_index_in_a_batch.append( [ st, en ] )
+                
+                if len( l_int_entry_in_a_batch ) > 0 : # if some entries remains unprocessed, flush the buffer
+                    __fetch_from_sparse_ramtx( l_int_entry_in_a_batch, l_index_in_a_batch )
+            else :
+                ''' %% Dense ramtx %% '''
+                # prepare
+                int_num_entries_in_a_chunk = self._za_mtx.chunks[ 1 ] if is_for_querying_features else self._za_mtx.chunks[ 0 ] # retrieve the number of entries in a chunk
+                flag_change_dtype_of_feature_and_barcode_indices = False # since indices from dense ramtx (return values of np.where) will be in np.int64 format, there will be no need to change dtype of indices
+                
+                index_chunk_start_current_batch = None # initialize the index of the chunk at the start of the batch
+                l_int_entry_in_a_batch = [ ] # several entries will be processed together as a batch if they reside in the same or nearby chunk ('int_num_chunks_for_a_batch' setting)
+                # iterate through each 'int_entry'
+                for int_entry in l_int_entry : # iterate through each entry
+                    ''' if batch is full, flush the batch '''
+                    index_chunk = int_entry // int_num_entries_in_a_chunk # retrieve the index of the chunk of the current entry
+                    if index_chunk_start_current_batch is not None and index_chunk >= index_chunk_start_current_batch + int_num_chunks_for_a_batch : # if batch has been started
+                        __fetch_from_dense_ramtx( l_int_entry_in_a_batch )
+                        l_int_entry_in_a_batch = [ ] # initialize the next batch
+                        index_chunk_start_current_batch = None # reset start
+                        
+                    ''' start the batch '''
+                    # if start has not been set, set the start of the current batch
+                    if index_chunk_start_current_batch is None : # start the batch
+                        index_chunk_start_current_batch = index_chunk
+                    
+                    # add int_entry to the batch 
+                    l_int_entry_in_a_batch.append( int_entry ) 
+                
+                if len( l_int_entry_in_a_batch ) > 0 : # if some entries remains unprocessed, flush the buffer
+                    __fetch_from_dense_ramtx( l_int_entry_in_a_batch )
+
+            
+            ''' return the retrieved data '''
+            # compose a output value
+            output = ( l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying, l_arr_value )
+            # if 'flag_as_a_worker' is True, send the result or return the result
+            if flag_as_a_worker :
+                pipe_to_main_thread.send( output ) # send unzipped result back
+            else :
+                return output
+        
+        # load data using multiprocessing
+        if self.int_num_cpus > 1 and int_num_entries > 1 : # enter multi-processing mode only more than one entry should be retrieved
+            # initialize workers
+            int_n_workers = min( self.int_num_cpus, int_num_entries ) # one thread for distributing records. Minimum numbers of workers for sorting is 1 # the number of workers should not be larger than the number of entries to retrieve.
+            l_l_int_entry_for_each_worker = list( l for l in LIST_Split( l_int_entry, int_n_workers, flag_contiguous_chunk = True ) if len( l ) > 0 ) # retrieve a list of valid work loads for the workers
+            int_n_workers = min( int_n_workers, len( l_l_int_entry_for_each_worker ) ) # adjust the number of workers according to the number of distributed workloads
+            
+            l_pipes_from_main_process_to_worker = list( mp.Pipe( ) for _ in range( int_n_workers ) ) # create pipes for sending records to workers # add process for receivers
+            l_pipes_from_worker_to_main_process = list( mp.Pipe( ) for _ in range( int_n_workers ) ) # create pipes for collecting results from workers
+            l_processes = list( mp.Process( target = __retrieve_data, args = ( l_pipes_from_main_process_to_worker[ index_worker ][ 1 ], l_pipes_from_worker_to_main_process[ index_worker ][ 0 ] ) ) for index_worker in range( int_n_workers ) ) # add a process for distributing fastq records
+            for p in l_processes :
+                p.start( )
+            # distribute works
+            for index_worker, l_int_entry_for_each_worker in enumerate( l_l_int_entry_for_each_worker ) : # distribute works # no load balacing for now
+                l_pipes_from_main_process_to_worker[ index_worker ][ 0 ].send( l_int_entry_for_each_worker )
+            # wait until all works are completed
+            int_num_workers_completed = 0
+            l_output = list( [ ] for i in range( int_n_workers ) ) # initialize a list that will collect output results
+            while int_num_workers_completed < int_n_workers : # until all works are completed
+                for index_worker, cxn in enumerate( l_pipes_from_worker_to_main_process ) :
+                    _, pipe_reciver = cxn # parse a connection
+                    if pipe_reciver.poll( ) :
+                        l_output[ index_worker ] = pipe_reciver.recv( ) # collect output 
+                        int_num_workers_completed += 1 # update the number of completed workers
+                time.sleep( 0.1 )
+            # dismiss workers once all works are completed
+            for p in l_processes :
+                p.join( )
+                
+            # ravel retrieved records
+            for output in l_output :
+                l_int_entry_of_axis_for_querying.extend( output[ 0 ] )
+                l_arr_int_entry_of_axis_not_for_querying.extend( output[ 1 ] )
+                l_arr_value.extend( output[ 2 ] )
+            del output, l_output
+        else : # single thread mode
+            l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying, l_arr_value = __retrieve_data( l_int_entry, flag_as_a_worker = False )
+        
+        return l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying, l_arr_value
+    def get_sparse_matrix( self, l_int_entry, flag_return_as_arrays = False ) :
+        """ # 2022-08-30 11:03:14 
+        
+        get sparse matrix for the given list of integer representations of the entries.
+        
+        'l_int_entry' : list of int_entries for query
+        'flag_return_as_arrays' : if True, return three arrays and a single list, 'l_int_barcodes', 'l_int_features', 'l_values', 'l_int_num_records'. 
+                'l_int_barcodes', 'l_int_features', 'l_values' : for building a sparse matrix
+                'l_int_num_records' : for building an index
+                if False, return a scipy.csr sparse matrix
+        """
+        l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying, l_arr_value = self[ l_int_entry ] # parse retrieved result
+        
+        if len( l_arr_int_entry_of_axis_not_for_querying ) > 0 : 
+            # if valid input is available
+            # combine the arrays
+            arr_int_entry_of_axis_not_for_querying = np.concatenate( l_arr_int_entry_of_axis_not_for_querying )
+            arr_value = np.concatenate( l_arr_value )
+            del l_arr_value # delete intermediate objects
+
+            # compose 'arr_int_entry_of_axis_for_querying'
+            arr_int_entry_of_axis_for_querying = np.zeros( len( arr_int_entry_of_axis_not_for_querying ), dtype = self._dtype_of_feature_and_barcode_indices ) # create an empty array
+            int_pos = 0
+            for int_entry_of_axis_for_querying, a in zip( l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying ) :
+                n = len( a )
+                arr_int_entry_of_axis_for_querying[ int_pos : int_pos + n ] = int_entry_of_axis_for_querying # compose 'arr_int_entry_of_axis_for_querying'
+                int_pos += n # update the current position
+            if flag_return_as_arrays :
+                l_int_num_records = list( len( a ) for a in l_arr_int_entry_of_axis_not_for_querying ) # when returning arrays instead of a scipy sparse matrix, additionally prepare records that can be utilized for build an index of the data
+            del l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying # delete intermediate objects
+
+            # get 'arr_int_barcode' and 'arr_int_feature' based on 'self.is_for_querying_features'
+            if self.is_for_querying_features :
+                arr_int_barcode = arr_int_entry_of_axis_not_for_querying
+                arr_int_feature = arr_int_entry_of_axis_for_querying
+            else :
+                arr_int_barcode = arr_int_entry_of_axis_for_querying
+                arr_int_feature = arr_int_entry_of_axis_not_for_querying
+            del arr_int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying # delete intermediate objects
+
+            if flag_return_as_arrays : # if 'flag_return_as_arrays' is True, return data as arrays
+                return arr_int_barcode, arr_int_feature, arr_value, l_int_num_records
+        else :
+            # if input is empty, compose empty inputs 
+            arr_value, arr_int_barcode, arr_int_feature = [ ], [ ], [ ]
+            
+        # return data as a sparse matrix
+        n_bc, n_ft = ( self._int_num_barcodes, self._int_num_features ) if self._ramdata is None else ( len( self._ramdata.bc ), len( self._ramdata.ft ) ) # detect whether the current RAMtx has been attached to a RamData and retrieve the number of barcodes and features accordingly
+        X = scipy.sparse.csr_matrix( scipy.sparse.coo_matrix( ( arr_value, ( arr_int_barcode, arr_int_feature ) ), shape = ( n_bc, n_ft ) ) ) # convert count data to a sparse matrix
+        return X # return the composed sparse matrix 
+    def get_total_num_records( self, ba = None, int_num_entries_for_each_weight_calculation_batch = 1000, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = True ) :
+        """ # 2022-08-07 01:38:02 
+        get total number of records in the current RAMtx for the given entries ('ba' filter).
+        this function is mainly for the estimation of the total number of records to process for displaying progress information in the progress bar.
+        """
+        # set defaule arguments
+        if ba is None :
+            ba = self.ba_filter_axis_for_querying # if None is given, ba_filter of the currently indexed axis will be used.
+            if ba is None : # if filter is not set or the current RAMtx has not been attached to a RamData object, use the active entries
+                ba = self.ba_active_entries # if None is given, self.ba_active_entries bitarray will be used.
+        # initialize
+        # a namespace that can safely shared between function scopes
+        ns = { 'int_num_records' : 0, 'l_int_entry_for_weight_calculation_batch' : [ ] }
+        
+        # check if pre-calculated weights are available
+        axis = 'features' if self.is_for_querying_features else 'barcodes' # retrieve axis of current ramtx
+        flag_weight_available = False # initialize
+        for path_folder in [ self._path_folder_ramtx, self._path_folder_ramtx_modifiable ] :
+            if path_folder is not None and zarr_exists( f'{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/' ) :
+                path_folder_zarr_weight = f"{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/" # define an existing zarr object path
+                flag_weight_available = True
+                za_weight = zarr.open( path_folder_zarr_weight ) # open zarr object containing weights if available
+        
+        def __update_total_num_records( ) :
+            """ # 2022-08-05 00:56:12 
+            retrieve indices of the current 'weight_current_batch', calculate weights, and yield a batch
+            """
+            ''' retrieve weights '''
+            if flag_weight_available and ( self.mode != 'dense' or not flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ) : # if weight is available
+                # load weight for the batch
+                arr_weight = za_weight.get_orthogonal_selection( ns[ 'l_int_entry_for_weight_calculation_batch' ] ) # retrieve weights
+            else : # if weight is not available
+                arr_weight = np.full( len( ns[ 'l_int_entry_for_weight_calculation_batch' ] ), self.len_axis_not_for_querying ) # if weight is not available, assumes all records are available (number of entries in non-indexed axis) for each entry
+            ''' update total number of records '''
+            ns[ 'int_num_records' ] += arr_weight.sum( ) # update total number of records
+            ns[ 'l_int_entry_for_weight_calculation_batch' ] = [ ] # empty the weight calculation batch
+
+        for int_entry in bk.BA.find( ba ) : # iterate through active entries of the given bitarray
+            ns[ 'l_int_entry_for_weight_calculation_batch' ].append( int_entry ) # collect int_entry for the current 'weight_calculation_batch'
+            # once 'weight_calculation' batch is full, process the 'weight_calculation' batch
+            if len( ns[ 'l_int_entry_for_weight_calculation_batch' ] ) == int_num_entries_for_each_weight_calculation_batch :
+                __update_total_num_records( ) # update total number of records
+        __update_total_num_records( )
+        return int( ns[ 'int_num_records' ] ) # return the total number of records
+    def batch_generator( self, ba = None, int_num_entries_for_each_weight_calculation_batch = 1000, int_total_weight_for_each_batch = 10000000, int_chunk_size_for_checking_boundary = None, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = False ) :
+        ''' # 2022-08-05 23:37:03 
+        generate batches of list of integer indices of the active entries in the given bitarray 'ba'. 
+        Each bach has the following characteristics:
+            monotonous: active entries in a batch are in an increasing order
+            the total number of records of a batch is around (but not exactly) 'int_total_weight_for_each_batch'
+        
+        'ba' : (default None) if None is given, self.ba_active_entries bitarray will be used.
+        'int_chunk_size_for_checking_boundary' : if this argument is given, each batch will respect the chunk boundary of the given chunk size so that different batches share the same 'chunk'. setting this argument will override 'int_total_weight_for_each_batch' argument
+        'int_total_weight_for_each_batch' : total number of records in a batch. 
+        'flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx' : when iterating through a dense matrix, interpret the length of the axis not for querying as the total number of records for every entry in the axis for querying. This will be more useful for restricting the memory usage when analysing dense RAMtx matrix.
+        '''
+        # set defaule arguments
+        if ba is None :
+            ba = self.ba_filter_axis_for_querying # if None is given, ba_filter of the currently indexed axis will be used.
+            if ba is None : # if filter is not set or the current RAMtx has not been attached to a RamData object, use the active entries
+                ba = self.ba_active_entries # if None is given, self.ba_active_entries bitarray will be used.
+        # initialize
+        # a namespace that can safely shared between functions
+        ns = { 'int_accumulated_weight_current_batch' : 0, 'l_int_entry_current_batch' : [ ], 'l_int_entry_for_weight_calculation_batch' : [ ], 'index_chunk_end' : None, 'index_batch' : 0, 'int_num_of_previously_returned_entries' : 0 } # initialize 'index_batch'
+        
+        # check if pre-calculated weights are available
+        axis = 'features' if self.is_for_querying_features else 'barcodes' # retrieve axis of current ramtx
+        flag_weight_available = False # initialize
+        for path_folder in [ self._path_folder_ramtx, self._path_folder_ramtx_modifiable ] :
+            if path_folder is not None and zarr_exists( f'{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/' ) :
+                path_folder_zarr_weight = f"{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/" # define an existing zarr object path
+                flag_weight_available = True
+                za_weight = zarr.open( path_folder_zarr_weight ) # open zarr object containing weights if available
+        
+        def __compose_batch( ) :
+            """ # 2022-08-05 23:34:28 
+            compose batch from the values available in the namespace 'ns'
+            """
+            return { 'index_batch' : ns[ 'index_batch' ], 'l_int_entry_current_batch' : ns[ 'l_int_entry_current_batch' ], 'int_num_of_previously_returned_entries' : ns[ 'int_num_of_previously_returned_entries' ], 'int_accumulated_weight_current_batch' : ns[ 'int_accumulated_weight_current_batch' ] }
+        def find_batch( ) :
+            """ # 2022-08-05 00:56:12 
+            retrieve indices of the current 'weight_current_batch', calculate weights, and yield a batch
+            """
+            ''' retrieve weights '''
+            if flag_weight_available and ( self.mode != 'dense' or not flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ) : # if weight is available and if dense, 'flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx' is False
+                # load weight for the batch
+                arr_weight = za_weight.get_orthogonal_selection( ns[ 'l_int_entry_for_weight_calculation_batch' ] ) # retrieve weights
+            else : # if weight is not available
+                arr_weight = np.full( len( ns[ 'l_int_entry_for_weight_calculation_batch' ] ), self.len_axis_not_for_querying ) # if weight is not available, assumes all records are available (number of entries in non-indexed axis) for each entry
+            ''' search for batch '''
+            for int_entry, weight in zip( ns[ 'l_int_entry_for_weight_calculation_batch' ], arr_weight ) :
+                if ns[ 'index_chunk_end' ] is not None and ns[ 'index_chunk_end' ] != int_entry // int_chunk_size_for_checking_boundary : # if the chunk boundary has been set and the boundary has reached
+                    yield __compose_batch( ) # return a batch
+                    # initialize the next batch
+                    ns[ 'index_batch' ] += 1
+                    ns[ 'int_num_of_previously_returned_entries' ] += len( ns[ 'l_int_entry_current_batch' ] ) # update the total number of entries returned
+                    ns[ 'l_int_entry_current_batch' ] = [ ] 
+                    ns[ 'int_accumulated_weight_current_batch' ] = 0
+                    ns[ 'index_chunk_end' ] = None
+                        
+                # update the current batch
+                ns[ 'l_int_entry_current_batch' ].append( int_entry )
+                ns[ 'int_accumulated_weight_current_batch' ] += weight
+
+                # check whether the current batch is full
+                if ns[ 'int_accumulated_weight_current_batch' ] >= int_total_weight_for_each_batch and ns[ 'index_chunk_end' ] is None : # a current batch is full, yield the batch # when chunk boundary has not been set
+                    if int_chunk_size_for_checking_boundary is not None : # when chunk boundary checking is active
+                        ns[ 'index_chunk_end' ] = int_entry // int_chunk_size_for_checking_boundary # set the chunk boundary
+                    else :
+                        yield __compose_batch( ) # return a batch
+                        # initialize the next batch
+                        ns[ 'index_batch' ] += 1
+                        ns[ 'int_num_of_previously_returned_entries' ] += len( ns[ 'l_int_entry_current_batch' ] ) # update the total number of entries returned
+                        ns[ 'l_int_entry_current_batch' ] = [ ] 
+                        ns[ 'int_accumulated_weight_current_batch' ] = 0
+                
+            # initialize next 'weight_calculation_batch'
+            ns[ 'l_int_entry_for_weight_calculation_batch' ] = [ ]
+                
+
+        for int_entry in bk.BA.find( ba ) : # iterate through active entries of the given bitarray
+            ns[ 'l_int_entry_for_weight_calculation_batch' ].append( int_entry ) # collect int_entry for the current 'weight_calculation_batch'
+            # once 'weight_calculation' batch is full, process the 'weight_calculation' batch
+            if len( ns[ 'l_int_entry_for_weight_calculation_batch' ] ) == int_num_entries_for_each_weight_calculation_batch :
+                for e in find_batch( ) : # generate batch from the 'weight_calculation' batch
+                    yield e
+        for e in find_batch( ) : # generate batch from the last 'weight_calculation_batch'
+            yield e
+        # return the remaining int_entries as the last batch (if available)
+        if len( ns[ 'l_int_entry_current_batch' ] ) > 0 :
+            yield __compose_batch( ) # return a batch
+
 ''' a class for representing a layer of RamData '''
 class RamDataLayer( ) :
     """ # 2022-07-31 14:39:50 
@@ -6264,10 +6810,18 @@ class RamData( ) :
     'int_total_weight_for_each_batch' : the argument controlling total number of records to be processed in each batch (and thus for each process for parallelized works). it determines memory usage/operation efficiency. higher weight will lead to more memory usage but more operation efficiency, and vice versa
     'flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx' : when iterating through a dense matrix, interpret the length of the axis not for querying as the total number of records for every entry in the axis for querying. This will be more useful for restricting the memory usage when analysing dense RAMtx matrix.
 
-    ==== AnnDataContainer ====
+    === Combined RamData ===
+    l_ramdata : Union[ List[ RamData ], None ] = None # list of RamData objects to combine.
+    flag_combined_ramdata_barcodes_shared_across_ramdata : bool = False # True if barcodes are shared across RamData objects. If barcodes are unique and not shared across RamData objects (which usually are), set this flag to False
+    flag_combined_ramdata_features_shared_across_ramdata : bool = True # True if features are shared across RamData objects. If features are shared across RamData objects (which usually are), set this flag to True
+    flag_check_combined_type : bool = False # flag for checking combined type ('interleaved/stacked') across the 'barcodes/features' axis objeccts of the given list of ramdata objects.
+    index_ramdata_source_for_combined_barcodes_shared_across_ramdata : int = 0 # index of ramdata component that will be used to retrieve data of 'barcodes' axis objects contain duplicated records
+    index_ramdata_source_for_combined_features_shared_across_ramdata : int = 0 # index of ramdata component that will be used to retrieve data of 'features' axis objects contain duplicated records
+
+    === AnnDataContainer ===
     'flag_enforce_name_adata_with_only_valid_characters' : enforce valid characters in the name of AnnData
     """
-    def __init__( self, path_folder_ramdata, name_layer = 'raw', int_num_cpus = 64, int_num_cpus_for_fetching_data = 1, dtype_of_feature_and_barcode_indices = np.int32, dtype_of_values = np.float64, int_index_str_rep_for_barcodes = 0, int_index_str_rep_for_features = 1, int_num_entries_for_each_weight_calculation_batch = 2000, int_total_weight_for_each_batch = 10000000, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = False, mode = 'a', path_folder_ramdata_mask = None, dict_kw_zdf = { 'flag_retrieve_categorical_data_as_integers' : False, 'flag_load_data_after_adding_new_column' : True, 'flag_enforce_name_col_with_only_valid_characters' : True }, dict_kw_view = { 'float_min_proportion_of_active_entries_in_an_axis_for_using_array' : 0.1, 'dtype' : np.int32 }, flag_enforce_name_adata_with_only_valid_characters = True, verbose = True, flag_debugging = False ) :
+    def __init__( self, path_folder_ramdata : str, l_ramdata : Union[ list, tuple, None ] = None, flag_combined_ramdata_barcodes_shared_across_ramdata : bool = False, flag_combined_ramdata_features_shared_across_ramdata : bool = True, flag_check_combined_type : bool = False, index_ramdata_source_for_combined_barcodes_shared_across_ramdata : int = 0, index_ramdata_source_for_combined_features_shared_across_ramdata : int = 0, name_layer : Union[ None, str ] = 'raw', int_num_cpus : int = 64, int_num_cpus_for_fetching_data : int = 1, dtype_of_feature_and_barcode_indices = np.int32, dtype_of_values = np.float64, int_index_str_rep_for_barcodes : int = 0, int_index_str_rep_for_features : int = 1, int_num_entries_for_each_weight_calculation_batch : int = 2000, int_total_weight_for_each_batch : int = 10000000, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx : bool = False, mode : str = 'a', path_folder_ramdata_mask : Union[ str, None ] = None, dict_kw_zdf : dict = { 'flag_retrieve_categorical_data_as_integers' : False, 'flag_load_data_after_adding_new_column' : True, 'flag_enforce_name_col_with_only_valid_characters' : True }, dict_kw_view : dict = { 'float_min_proportion_of_active_entries_in_an_axis_for_using_array' : 0.1, 'dtype' : np.int32 }, flag_enforce_name_adata_with_only_valid_characters : bool = True, verbose : bool = True, flag_debugging : bool = False ) :
         """ # 2022-07-21 23:32:54 
         """
         ''' hard-coded settings  '''
@@ -6297,6 +6851,12 @@ class RamData( ) :
         self.int_num_entries_for_each_weight_calculation_batch = int_num_entries_for_each_weight_calculation_batch
         self.int_total_weight_for_each_batch = int_total_weight_for_each_batch
         self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx
+        # combined ramdata
+        self._l_ramdata = l_ramdata
+        self._flag_combined_ramdata_barcodes_shared_across_ramdata = flag_combined_ramdata_barcodes_shared_across_ramdata
+        self._flag_combined_ramdata_features_shared_across_ramdata = flag_combined_ramdata_features_shared_across_ramdata
+        self.index_ramdata_source_for_combined_barcodes_shared_across_ramdata = index_ramdata_source_for_combined_barcodes_shared_across_ramdata
+        self.index_ramdata_source_for_combined_features_shared_across_ramdata = index_ramdata_source_for_combined_features_shared_across_ramdata
         
         ''' check read-only status of the given RamData '''
         try :
@@ -6311,11 +6871,12 @@ class RamData( ) :
                     print( 'The current RamData object cannot be modified yet no mask location is given. Therefore, the current RamData object will be "read-only"' )
         
         # initialize axis objects
-        self.bc = RamDataAxis( path_folder_ramdata, 'barcodes', ba_filter = None, ramdata = self, dict_kw_zdf = dict_kw_zdf, dict_kw_view = dict_kw_view, int_index_str_rep = int_index_str_rep_for_barcodes, verbose = verbose, mode = self._mode, path_folder_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only )
-        self.ft = RamDataAxis( path_folder_ramdata, 'features', ba_filter = None, ramdata = self, dict_kw_zdf = dict_kw_zdf, dict_kw_view = dict_kw_view, int_index_str_rep = int_index_str_rep_for_features, verbose = verbose, mode = self._mode, path_folder_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only )
+        self.bc = RamDataAxis( path_folder_ramdata, 'barcodes', l_ax = list( ram.bc for ram in self._l_ramdata ) if self._l_ramdata is not None else None, index_ax_data_source_when_interleaved = index_ramdata_source_for_combined_barcodes_shared_across_ramdata, flag_check_combined_type = flag_check_combined_type, flag_is_interleaved = flag_combined_ramdata_barcodes_shared_across_ramdata, ba_filter = None, ramdata = self, dict_kw_zdf = dict_kw_zdf, dict_kw_view = dict_kw_view, int_index_str_rep = int_index_str_rep_for_barcodes, verbose = verbose, mode = self._mode, path_folder_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only )
+        self.ft = RamDataAxis( path_folder_ramdata, 'features', l_ax = list( ram.ft for ram in self._l_ramdata ) if self._l_ramdata is not None else None, index_ax_data_source_when_interleaved = index_ramdata_source_for_combined_features_shared_across_ramdata, flag_check_combined_type = flag_check_combined_type, flag_is_interleaved = flag_combined_ramdata_features_shared_across_ramdata, ba_filter = None, ramdata = self, dict_kw_zdf = dict_kw_zdf, dict_kw_view = dict_kw_view, int_index_str_rep = int_index_str_rep_for_features, verbose = verbose, mode = self._mode, path_folder_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only )
         
         # initialize the layor object
-        self.layer = name_layer
+        if name_layer is not None : # if given name of the layer is valid
+            self.layer = name_layer
         
         # initialize databases
         if self._path_folder_ramdata_local is not None : # retrieve ramdata object in the local file system, and if the object is available, load/initialize anndatacontainer and shelvecontainer in the local file system
@@ -6327,9 +6888,14 @@ class RamData( ) :
         else : # initialize anndatacontainer and shelvecontainer in the memory using a dicitonary (a fallback)
             self.ad = dict( )
             self.ns = dict( )
-            
         # 🔴🔴🔴 TEMP 🔴🔴🔴
-        self.models # add model attributes
+        # self.models # add model attributes
+    @property
+    def is_combined( self ) :
+        """ # 2022-08-29 15:29:10 
+        return True if current RamData is in 'combined' mode
+        """
+        return self._l_ramdata is not None
     @property
     def metadata( self ) :
         """ # 2022-07-21 00:45:12 
@@ -7756,7 +8322,7 @@ class RamData( ) :
         """ # 2022-08-05 19:42:00 
         show available models of the RamData
         """
-        if 'models' not in self._dict_metadata :
+        if 'models' not in self.metadata :
             self._dict_metadata[ 'models' ] = dict( )
             self._save_metadata_( )
         return self._dict_metadata[ 'models' ]
@@ -7952,7 +8518,7 @@ class RamData( ) :
             return 
         self.layer = name_layer # load the target layer
         # retrieve appropriate rtx object
-        rtx = ram.layer.get_ramtx( flag_is_for_querying_features = not flag_axis_for_querying_is_barcode )
+        rtx = self.layer.get_ramtx( flag_is_for_querying_features = not flag_axis_for_querying_is_barcode )
         # handle when appropriate RAMtx object does not exist
         if rtx is None :
             if self.verbose :
