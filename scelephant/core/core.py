@@ -4792,7 +4792,7 @@ class RamDataAxis( ) :
                     l_dict_index_mapping_interleaved = [ ]
                     l_dict_index_mapping_from_component_to_combined = [ ] # initialize 'l_dict_index_mapping_from_component_to_combined'
                     for ax in self._l_ax : # for each axis component
-                        dict_index_mapping_interleaved = dict( ) # initialize the mapping
+                        dict_index_mapping_from_component_to_combined = dict( ) # initialize the mapping
 
                         # process string representations of the current axis component object for each batch
                         int_pos_component = 0 # initialize position in the component
@@ -4804,19 +4804,19 @@ class RamDataAxis( ) :
                                 if str_entry not in dict_str_entry_to_int_entry :
                                     dict_str_entry_to_int_entry[ str_entry ] = int_entry_new_combined # add the str_entry to the combined axis
                                     int_entry_new_combined += 1 # update 'int_entry_new_combined'
-                                dict_index_mapping_interleaved[ dict_str_entry_to_int_entry[ str_entry ] ] = int_entry # retrieve int_entry of combined axis --> int_entry of individual axis mapping
+                                dict_index_mapping_from_component_to_combined[ int_entry ] = dict_str_entry_to_int_entry[ str_entry ] # retrieve int_entry of combined axis --> int_entry of individual axis mapping
                             # update 'int_pos_component'
                             int_pos_component += self.int_max_num_entries_per_batch
-                        l_dict_index_mapping_interleaved.append( dict_index_mapping_interleaved ) # update 'l_dict_index_mapping_interleaved'
-                        l_dict_index_mapping_from_component_to_combined.append( dict( ( dict_index_mapping_interleaved[ int_entry_combined ], int_entry_combined ) for int_entry_combined in dict_index_mapping_interleaved ) ) # retrieve mapping from component to combined axis coordinates
+                        l_dict_index_mapping_interleaved.append( dict( ( dict_index_mapping_from_component_to_combined[ int_entry_component ], int_entry_component ) for int_entry_component in dict_index_mapping_from_component_to_combined ) ) # update 'l_dict_index_mapping_interleaved'
+                        l_dict_index_mapping_from_component_to_combined.append( dict_index_mapping_from_component_to_combined ) # retrieve mapping from component to combined axis coordinates
                         
-                        int_num_records = len( dict_index_mapping_interleaved ) # retrieve the number of mapping records for the current axis object
+                        int_num_records = len( dict_index_mapping_from_component_to_combined ) # retrieve the number of mapping records for the current axis object
                         l_int_num_records.append( int_num_records ) # collect the number of records for the current axis object
-                        # convert 'dict_index_mapping_interleaved' to a numpy array
+                        # convert 'dict_index_mapping_from_component_to_combined' to a numpy array
                         arr = np.zeros( ( int_num_records, 2 ), dtype = np.float64 )
-                        for i, int_entry_combined in enumerate( dict_index_mapping_interleaved ) :
-                            arr[ i, 0 ] = int_entry_combined
-                            arr[ i, 1 ] = dict_index_mapping_interleaved[ int_entry_combined ]
+                        for i, int_entry_component in enumerate( dict_index_mapping_from_component_to_combined ) :
+                            arr[ i, 0 ] = dict_index_mapping_from_component_to_combined[ int_entry_component ] # set combined axis
+                            arr[ i, 1 ] = int_entry_component # set component axis
                         # write converted array containing the mapping to the zarr object
                         za[ int_pos_mapping : int_pos_mapping + int_num_records ] = arr
                         # update 'int_pos_mapping'
@@ -5083,7 +5083,7 @@ class RamDataAxis( ) :
         if ba_filter is not None :
             ba_filter = self._convert_to_bitarray( ba_filter ) # convert mask to bitarray filter
             # if current axis object has been attached to RamData object, retrieve intersection with the filter containing active entries
-            if self._ramdata is not None :
+            if self._ramdata is not None and self._ramdata.layer is not None :
                 ba_filter &= self.all( flag_return_valid_entries_in_the_currently_active_layer = True ) # only use the entries with a valid count data
         
         # propagate the filter
@@ -5548,8 +5548,6 @@ class RAMtx( ) :
     dict_index_mapping_from_component_to_combined_ft : mapping dictionary-line object.
     dict_index_mapping_from_combined_to_component_bc : mapping dictionary-line object.
     dict_index_mapping_from_combined_to_component_ft : mapping dictionary-line object.
-    
-    
     """
     def __init__( self, path_folder_ramtx, l_rtx : Union[ list, tuple, None ] = None, dict_index_mapping_from_component_to_combined_bc : Union[ dict, None ] = None, dict_index_mapping_from_component_to_combined_ft : Union[ dict, None ] = None, dict_index_mapping_from_combined_to_component_bc : Union[ dict, None ] = None, dict_index_mapping_from_combined_to_component_ft : Union[ dict, None ] = None, ramdata = None, dtype_of_feature_and_barcode_indices = np.uint32, dtype_of_values = np.float64, int_num_cpus : int = 1, verbose : bool = False, flag_debugging : bool = False, mode : str = 'a', flag_is_read_only : bool = False, path_folder_ramtx_mask : Union[ str, None ] = None, is_for_querying_features : bool = True, int_total_number_of_values_in_a_batch_for_dense_matrix : int = 10000000 ) :
         """ # 2022-07-31 00:49:59 
@@ -5582,7 +5580,7 @@ class RAMtx( ) :
                 # compose metadata
                 self._dict_metadata = { 
                     'path_folder_mtx_10x_input' : None,
-                    'mode' : 'combined',
+                    'mode' : '___'.join( list( 'None' if rtx is None else rtx.mode for rtx in l_rtx ) ), # compose mode
                     'str_completed_time' : TIME_GET_timestamp( True ),
                     'int_num_features' : ramdata.ft.int_num_entries,
                     'int_num_barcodes' : ramdata.bc.int_num_entries,
@@ -5590,7 +5588,7 @@ class RAMtx( ) :
                     'version' : _version_,
                 }
                 self._root.attrs[ 'dict_metadata' ] = self._dict_metadata # write the metadata
-            
+
             # set component indices mapping dictionaries
             for rtx, dict_index_mapping_from_component_to_combined_bc, dict_index_mapping_from_component_to_combined_ft, dict_index_mapping_from_combined_to_component_bc, dict_index_mapping_from_combined_to_component_ft in zip( l_rtx, ramdata.bc._l_dict_index_mapping_from_component_to_combined, ramdata.ft._l_dict_index_mapping_from_component_to_combined, ramdata.bc._l_dict_index_mapping_from_combined_to_component, ramdata.ft._l_dict_index_mapping_from_combined_to_component ) :
                 if rtx is not None :
@@ -5599,7 +5597,6 @@ class RAMtx( ) :
                     rtx._dict_index_mapping_from_component_to_combined_bc = dict_index_mapping_from_component_to_combined_bc
                     rtx._dict_index_mapping_from_combined_to_component_ft = dict_index_mapping_from_combined_to_component_ft
                     rtx._dict_index_mapping_from_combined_to_component_bc = dict_index_mapping_from_combined_to_component_bc
-            
         # read metadata
         self._root = zarr.open( path_folder_ramtx, 'a' )
         self._dict_metadata = self._root.attrs[ 'dict_metadata' ] # retrieve the metadata
@@ -5949,7 +5946,7 @@ class RAMtx( ) :
         ''' # 2022-07-31 00:40:33 
         a method for saving metadata to the disk 
         '''
-        if not self._flag_is_read_only : # update metadata only when the current RamData object is not read-only
+        if not self._flag_is_read_only and not self.is_combined : # update metadata only when the current RamData object is not read-only # do not update metadata when current RAMtx is in combined mode
             if hasattr( self, '_dict_metadata' ) : # if metadata has been loaded
                 # convert 'columns' to list before saving attributes
                 self._root.attrs[ 'dict_metadata' ] = self._dict_metadata # update metadata
@@ -6005,6 +6002,13 @@ class RAMtx( ) :
     def is_for_querying_features( self, flag ) :
         """ # 2022-07-30 20:37:37 
         """
+        if self.is_combined :
+            # %% COMBINED %%
+            for rtx in self._l_rtx : # set the flag for individual component RAMtx
+                if rtx is not None :
+                    rtx.is_for_querying_features = flag
+            return
+        
         if self.is_sparse : # if current RAMtx is in sparse format, this property is fixed
             return 
         self._is_for_querying_features = flag # update property
@@ -6272,7 +6276,10 @@ class RAMtx( ) :
                 flag_change_dtype_of_feature_and_barcode_indices = self._za_mtx.dtype != self._dtype_of_feature_and_barcode_indices
                 
                 # retrieve mtx_index data and remove invalid entries
-                arr_index = self._za_mtx_index.get_orthogonal_selection( l_int_entry ) # retrieve mtx_index data 
+                try :
+                    arr_index = self._za_mtx_index.get_orthogonal_selection( l_int_entry ) # retrieve mtx_index data 
+                except :
+                    print( self._za_mtx_index.shape, l_int_entry )
                 if flag_change_dtype_mtx_index : # convert dtype of retrieved mtx_index data
                     arr_index = arr_index.astype( np.int64 )
                 
@@ -6563,7 +6570,7 @@ class RAMtx( ) :
 
 ''' a class for representing a layer of RamData '''
 class RamDataLayer( ) :
-    """ # 2022-07-31 14:39:50 
+    """ # 2022-09-01 01:24:07 
     A class for interactions with a pair of RAMtx objects of a count matrix. 
     
     'path_folder_ramdata' : location of RamData
@@ -6571,8 +6578,11 @@ class RamDataLayer( ) :
     'mode' : file mode. 'r' for read-only mode and 'a' for mode allowing modifications
     'flag_is_read_only' : read-only status of RamData
     'path_folder_ramdata_mask' : a local (local file system) path to the mask of the RamData object that allows modifications to be written without modifying the source. if a valid local path to a mask is given, all modifications will be written to the mask
+    
+    === arguments for combined layer object ===
+    l_layer : 
     """
-    def __init__( self, path_folder_ramdata, name_layer, ramdata = None, dtype_of_feature_and_barcode_indices = np.int32, dtype_of_values = np.float64, int_num_cpus = 1, verbose = False, mode = 'a', path_folder_ramdata_mask = None, flag_is_read_only = False ) :
+    def __init__( self, path_folder_ramdata, name_layer, l_layer : Union[ list, tuple, None ] = None, ramdata = None, dtype_of_feature_and_barcode_indices = np.int32, dtype_of_values = np.float64, int_num_cpus = 1, verbose = False, mode = 'a', path_folder_ramdata_mask = None, flag_is_read_only = False ) :
         """ # 2022-07-31 14:33:46 
         """
         # set attributes
@@ -6583,6 +6593,7 @@ class RamDataLayer( ) :
         self._mode = mode
         self.verbose = verbose
         self._int_num_cpus = int_num_cpus
+        self._l_layer = l_layer
         self._path_folder_ramdata_mask = path_folder_ramdata_mask
         if path_folder_ramdata_mask is not None : # set path to the mask of the layer if ramdata mask has been given
             self._path_folder_ramdata_layer_mask = f"{self._path_folder_ramdata_mask}{name_layer}/"
@@ -6590,6 +6601,19 @@ class RamDataLayer( ) :
         self._dtype_of_values = dtype_of_values
         self._dtype_of_feature_and_barcode_indices = dtype_of_feature_and_barcode_indices
         
+        # compose metadata for the combined layer
+        # %% COMBINED %%
+        if self.is_combined :
+            ''' write metadata '''
+            if not zarr_exists( self._path_folder_ramdata_layer ) :
+                self._root = zarr.open( self._path_folder_ramdata_layer, 'w' )
+                # compose metadata
+                self._dict_metadata = { 
+                    'set_modes' : [ ], # no available modes
+                    'version' : _version_,
+                }
+                self._root.attrs[ 'dict_metadata' ] = self._dict_metadata # write the metadata
+
         # read metadata
         self._root = zarr.open( self._path_folder_ramdata_layer, 'a' )
         self._dict_metadata = self._root.attrs[ 'dict_metadata' ] # retrieve the metadata 
@@ -6605,6 +6629,12 @@ class RamDataLayer( ) :
         
         # load ramtx
         self._load_ramtx_objects( )
+    @property
+    def is_combined( self ) :
+        """ # 2022-09-01 01:29:25 
+        return True if current RamDataLayer is in 'combined' mode
+        """
+        return self._l_layer is not None
     def _load_ramtx_objects( self ) :
         """ # 2022-08-01 10:57:28 
         load all ramtx present in the layer
@@ -6620,10 +6650,15 @@ class RamDataLayer( ) :
             'flag_debugging' : False, 
             'mode' : self._mode, 
             'path_folder_ramtx_mask' : f'{self._path_folder_ramdata_layer_mask}{mode}/' if self._mask_available else None, 
-            'flag_is_read_only' : self._flag_is_read_only
+            'flag_is_read_only' : self._flag_is_read_only,
+            'l_rtx' : None,
         }
         # load ramtx
         for mode in self.modes : # iterate through each mode
+            if self.is_combined :
+                # %% COMBINED %%
+                dict_kwargs[ 'l_rtx' ] = list( layer[ mode ] for layer in self._l_layer ) # retrieve list of rtx objects for the current mode
+            
             if not hasattr( self, f"ramtx_{mode}" ) : # if the ramtx object of the current mode has not been load
                 if 'dense_for_querying_' in mode :
                     rtx = RAMtx( f'{self._path_folder_ramdata_layer}dense/', is_for_querying_features = mode.rsplit( 'dense_for_querying_', 1 )[ 1 ] == 'features', ** dict_kwargs ) # open dense ramtx in querying_features/querying_barcodes modes
@@ -6661,10 +6696,17 @@ class RamDataLayer( ) :
         return self._path_folder_ramdata_mask is not None
     @property
     def modes( self ) :
-        """ # 2022-07-30 18:29:54 
+        """ # 2022-09-01 02:02:54 
         return a subst of {'dense' or 'sparse_for_querying_barcodes', 'sparse_for_querying_features'}
         """
-        return self._dict_metadata[ 'set_modes' ]
+        modes = set( self._dict_metadata[ 'set_modes' ] )
+        # add modes of the components
+        if self.is_combined :
+            # %% COMBINED %%
+            for layer in self._l_layer :
+                if layer is not None :
+                    modes.update( layer.modes ) # update modes
+        return modes
     @property
     def int_num_cpus( self ) :
         """ # 2022-07-21 23:22:24 
@@ -6752,9 +6794,32 @@ class RamDataLayer( ) :
             return self[ list( self.modes )[ 0 ] ] # return any ramtx as a fallback
         return rtx
     def get_ramtx( self, flag_is_for_querying_features = True, flag_prefer_dense = False ) :
-        """ # 2022-07-31 11:55:06 
+        """ # 2022-09-01 11:37:10 
         retrieve ramtx for querying feature/barcodes
         """
+        if self.is_combined  :
+            # %% COMBINED %%
+            l_rtx = list( layer.get_ramtx( flag_is_for_querying_features = flag_is_for_querying_features, flag_prefer_dense = flag_prefer_dense ) for layer in self._l_layer ) # retrieve list of rtx with the given settings
+            mode = '___'.join( list( 'None' if rtx is None else rtx.mode for rtx in l_rtx ) ) # retrieve the name of 'mode' for the current ramtx
+            # define arguments for opening a RAMtx object
+            dict_kwargs = {
+                'ramdata' : self._ramdata, 
+                'dtype_of_feature_and_barcode_indices' : self._dtype_of_feature_and_barcode_indices, 
+                'dtype_of_values' : self._dtype_of_values, 
+                'int_num_cpus' : self._int_num_cpus, 
+                'verbose' : self.verbose, 
+                'flag_debugging' : False, 
+                'mode' : self._mode, 
+                'path_folder_ramtx_mask' : f'{self._path_folder_ramdata_layer_mask}{mode}/' if self._mask_available else None, 
+                'flag_is_read_only' : self._flag_is_read_only,
+                'l_rtx' : l_rtx, # retrieve list of rtx objects for the current mode
+            }
+            rtx = RAMtx( f'{self._path_folder_ramdata_layer}{mode}/', ** dict_kwargs )
+            # apply filters
+            rtx.ba_filter_features = self.ba_filter_features
+            rtx.ba_filter_barcodes = self.ba_filter_barcodes
+            return rtx
+        
         mode_dense = f"dense_for_querying_{'features' if flag_is_for_querying_features else 'barcodes'}" # retrieve mode name for dense ramtx based on 'flag_is_for_querying_features'
         mode_sparse = f"sparse_for_querying_{'features' if flag_is_for_querying_features else 'barcodes'}" # retrieve mode name for sparse ramtx based on 'flag_is_for_querying_features'
         for mode in [ mode_dense, mode_sparse ] if flag_prefer_dense else [ mode_sparse, mode_dense ] : # search ramtx considering 'flag_prefer_dense'
@@ -6764,14 +6829,17 @@ class RamDataLayer( ) :
             print( f"ramtx for querying {'features' if flag_is_for_querying_features else 'barcodes'} efficiently is not available for layer {self.name}, containing the following modes: {self.modes}" )
         return None
     def __getitem__( self, mode ) :
-        """ # 2022-07-30 18:44:49 
+        """ # 2022-09-01 09:11:56 
         """
         if mode in self : # if a given mode is available
             if hasattr( self, f"ramtx_{mode}" ) : # if a given mode has been loaded
                 return getattr( self, f"ramtx_{mode}" ) # return the ramtx of the given mode
     def __delitem__( self, mode ) :
-        """ # 2022-08-24 20:31:28 
+        """ # 2022-09-01 09:11:47 
         """
+        # ignore if combined mode is active (ramtx of component RamData should not be deleted from the combined RamData)
+        if self.is_combined :
+            return
         # ignore if current mode is 'read-only'
         if self._mode == 'r' :
             return
@@ -6873,6 +6941,25 @@ class RamData( ) :
         # initialize axis objects
         self.bc = RamDataAxis( path_folder_ramdata, 'barcodes', l_ax = list( ram.bc for ram in self._l_ramdata ) if self._l_ramdata is not None else None, index_ax_data_source_when_interleaved = index_ramdata_source_for_combined_barcodes_shared_across_ramdata, flag_check_combined_type = flag_check_combined_type, flag_is_interleaved = flag_combined_ramdata_barcodes_shared_across_ramdata, ba_filter = None, ramdata = self, dict_kw_zdf = dict_kw_zdf, dict_kw_view = dict_kw_view, int_index_str_rep = int_index_str_rep_for_barcodes, verbose = verbose, mode = self._mode, path_folder_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only )
         self.ft = RamDataAxis( path_folder_ramdata, 'features', l_ax = list( ram.ft for ram in self._l_ramdata ) if self._l_ramdata is not None else None, index_ax_data_source_when_interleaved = index_ramdata_source_for_combined_features_shared_across_ramdata, flag_check_combined_type = flag_check_combined_type, flag_is_interleaved = flag_combined_ramdata_features_shared_across_ramdata, ba_filter = None, ramdata = self, dict_kw_zdf = dict_kw_zdf, dict_kw_view = dict_kw_view, int_index_str_rep = int_index_str_rep_for_features, verbose = verbose, mode = self._mode, path_folder_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only )
+
+        # compose metadata for the combined ramdata
+        if self.is_combined :
+            # %% COMBINED %%
+            ''' write metadata '''
+            if not zarr_exists( self._path_folder_ramdata ) :
+                self._root = zarr.open( self._path_folder_ramdata, 'a' )
+                # compose metadata
+                self._dict_metadata = { 
+                    'path_folder_mtx_10x_input' : None,
+                    'str_completed_time' : TIME_GET_timestamp( True ),
+                    'int_num_features' : self.ft.int_num_entries,
+                    'int_num_barcodes' : self.bc.int_num_entries,
+                    'layers' : [ ],
+                    'models' : dict( ),
+                    'version' : _version_,
+                }
+                self._root.attrs[ 'dict_metadata' ] = self._dict_metadata # write the metadata
+                self._dict_metadata[ 'layers' ] = set( self._dict_metadata[ 'layers' ] )
         
         # initialize the layor object
         if name_layer is not None : # if given name of the layer is valid
@@ -6888,7 +6975,6 @@ class RamData( ) :
         else : # initialize anndatacontainer and shelvecontainer in the memory using a dicitonary (a fallback)
             self.ad = dict( )
             self.ns = dict( )
-        # 🔴🔴🔴 TEMP 🔴🔴🔴
         # self.models # add model attributes
     @property
     def is_combined( self ) :
@@ -6933,6 +7019,18 @@ class RamData( ) :
         ''' # 2022-06-24 00:14:45 
         return a set of available layers
         '''
+        layers = set( self.metadata[ 'layers' ] ) # create copy
+        # add layers of the components
+        if self.is_combined :
+            # %% COMBINED %%
+            for ram in self._l_ramdata :
+                layers.update( ram.layers ) # update layers
+        return layers
+    @property
+    def layers_excluding_components( self ) :
+        ''' # 2022-06-24 00:14:45 
+        return a set of available layers (excluding layers of the component RamData objects)
+        '''
         return self.metadata[ 'layers' ]
     def __contains__( self, x ) -> bool :
         ''' # 2022-06-24 00:15:04 
@@ -6976,8 +7074,19 @@ class RamData( ) :
                 raise KeyError( f"'{name_layer}' data does not exists in the current RamData" )
 
             if self.layer is None or name_layer != self.layer.name : # if no layer has been loaded or new layer name has been given, load the new layer
-                self._layer = RamDataLayer( self._path_folder_ramdata, name_layer, ramdata = self, dtype_of_feature_and_barcode_indices = self._dtype_of_feature_and_barcode_indices, dtype_of_values = self._dtype_of_values, int_num_cpus = self._int_num_cpus_for_fetching_data, verbose = self.verbose, mode = self._mode, path_folder_ramdata_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only )
-
+                if name_layer not in self.layers_excluding_components : # load the layer from the component RamData objects
+                    # load layer from components and compose 'l_layer'
+                    l_layer = [ ]
+                    for ram in self._l_ramdata :
+                        if name_layer in ram.layers :
+                            ram.layer = name_layer
+                            l_layer.append( ram.layer )
+                        else :
+                            l_layer.append( None )
+                    # load combined layer
+                    self._layer = RamDataLayer( self._path_folder_ramdata, name_layer, l_layer = l_layer, ramdata = self, dtype_of_feature_and_barcode_indices = self._dtype_of_feature_and_barcode_indices, dtype_of_values = self._dtype_of_values, int_num_cpus = self._int_num_cpus_for_fetching_data, verbose = self.verbose, mode = self._mode, path_folder_ramdata_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only )
+                else : # load the layer from the combined RamData object directly
+                    self._layer = RamDataLayer( self._path_folder_ramdata, name_layer, ramdata = self, dtype_of_feature_and_barcode_indices = self._dtype_of_feature_and_barcode_indices, dtype_of_values = self._dtype_of_values, int_num_cpus = self._int_num_cpus_for_fetching_data, verbose = self.verbose, mode = self._mode, path_folder_ramdata_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only )
                 if self.verbose :
                     print( f"'{name_layer}' layer has been loaded" )
     def delete_layer( self, * l_name_layer ) :
@@ -7001,12 +7110,12 @@ class RamData( ) :
         """ # 2022-07-20 00:38:24 
         display RamData
         """
-        return f"<{'' if not self._mode == 'r' else '(read-only) '}RamData object ({'' if self.bc.filter is None else f'{self.bc.meta.n_rows}/'}{self.metadata[ 'int_num_barcodes' ]} barcodes X {'' if self.ft.filter is None else f'{self.ft.meta.n_rows}/'}{self.metadata[ 'int_num_features' ]} features" + ( '' if self.layer is None else f", {self.layer.int_num_records} records in the currently active layer '{self.layer.name}'" ) + f") stored at {self._path_folder_ramdata}{'' if self._path_folder_ramdata_mask is None else f' with local mask available at {self._path_folder_ramdata_mask}'}\n\twith the following layers : {self.layers}\n\t\tcurrent layer is '{self.layer.name}'>" # show the number of records of the current layer if available.
+        return f"<{'' if not self._mode == 'r' else '(read-only) '}RamData object ({'' if self.bc.filter is None else f'{self.bc.meta.n_rows}/'}{self.metadata[ 'int_num_barcodes' ]} barcodes X {'' if self.ft.filter is None else f'{self.ft.meta.n_rows}/'}{self.metadata[ 'int_num_features' ]} features" + ( '' if self.layer is None else f", {self.layer.int_num_records} records in the currently active layer '{self.layer.name}'" ) + f") stored at {self._path_folder_ramdata}{'' if self._path_folder_ramdata_mask is None else f' with local mask available at {self._path_folder_ramdata_mask}'}\n\twith the following layers : {self.layers}\n\t\tcurrent layer is '{self.layer.name if self.layer is not None else None}'>" # show the number of records of the current layer if available.
     def _repr_html_( self ) :
         """ # 2022-08-07 23:56:55 
         display RamData in an interactive environment
         """
-        f"<{'' if not self._mode == 'r' else '(read-only) '}RamData object ({'' if self.bc.filter is None else f'{self.bc.meta.n_rows}/'}{self.metadata[ 'int_num_barcodes' ]} barcodes X {'' if self.ft.filter is None else f'{self.ft.meta.n_rows}/'}{self.metadata[ 'int_num_features' ]} features" + ( '' if self.layer is None else f", {self.layer.int_num_records} records in the currently active layer '{self.layer.name}'" ) + f") stored at {self._path_folder_ramdata}{'' if self._path_folder_ramdata_mask is None else f' with local mask available at {self._path_folder_ramdata_mask}'}\n\twith the following layers : {self.layers}\n\t\tcurrent layer is '{self.layer.name}'>" 
+        f"<{'' if not self._mode == 'r' else '(read-only) '}RamData object ({'' if self.bc.filter is None else f'{self.bc.meta.n_rows}/'}{self.metadata[ 'int_num_barcodes' ]} barcodes X {'' if self.ft.filter is None else f'{self.ft.meta.n_rows}/'}{self.metadata[ 'int_num_features' ]} features" + ( '' if self.layer is None else f", {self.layer.int_num_records} records in the currently active layer '{self.layer.name}'" ) + f") stored at {self._path_folder_ramdata}{'' if self._path_folder_ramdata_mask is None else f' with local mask available at {self._path_folder_ramdata_mask}'}\n\twith the following layers : {self.layers}\n\t\tcurrent layer is '{self.layer.name if self.layer is not None else None}'>" 
         dict_data = {
             'barcodes' : {
                 'filter' : self.bc.filter is not None,
@@ -7430,7 +7539,7 @@ class RamData( ) :
         # remove temp folder
         shutil.rmtree( path_folder_temp )
     def apply( self, name_layer, name_layer_new, func = None, mode_instructions = 'sparse_for_querying_features', path_folder_ramdata_output = None, dtype_of_row_and_col_indices = np.int32, dtype_of_value = np.float64, int_num_threads = None, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = True, int_num_of_records_in_a_chunk_zarr_matrix = 20000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, chunks_dense = ( 2000, 1000 ), dtype_dense_mtx = np.float64, dtype_sparse_mtx = np.float64, dtype_sparse_mtx_index = np.float64 ) :
-        ''' # 2022-08-01 10:39:43 
+        ''' # 2022-09-01 21:31:55 
         this function apply a function and/or filters to the records of the given data, and create a new data object with 'name_layer_new' as its name.
         
         example usage: calculate normalized count data, perform log1p transformation, cell filtering, etc.                             
@@ -7554,11 +7663,11 @@ class RamData( ) :
             
         # check the validility of the input arguments
         if not name_layer in self.layers :
-            if verbose :
+            if self.verbose :
                 print( f"[ERROR] [RamData.Apply] invalid argument 'name_layer' : '{name_layer}' does not exist." )
             return -1 
         elif path_folder_ramdata_output is None and name_layer_new in self.layers : # if the new RAMtx object will be saved to the current RamData and the name of the RAMtx already exists in the current RamData
-            if verbose :
+            if self.verbose :
                 print( f"[ERROR] [RamData.Apply] invalid argument 'name_layer_new' : '{name_layer_new}' is already present in the current RamData." )
             return -1 
         
@@ -7871,7 +7980,7 @@ class RamData( ) :
         # update metadata of current RamData
         # update 'layers' if the layer has been saved in the current RamData object (or the mask of the current RamData object)
         if flag_new_layer_added_to_the_current_ramdata and not flag_update_a_layer :
-            self.layers.add( name_layer_new )
+            self.layers_excluding_components.add( name_layer_new ) # add layer directly to the current ramdata
             self._save_metadata_( )
     def subset( self, path_folder_ramdata_output, l_name_layer = [ ], int_num_threads = None, ** kwargs ) :
         ''' # 2022-07-05 23:20:02 
