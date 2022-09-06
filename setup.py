@@ -12,7 +12,7 @@ with open(os.path.join(HERE, "README.md")) as fid:
 
 setup(
     name='scelephant',
-    version='0.0.3',
+    version='0.0.7',
     author="Hyunsu An",
     author_email="ahs2202@gm.gist.ac.kr",
     description="SCelephant (Single-Cell Extremely Large Data Analysis Platform)",
@@ -23,8 +23,8 @@ setup(
     packages=find_packages( ),
     include_package_data=True,
     install_requires=[
-        'biobookshelf>=0.1.38',
-        'zarr>=2.11.3',
+        'biobookshelf>=0.1.40',
+        'zarr>=2.12.0',
         'numcodecs>=0.9.1',
         'hdbscan>=0.8.28',
         'pgzip>=0.3.1',
