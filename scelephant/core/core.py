@@ -41,10 +41,13 @@ import pynndescent
 # for leiden clustering
 import igraph as ig
 
+# for thread-safe start of processes
+mpsp = mp.get_context('spawn')
+
 # define version
-_version_ = '0.0.5'
+_version_ = '0.0.7'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-08-29 12:50:29'
+_last_modified_time_ = '2022-09-06 20:21:20'
 
 """ # 2022-07-21 10:35:42  realease note
 
@@ -161,6 +164,13 @@ Also, fill_value of categorical column is now -1, interpreting empty values as n
 # 2022-08-29 12:46:18 
 RamDataAxis now supports combined mode, either sharing rows ('interleaved' type) or each has unique rows ('stacked' type), backed by the combined ZarrDataFrame object.
 RamDataAxis can automatically determines combined type, and build index mapping dictionaries for the 'interleaved' type.
+
+# 2022-09-05 23:49:37
+RAMtx, RamDataLayer, RamData now supports combined mode.
+RamData.load_model now can search and download models from component RamData
+
+# 2022-09-06 20:21:27 
+multiprocessing and load-balancing algorithm was improved (biobookshelf.Multiprocessing_Batch_Generator_and_Workers)
 """
 
 ''' previosuly written for biobookshelf '''
@@ -5987,22 +5997,26 @@ class RAMtx( ) :
                         sl = slice( int_num_entries_processed_in_axis_for_querying, min( len_axis, int_num_entries_processed_in_axis_for_querying + int_num_entries_in_a_batch_in_axis_for_querying ) ) # retrieve a slice along the primary axis
                         yield { 'sl' : sl, 'int_num_entries_processed_in_axis_for_querying' : int_num_entries_processed_in_axis_for_querying }
                         int_num_entries_processed_in_axis_for_querying += int_num_entries_in_a_batch_in_axis_for_querying # update the position
-                def __process_batch( batch, pipe_result_sender ) :
-                    """ # 2022-08-15 20:46:05 
+                def __process_batch( pipe_receiver_batch, pipe_sender_result ) :
+                    ''' # 2022-09-06 17:15:42 
                     process batches containing entries on the primary axis
-                    """
-                    # parse batch
-                    sl, int_num_entries_processed_in_axis_for_querying = batch[ 'sl' ], batch[ 'int_num_entries_processed_in_axis_for_querying' ]
-                    
-                    # initialize looping through axis not for querying (secondary axis)
-                    int_num_entries_processed_in_axis_not_for_querying = 0
-                    arr_num_records = np.zeros( sl.stop - sl.start, dtype = np.int64 ) # initialize the list of the number of records for the entries in the current batch
-                    while int_num_entries_processed_in_axis_not_for_querying < len_axis_secondary :
-                        sl_secondary = slice( int_num_entries_processed_in_axis_not_for_querying, min( len_axis_secondary, int_num_entries_processed_in_axis_not_for_querying + int_num_entries_in_a_subbatch_in_axis_not_for_querying ) ) # retrieve a slice along the secondary axis
-                        arr_num_records += ( ( self._za_mtx.get_orthogonal_selection( ( sl, sl_secondary ) ).T if flag_axis_is_barcode else self._za_mtx.get_orthogonal_selection( ( sl_secondary, sl ) ) ) > 0 ).sum( axis = 0 ) # update 'arr_num_records'
-                        int_num_entries_processed_in_axis_not_for_querying += int_num_entries_in_a_subbatch_in_axis_not_for_querying # update the position
-                    # send the result
-                    pipe_result_sender.send( ( sl, arr_num_records ) )
+                    '''
+                    while True :
+                        batch = pipe_receiver_batch.recv( )
+                        if batch is None :
+                            break
+                        # parse batch
+                        sl, int_num_entries_processed_in_axis_for_querying = batch[ 'sl' ], batch[ 'int_num_entries_processed_in_axis_for_querying' ]
+
+                        # initialize looping through axis not for querying (secondary axis)
+                        int_num_entries_processed_in_axis_not_for_querying = 0
+                        arr_num_records = np.zeros( sl.stop - sl.start, dtype = np.int64 ) # initialize the list of the number of records for the entries in the current batch
+                        while int_num_entries_processed_in_axis_not_for_querying < len_axis_secondary :
+                            sl_secondary = slice( int_num_entries_processed_in_axis_not_for_querying, min( len_axis_secondary, int_num_entries_processed_in_axis_not_for_querying + int_num_entries_in_a_subbatch_in_axis_not_for_querying ) ) # retrieve a slice along the secondary axis
+                            arr_num_records += ( ( self._za_mtx.get_orthogonal_selection( ( sl, sl_secondary ) ).T if flag_axis_is_barcode else self._za_mtx.get_orthogonal_selection( ( sl_secondary, sl ) ) ) > 0 ).sum( axis = 0 ) # update 'arr_num_records'
+                            int_num_entries_processed_in_axis_not_for_querying += int_num_entries_in_a_subbatch_in_axis_not_for_querying # update the position
+                        # send the result
+                        pipe_sender_result.send( ( sl, arr_num_records ) )
                 def __post_process_batch( res ) :
                     """ # 2022-08-15 21:03:59 
                     process result from a batch
@@ -6015,7 +6029,7 @@ class RAMtx( ) :
                         ns[ 'l_buffer' ] = [ ] # initialize the buffer
                     
                 # process batch by batch
-                bk.Multiprocessing_Batch( gen_batch = __gen_batch( ), process_batch = __process_batch, post_process_batch = __post_process_batch, int_num_threads = int_num_threads )
+                bk.Multiprocessing_Batch_Generator_and_Workers( gen_batch = __gen_batch( ), process_batch = __process_batch, post_process_batch = __post_process_batch, int_num_threads = int_num_threads )
                     
             # flush the buffer
             if len( ns[ 'l_buffer' ] ) > 0 :
@@ -6540,6 +6554,7 @@ class RAMtx( ) :
                 path_folder_zarr_weight = f"{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/" # define an existing zarr object path
                 flag_weight_available = True
                 za_weight = zarr.open( path_folder_zarr_weight ) # open zarr object containing weights if available
+        print( 'flag_weight_available', flag_weight_available )
         
         def __update_total_num_records( ) :
             """ # 2022-08-05 00:56:12 
@@ -7609,34 +7624,38 @@ class RamData( ) :
         ax = self.bc if flag_summarizing_barcode else self.ft
         
         # define functions for multiprocessing step
-        def process_batch( batch, pipe_to_main_process ) :
+        def process_batch( pipe_receiver_batch, pipe_sender_result ) :
             ''' # 2022-05-08 13:19:07 
-            summarize a given list of entries, and write summarized result as a tsv file, and return the path to the output file
+            summarize a given list of entries, and send summarized result through a pipe
             '''
-            int_num_processed_records, l_int_entry_current_batch = batch[ 'int_accumulated_weight_current_batch' ], batch[ 'l_int_entry_current_batch' ] # parse batch
-            
-            # retrieve the number of index_entries
-            int_num_entries_in_a_batch = len( l_int_entry_current_batch )
-            
-            if int_num_entries_in_a_batch == 0 :
-                print( 'empty batch detected' )
-            
-            # iterate through the data of each entry
-            dict_data = dict( ( name_col, [ ] ) for name_col in l_name_col_summarized ) # collect results
-            l_int_entry_of_axis_for_querying = [ ] # collect list of queried entries with valid results
-            for int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying, arr_value in zip( * rtx[ l_int_entry_current_batch ] ) : # retrieve data for the current batch
-                # retrieve summary for the entry
-                dict_res = summarizing_func( self, int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying, arr_value ) # summarize the data for the entry
-                # if the result empty, does not collect the result
-                if dict_res is None :
-                    continue
-                # collect the result
-                # collect the int_entry with a valid result
-                l_int_entry_of_axis_for_querying.append( int_entry_of_axis_for_querying )
-                # collect the result
-                for name_col in l_name_col_summarized :
-                    dict_data[ name_col ].append( dict_res[ name_col ] if name_col in dict_res else np.nan )
-            pipe_to_main_process.send( ( int_num_processed_records, l_int_entry_of_axis_for_querying, dict_data ) ) # send information about the output file
+            while True :
+                batch = pipe_receiver_batch.recv( )
+                if batch is None :
+                    break
+                int_num_processed_records, l_int_entry_current_batch = batch[ 'int_accumulated_weight_current_batch' ], batch[ 'l_int_entry_current_batch' ] # parse batch
+
+                # retrieve the number of index_entries
+                int_num_entries_in_a_batch = len( l_int_entry_current_batch )
+
+                if int_num_entries_in_a_batch == 0 :
+                    print( 'empty batch detected' )
+
+                # iterate through the data of each entry
+                dict_data = dict( ( name_col, [ ] ) for name_col in l_name_col_summarized ) # collect results
+                l_int_entry_of_axis_for_querying = [ ] # collect list of queried entries with valid results
+                for int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying, arr_value in zip( * rtx[ l_int_entry_current_batch ] ) : # retrieve data for the current batch
+                    # retrieve summary for the entry
+                    dict_res = summarizing_func( self, int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying, arr_value ) # summarize the data for the entry
+                    # if the result empty, does not collect the result
+                    if dict_res is None :
+                        continue
+                    # collect the result
+                    # collect the int_entry with a valid result
+                    l_int_entry_of_axis_for_querying.append( int_entry_of_axis_for_querying )
+                    # collect the result
+                    for name_col in l_name_col_summarized :
+                        dict_data[ name_col ].append( dict_res[ name_col ] if name_col in dict_res else np.nan )
+                pipe_sender_result.send( ( int_num_processed_records, l_int_entry_of_axis_for_querying, dict_data ) ) # send information about the output file
         # initialize the progress bar
         pbar = progress_bar( total = rtx.get_total_num_records( int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ) )
         def post_process_batch( res ) :
@@ -7652,7 +7671,7 @@ class RamData( ) :
             for name_col, name_col_with_prefix_and_suffix in zip( l_name_col_summarized, l_name_col_summarized_with_name_layer_prefix_and_suffix ) : 
                 ax.meta[ name_col_with_prefix_and_suffix, l_int_entry_of_axis_for_querying ] = dict_data[ name_col ]
         # summarize the RAMtx using multiple processes
-        bk.Multiprocessing_Batch( rtx.batch_generator( ax.filter, int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, int_total_weight_for_each_batch = self.int_total_weight_for_each_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 )
+        bk.Multiprocessing_Batch_Generator_and_Workers( rtx.batch_generator( ax.filter, int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, int_total_weight_for_each_batch = self.int_total_weight_for_each_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 )
         pbar.close( ) # close the progress bar
     def apply( self, name_layer, name_layer_new, func = None, mode_instructions = 'sparse_for_querying_features', path_folder_ramdata_output = None, dtype_of_row_and_col_indices = np.int32, dtype_of_value = np.float64, int_num_threads = None, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = True, int_num_of_records_in_a_chunk_zarr_matrix = 20000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, chunks_dense = ( 2000, 1000 ), dtype_dense_mtx = np.float64, dtype_sparse_mtx = np.float64, dtype_sparse_mtx_index = np.float64 ) :
         ''' # 2022-09-01 21:31:55 
@@ -7838,75 +7857,79 @@ class RamData( ) :
 
             """ convert matrix values and save it to the output RAMtx object """
             # define functions for multiprocessing step
-            def process_batch( batch, pipe_to_main_process ) :
+            def process_batch( pipe_receiver_batch, pipe_sender_result ) :
                 ''' # 2022-05-08 13:19:07 
                 retrieve data for a given list of entries, transform values, and save to a Zarr object and index the object, and returns the number of written records and the paths of the written objects (index and Zarr matrix)
                 '''
-                # initialize
-                path_folder_zarr_output_sparse = None
-                path_file_index_output_sparse = None
-                
-                # parse batch
-                int_num_processed_records, index_batch, l_int_entry_current_batch = batch[ 'int_accumulated_weight_current_batch' ], batch[ 'index_batch' ], batch[ 'l_int_entry_current_batch' ]
-                
-                # retrieve the number of index_entries
-                int_num_entries = len( l_int_entry_current_batch )
-                int_num_records_written = 0 # initialize the record count
-                l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying, l_arr_value = [ ], [ ], [ ] # initializes lists for collecting transformed data
-                
-                """ %% SPARSE %% """
-                if flag_sparse_ramtx_output : # if sparse output is present
-                    # open an Zarr object
-                    path_folder_zarr_output_sparse = f"{path_folder_temp}{UUID( )}.zarr/" # define output Zarr object path
-                    za_output_sparse = zarr.open( path_folder_zarr_output_sparse, mode = 'w', shape = ( rtx._int_num_records, 2 ), chunks = za_mtx_sparse.chunks, dtype = dtype_of_value, synchronizer = zarr.ThreadSynchronizer( ) )
-                    # define an index file
-                    path_file_index_output_sparse = f"{path_folder_temp}{UUID( )}.index.tsv.gz" # define output index file path
-                    l_index = [ ] # collect index
-                
-                # iterate through the data of each entry and transform the data
-                for int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying, arr_value in zip( * rtx[ l_int_entry_current_batch ] ) : # retrieve data for the current batch
-                    # transform the values of an entry
-                    int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying, arr_value = func( self, int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying, arr_value ) 
-                    int_num_records = len( arr_value ) # retrieve number of returned records
+                while True :
+                    batch = pipe_receiver_batch.recv( )
+                    if batch is None :
+                        break
+                    # initialize
+                    path_folder_zarr_output_sparse = None
+                    path_file_index_output_sparse = None
+
+                    # parse batch
+                    int_num_processed_records, index_batch, l_int_entry_current_batch = batch[ 'int_accumulated_weight_current_batch' ], batch[ 'index_batch' ], batch[ 'l_int_entry_current_batch' ]
+
+                    # retrieve the number of index_entries
+                    int_num_entries = len( l_int_entry_current_batch )
+                    int_num_records_written = 0 # initialize the record count
+                    l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying, l_arr_value = [ ], [ ], [ ] # initializes lists for collecting transformed data
 
                     """ %% SPARSE %% """
                     if flag_sparse_ramtx_output : # if sparse output is present
-                        # collect index
-                        l_index.append( [ int_entry_of_axis_for_querying, int_num_records_written, int_num_records_written + int_num_records ] )
-                    
-                    # collect transformed data
-                    l_int_entry_of_axis_for_querying.append( int_entry_of_axis_for_querying )
-                    l_arr_int_entry_of_axis_not_for_querying.append( arr_int_entry_of_axis_not_for_querying )
-                    l_arr_value.append( arr_value )
-                    int_num_records_written += int_num_records # update the number of records written
-                del int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying, arr_value # delete references
-                
-                """ combine results """
-                # combine the arrays
-                arr_int_entry_of_axis_not_for_querying = np.concatenate( l_arr_int_entry_of_axis_not_for_querying )
-                arr_value = np.concatenate( l_arr_value )
-                del l_arr_value # delete intermediate objects
+                        # open an Zarr object
+                        path_folder_zarr_output_sparse = f"{path_folder_temp}{UUID( )}.zarr/" # define output Zarr object path
+                        za_output_sparse = zarr.open( path_folder_zarr_output_sparse, mode = 'w', shape = ( rtx._int_num_records, 2 ), chunks = za_mtx_sparse.chunks, dtype = dtype_of_value, synchronizer = zarr.ThreadSynchronizer( ) )
+                        # define an index file
+                        path_file_index_output_sparse = f"{path_folder_temp}{UUID( )}.index.tsv.gz" # define output index file path
+                        l_index = [ ] # collect index
 
-                # compose 'arr_int_entry_of_axis_for_querying'
-                arr_int_entry_of_axis_for_querying = np.zeros( len( arr_int_entry_of_axis_not_for_querying ), dtype = self._dtype_of_feature_and_barcode_indices ) # create an empty array
-                int_pos = 0
-                for int_entry_of_axis_for_querying, a in zip( l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying ) :
-                    n = len( a )
-                    arr_int_entry_of_axis_for_querying[ int_pos : int_pos + n ] = int_entry_of_axis_for_querying # compose 'arr_int_entry_of_axis_for_querying'
-                    int_pos += n # update the current position
-                del l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying # delete intermediate objects
-                    
-                """ %% DENSE %% """
-                if flag_dense_ramtx_output : # if dense output is present
-                    za_mtx_dense.set_coordinate_selection( ( arr_int_entry_of_axis_not_for_querying, arr_int_entry_of_axis_for_querying ) if rtx.is_for_querying_features else ( arr_int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying ), arr_value ) # write dense zarr matrix
+                    # iterate through the data of each entry and transform the data
+                    for int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying, arr_value in zip( * rtx[ l_int_entry_current_batch ] ) : # retrieve data for the current batch
+                        # transform the values of an entry
+                        int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying, arr_value = func( self, int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying, arr_value ) 
+                        int_num_records = len( arr_value ) # retrieve number of returned records
 
-                """ %% SPARSE %% """
-                if flag_sparse_ramtx_output : # if sparse output is present
-                    za_output_sparse[ : int_num_records_written ] = np.vstack( ( arr_int_entry_of_axis_not_for_querying, arr_value ) ).T # save transformed data
-                    za_output_sparse.resize( int_num_records_written, 2 ) # resize the output Zarr object
-                    pd.DataFrame( l_index ).to_csv( path_file_index_output_sparse, header = None, index = None, sep = '\t' ) # write the index file
-                    
-                pipe_to_main_process.send( ( index_batch, int_num_processed_records, int_num_records_written, path_folder_zarr_output_sparse, path_file_index_output_sparse ) ) # send information about the output files
+                        """ %% SPARSE %% """
+                        if flag_sparse_ramtx_output : # if sparse output is present
+                            # collect index
+                            l_index.append( [ int_entry_of_axis_for_querying, int_num_records_written, int_num_records_written + int_num_records ] )
+
+                        # collect transformed data
+                        l_int_entry_of_axis_for_querying.append( int_entry_of_axis_for_querying )
+                        l_arr_int_entry_of_axis_not_for_querying.append( arr_int_entry_of_axis_not_for_querying )
+                        l_arr_value.append( arr_value )
+                        int_num_records_written += int_num_records # update the number of records written
+                    del int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying, arr_value # delete references
+
+                    """ combine results """
+                    # combine the arrays
+                    arr_int_entry_of_axis_not_for_querying = np.concatenate( l_arr_int_entry_of_axis_not_for_querying )
+                    arr_value = np.concatenate( l_arr_value )
+                    del l_arr_value # delete intermediate objects
+
+                    # compose 'arr_int_entry_of_axis_for_querying'
+                    arr_int_entry_of_axis_for_querying = np.zeros( len( arr_int_entry_of_axis_not_for_querying ), dtype = self._dtype_of_feature_and_barcode_indices ) # create an empty array
+                    int_pos = 0
+                    for int_entry_of_axis_for_querying, a in zip( l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying ) :
+                        n = len( a )
+                        arr_int_entry_of_axis_for_querying[ int_pos : int_pos + n ] = int_entry_of_axis_for_querying # compose 'arr_int_entry_of_axis_for_querying'
+                        int_pos += n # update the current position
+                    del l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying # delete intermediate objects
+
+                    """ %% DENSE %% """
+                    if flag_dense_ramtx_output : # if dense output is present
+                        za_mtx_dense.set_coordinate_selection( ( arr_int_entry_of_axis_not_for_querying, arr_int_entry_of_axis_for_querying ) if rtx.is_for_querying_features else ( arr_int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying ), arr_value ) # write dense zarr matrix
+
+                    """ %% SPARSE %% """
+                    if flag_sparse_ramtx_output : # if sparse output is present
+                        za_output_sparse[ : int_num_records_written ] = np.vstack( ( arr_int_entry_of_axis_not_for_querying, arr_value ) ).T # save transformed data
+                        za_output_sparse.resize( int_num_records_written, 2 ) # resize the output Zarr object
+                        pd.DataFrame( l_index ).to_csv( path_file_index_output_sparse, header = None, index = None, sep = '\t' ) # write the index file
+
+                    pipe_sender_result.send( ( index_batch, int_num_processed_records, int_num_records_written, path_folder_zarr_output_sparse, path_file_index_output_sparse ) ) # send information about the output files
             # initialize the progress bar
             pbar = progress_bar( total = rtx.get_total_num_records( int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ) )
             def post_process_batch( res ) :
@@ -7957,7 +7980,7 @@ class RamData( ) :
                         pbar.update( int_num_processed_records ) # update the progress bar
                 
             # transform the values of the RAMtx using multiple processes
-            bk.Multiprocessing_Batch( rtx.batch_generator( ax.filter, int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, int_total_weight_for_each_batch = self.int_total_weight_for_each_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) # create batch considering chunk boundaries # return batch index to allow combining sparse matrix in an ascending order.
+            bk.Multiprocessing_Batch_Generator_and_Workers( rtx.batch_generator( ax.filter, int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, int_total_weight_for_each_batch = self.int_total_weight_for_each_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) # create batch considering chunk boundaries # return batch index to allow combining sparse matrix in an ascending order.
             pbar.close( ) # close the progress bar
             
             # remove temp folder
@@ -8997,15 +9020,19 @@ class RamData( ) :
         ipca = skl.decomposition.IncrementalPCA( n_components = int_num_components, batch_size = int_num_barcodes_in_ipca_batch, copy = False, whiten = flag_ipca_whiten ) # copy = False to increase memory-efficiency
 
         # define functions for multiprocessing step
-        def process_batch( batch, pipe_to_main_process ) :
-            ''' # 2022-07-13 22:18:15 
+        def process_batch( pipe_receiver_batch, pipe_sender_result ) :
+            ''' # 2022-05-08 13:19:07 
             prepare data as a sparse matrix for the batch
             '''
-            # parse the received batch
-            int_num_of_previously_returned_entries, l_int_entry_current_batch = batch[ 'int_num_of_previously_returned_entries' ], batch[ 'l_int_entry_current_batch' ]
-            int_num_retrieved_entries = len( l_int_entry_current_batch )
+            while True :
+                batch = pipe_receiver_batch.recv( )
+                if batch is None :
+                    break
+                # parse the received batch
+                int_num_of_previously_returned_entries, l_int_entry_current_batch = batch[ 'int_num_of_previously_returned_entries' ], batch[ 'l_int_entry_current_batch' ]
+                int_num_retrieved_entries = len( l_int_entry_current_batch )
 
-            pipe_to_main_process.send( ( int_num_of_previously_returned_entries, int_num_retrieved_entries, rtx.get_sparse_matrix( l_int_entry_current_batch )[ int_num_of_previously_returned_entries : int_num_of_previously_returned_entries + int_num_retrieved_entries ] ) ) # retrieve and send sparse matrix as an input to the incremental PCA # resize sparse matrix
+                pipe_sender_result.send( ( int_num_of_previously_returned_entries, int_num_retrieved_entries, rtx.get_sparse_matrix( l_int_entry_current_batch )[ int_num_of_previously_returned_entries : int_num_of_previously_returned_entries + int_num_retrieved_entries ] ) ) # retrieve and send sparse matrix as an input to the incremental PCA # resize sparse matrix
         pbar = progress_bar( total = ax.meta.n_rows ) # initialize the progress bar
         def post_process_batch( res ) :
             """ # 2022-07-13 22:18:18 
@@ -9022,7 +9049,7 @@ class RamData( ) :
             if self.verbose : # report
                 print( f'fit completed for {int_num_of_previously_returned_entries + 1}-{int_num_of_previously_returned_entries + int_num_retrieved_entries} barcodes' )
         # fit iPCA using multiple processes
-        bk.Multiprocessing_Batch( ax.batch_generator( int_num_entries_for_batch = int_num_barcodes_in_ipca_batch ), process_batch, post_process_batch = post_process_batch, int_num_threads = max( min( int_num_threads, 3 ), 2 ), int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) # number of threads for multi-processing is 2 ~ 5 # generate batch with fixed number of barcodes
+        bk.Multiprocessing_Batch_Generator_and_Workers( ax.batch_generator( int_num_entries_for_batch = int_num_barcodes_in_ipca_batch ), process_batch, post_process_batch = post_process_batch, int_num_threads = max( min( int_num_threads, 3 ), 2 ), int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) # number of threads for multi-processing is 2 ~ 5 # generate batch with fixed number of barcodes
         pbar.close( ) # close the progress bar
         
         # report
@@ -9103,15 +9130,19 @@ class RamData( ) :
         2) Transform Data
         """
         # define functions for multiprocessing step
-        def process_batch( batch, pipe_to_main_process ) :
-            ''' # 2022-07-13 22:18:22 
+        def process_batch( pipe_receiver_batch, pipe_sender_result ) :
+            ''' # 2022-09-06 17:05:15 
             retrieve data and retrieve transformed PCA values for the batch
             '''
-            # parse the received batch
-            int_num_processed_records, int_num_of_previously_returned_entries, l_int_entry_current_batch = batch[ 'int_accumulated_weight_current_batch' ], batch[ 'int_num_of_previously_returned_entries' ], batch[ 'l_int_entry_current_batch' ]
-            int_num_retrieved_entries = len( l_int_entry_current_batch )
+            while True :
+                batch = pipe_receiver_batch.recv( )
+                if batch is None :
+                    break
+                # parse the received batch
+                int_num_processed_records, int_num_of_previously_returned_entries, l_int_entry_current_batch = batch[ 'int_accumulated_weight_current_batch' ], batch[ 'int_num_of_previously_returned_entries' ], batch[ 'l_int_entry_current_batch' ]
+                int_num_retrieved_entries = len( l_int_entry_current_batch )
 
-            pipe_to_main_process.send( ( int_num_processed_records, l_int_entry_current_batch, rtx.get_sparse_matrix( l_int_entry_current_batch )[ int_num_of_previously_returned_entries : int_num_of_previously_returned_entries + int_num_retrieved_entries ] ) ) # retrieve data as a sparse matrix and send the result of PCA transformation # send the integer representations of the barcodes for PCA value update
+                pipe_sender_result.send( ( int_num_processed_records, l_int_entry_current_batch, rtx.get_sparse_matrix( l_int_entry_current_batch )[ int_num_of_previously_returned_entries : int_num_of_previously_returned_entries + int_num_retrieved_entries ] ) ) # retrieve data as a sparse matrix and send the result of PCA transformation # send the integer representations of the barcodes for PCA value update
         pipe_sender, pipe_receiver = mp.Pipe( ) # create a communication link between the main process and the worker for saving zarr objects
         pbar = progress_bar( total = rtx.get_total_num_records( int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ) )
         def post_process_batch( res ) :
@@ -9147,7 +9178,7 @@ class RamData( ) :
         p.start( )
 
         # transform values using iPCA using multiple processes
-        bk.Multiprocessing_Batch( rtx.batch_generator( ax.filter, int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, int_total_weight_for_each_batch = self.int_total_weight_for_each_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) 
+        bk.Multiprocessing_Batch_Generator_and_Workers( rtx.batch_generator( ax.filter, int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, int_total_weight_for_each_batch = self.int_total_weight_for_each_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) 
         pbar.close( ) # close the progress bar
         # dismiss the worker
         pipe_sender.send( None ) # send the termination signal
@@ -9595,27 +9626,29 @@ class RamData( ) :
         # initialize the counter for counting labels
         dict_label_counter = dict( )
         # define functions for multiprocessing step
-        def process_batch( batch, pipe_to_main_process ) :
-            ''' # 2022-07-13 22:18:22 
-            retrieve data and retrieve transformed PCA values for the batch
+        def process_batch( pipe_receiver_batch, pipe_sender_result ) :
+            ''' # 2022-09-06 17:05:15 
             '''
-            # parse the received batch
-            int_num_of_previously_returned_entries, l_int_entry_current_batch = batch[ 'int_num_of_previously_returned_entries' ], batch[ 'l_int_entry_current_batch' ]
-            
-            # retrieve data from the axis metadata
-            data = ax.meta[ name_col_data, l_int_entry_current_batch, : int_num_components_data ]
-            
-            neighbors, distances = index.query( data ) # retrieve neighbors using the index
-            del data, distances
-            
-            labels_assigned = list( bk.DICTIONARY_Find_keys_with_max_value( bk.COUNTER( labels[ e ] ) )[ 0 ][ 0 ] for e in neighbors ) # assign labels using the labels of nearest neighbors
-            del neighbors
-            
-            pipe_to_main_process.send( ( l_int_entry_current_batch, labels_assigned ) ) # send the result back to the main process
+            while True :
+                batch = pipe_receiver_batch.recv( )
+                if batch is None :
+                    break
+                # parse the received batch
+                int_num_of_previously_returned_entries, l_int_entry_current_batch = batch[ 'int_num_of_previously_returned_entries' ], batch[ 'l_int_entry_current_batch' ]
+
+                # retrieve data from the axis metadata
+                data = ax.meta[ name_col_data, l_int_entry_current_batch, : int_num_components_data ]
+
+                neighbors, distances = index.query( data ) # retrieve neighbors using the index
+                del data, distances
+
+                labels_assigned = list( bk.DICTIONARY_Find_keys_with_max_value( bk.COUNTER( labels[ e ] ) )[ 0 ][ 0 ] for e in neighbors ) # assign labels using the labels of nearest neighbors
+                del neighbors
+
+                pipe_sender_result.send( ( l_int_entry_current_batch, labels_assigned ) ) # send the result back to the main process
         pbar = progress_bar( total = ax.meta.n_rows ) # initialize the progress bar
         def post_process_batch( res ) :
             """ # 2022-07-13 22:18:26 
-            perform PCA transformation for each batch
             """
             # parse result 
             l_int_entry_current_batch, labels_assigned = res
@@ -9632,7 +9665,7 @@ class RamData( ) :
             pbar.update( int_num_retrieved_entries ) # update the progress bar
             del labels_assigned
         # transform values using iPCA using multiple processes
-        bk.Multiprocessing_Batch( ax.batch_generator( ax.filter, int_num_entries_for_batch = int_num_entries_in_a_batch, flag_mix_randomly = False ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) 
+        bk.Multiprocessing_Batch_Generator_and_Workers( ax.batch_generator( ax.filter, int_num_entries_for_batch = int_num_entries_in_a_batch, flag_mix_randomly = False ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) 
         pbar.close( ) # close the progress bar
         
         # return the counts of each unique label
@@ -9736,21 +9769,25 @@ class RamData( ) :
             """
             self.change_filter( name_col_filter ) # change filter to all the query entries for estimating density
             dict_label_total_avg_dist = dict( ) # initialize the dictionary for surveying the the total 'average distance' values of the entries belonging to each unique label
+            
             # define functions for multiprocessing step
-            def process_batch( batch, pipe_to_main_process ) :
-                ''' # 2022-07-13 22:18:22 
-                retrieve data and retrieve transformed PCA values for the batch
+            def process_batch( pipe_receiver_batch, pipe_sender_result ) :
+                ''' # 2022-09-06 17:10:30 
                 '''
-                # parse the received batch
-                int_num_of_previously_returned_entries, l_int_entry_current_batch = batch[ 'int_num_of_previously_returned_entries' ], batch[ 'l_int_entry_current_batch' ]
+                while True :
+                    batch = pipe_receiver_batch.recv( )
+                    if batch is None :
+                        break
+                    # parse the received batch
+                    int_num_of_previously_returned_entries, l_int_entry_current_batch = batch[ 'int_num_of_previously_returned_entries' ], batch[ 'l_int_entry_current_batch' ]
 
-                # retrieve data from the axis metadata
-                data = ax.meta[ name_col_data, l_int_entry_current_batch, : int_num_components_data ]
+                    # retrieve data from the axis metadata
+                    data = ax.meta[ name_col_data, l_int_entry_current_batch, : int_num_components_data ]
 
-                neighbors, distances = index.query( data ) # retrieve neighbors using the index
-                del data, neighbors
+                    neighbors, distances = index.query( data ) # retrieve neighbors using the index
+                    del data, neighbors
 
-                pipe_to_main_process.send( ( l_int_entry_current_batch, distances.mean( axis = 1 ) ) ) # calculate average distances of the entries in a batch # send the result back to the main process
+                    pipe_sender_result.send( ( l_int_entry_current_batch, distances.mean( axis = 1 ) ) ) # calculate average distances of the entries in a batch # send the result back to the main process
             pbar = progress_bar( total = ax.meta.n_rows ) # initialize the progress bar
             def post_process_batch( res ) :
                 """ # 2022-07-13 22:18:26 
@@ -9771,7 +9808,7 @@ class RamData( ) :
 
                 pbar.update( int_num_retrieved_entries ) # update the progress bar
             # transform values using iPCA using multiple processes
-            bk.Multiprocessing_Batch( ax.batch_generator( ax.filter, int_num_entries_for_batch = int_num_entries_in_a_batch, flag_mix_randomly = False ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) 
+            bk.Multiprocessing_Batch_Generator_and_Workers( ax.batch_generator( ax.filter, int_num_entries_for_batch = int_num_entries_in_a_batch, flag_mix_randomly = False ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) 
             pbar.close( ) # close the progress bar
             
             """
@@ -9806,14 +9843,17 @@ class RamData( ) :
                 print( f"[Info] [RamData.subsample] iteration #{index_iteration} subsampling started" )
 
             # define functions for multiprocessing step
-            def process_batch( batch, pipe_to_main_process ) :
-                ''' # 2022-07-13 22:18:22 
-                retrieve data and retrieve transformed PCA values for the batch
+            def process_batch( pipe_receiver_batch, pipe_sender_result ) :
+                ''' # 2022-09-06 17:10:30 
                 '''
-                # parse the received batch
-                int_num_of_previously_returned_entries, l_int_entry_current_batch = batch[ 'int_num_of_previously_returned_entries' ], batch[ 'l_int_entry_current_batch' ]
-                
-                pipe_to_main_process.send( ( l_int_entry_current_batch, ax.meta[ name_col_label, l_int_entry_current_batch, index_iteration ], ax.meta[ name_col_avg_dist, l_int_entry_current_batch, index_iteration ] ) ) # retrieve data from the axis metadata and # send result back to the main process
+                while True :
+                    batch = pipe_receiver_batch.recv( )
+                    if batch is None :
+                        break
+                    # parse the received batch
+                    int_num_of_previously_returned_entries, l_int_entry_current_batch = batch[ 'int_num_of_previously_returned_entries' ], batch[ 'l_int_entry_current_batch' ]
+
+                    pipe_sender_result.send( ( l_int_entry_current_batch, ax.meta[ name_col_label, l_int_entry_current_batch, index_iteration ], ax.meta[ name_col_avg_dist, l_int_entry_current_batch, index_iteration ] ) ) # retrieve data from the axis metadata and # send result back to the main process
             pbar = progress_bar( total = ax.meta.n_rows ) # initialize the progress bar
             def post_process_batch( res ) :
                 """ # 2022-07-13 22:18:26 
@@ -9845,7 +9885,7 @@ class RamData( ) :
                 
                 pbar.update( int_num_retrieved_entries ) # update the progress bar
             # transform values using iPCA using multiple processes
-            bk.Multiprocessing_Batch( ax.batch_generator( ax.filter, int_num_entries_for_batch = int_num_entries_in_a_batch, flag_mix_randomly = False ), process_batch, post_process_batch = post_process_batch, int_num_threads = min( 3, int_num_threads ), int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) 
+            bk.Multiprocessing_Batch_Generator_and_Workers( ax.batch_generator( ax.filter, int_num_entries_for_batch = int_num_entries_in_a_batch, flag_mix_randomly = False ), process_batch, post_process_batch = post_process_batch, int_num_threads = min( 3, int_num_threads ), int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) 
             pbar.close( ) # close the progress bar
             
             # prepare next batch
