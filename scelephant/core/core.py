@@ -47,7 +47,7 @@ mpsp = mp.get_context('spawn')
 # define version
 _version_ = '0.0.7'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-09-06 20:21:20'
+_last_modified_time_ = '2022-09-07 21:15:52'
 
 """ # 2022-07-21 10:35:42  realease note
 
@@ -171,6 +171,9 @@ RamData.load_model now can search and download models from component RamData
 
 # 2022-09-06 20:21:27 
 multiprocessing and load-balancing algorithm was improved (biobookshelf.Multiprocessing_Batch_Generator_and_Workers)
+
+# 2022-09-07 21:13:29 
+a multiprocessing support for HTTP-stored RamData objects was implemented by hosting zarr objects in spawned processes, making them thread-safe by isolating zarr objects from each other.
 """
 
 ''' previosuly written for biobookshelf '''
@@ -5557,7 +5560,72 @@ class RamDataAxis( ) :
         
         # return subsampled entries
         return ba_subsampled
-
+    
+''' a class for serving zarr object from remote source in multiple forked processes '''
+def zarr_object_server( path_folder_zarr, pipe_receiver_input, pipe_sender_output, mode = 'r' ) :
+    """ # 2022-09-06 22:54:32 
+    open a zarr object and serve various operations
+    
+    'mode' : zarr object mode
+    """
+    # open a zarr object
+    za = zarr.open( path_folder_zarr, mode )
+    pipe_sender_output.send( ( za.shape, za.chunks, za.dtype, za.fill_value ) ) # send basic information about the zarr object
+    
+    while True :
+        e = pipe_receiver_input.recv( )
+        if e is None : # exit if None is received
+            break
+        name_func, args = e # parse input
+        pipe_sender_output.send( getattr( za, name_func )( * args ) ) # return result
+class ZarrServer( ) :
+    """ # 2022-09-06 21:53:54 
+    This class is for serving zarr object in a spawned process for thread-safe operation
+    
+    'path_folder_zarr' : a path to a (remote) zarr object
+    mode = 'r' # mode
+    """
+    def __init__( self, path_folder_zarr, mode = 'r' ) :
+        """ # 2022-09-06 22:47:31 
+        """
+        # set attributes
+        self._mode = mode
+        self._path_folder_zarr = path_folder_zarr
+        
+        # create pipes for interactions
+        mpsp = mp.get_context( 'spawn' )
+        pipe_sender_input, pipe_receiver_input  = mpsp.Pipe( )
+        pipe_sender_output, pipe_receiver_output = mpsp.Pipe( )
+        
+        self._pipe_sender_input = pipe_sender_input
+        self._pipe_receiver_output = pipe_receiver_output
+        
+        # start the process hosting a zarr object
+        p = mpsp.Process( target = zarr_object_server, args = ( path_folder_zarr, pipe_receiver_input, pipe_sender_output, mode ) )
+        p.start( )
+        self._p = p
+        
+        # retrieve attributes of a zarr object
+        self.shape, self.chunks, self.dtype, self.fill_value = self._pipe_receiver_output.recv( ) # set attributes
+    def get_coordinate_selection( self, * args ) :
+        self._pipe_sender_input.send( ( 'get_coordinate_selection', args ) ) # send input
+        return self._pipe_receiver_output.recv( ) # retrieve result and return
+    def get_basic_selection( self, * args ) :
+        self._pipe_sender_input.send( ( 'get_basic_selection', args ) ) # send input
+        return self._pipe_receiver_output.recv( ) # retrieve result and return
+    def get_orthogonal_selection( self, * args ) :
+        self._pipe_sender_input.send( ( 'get_orthogonal_selection', args ) ) # send input
+        return self._pipe_receiver_output.recv( ) # retrieve result and return
+    def get_mask_selection( self, * args ) :
+        self._pipe_sender_input.send( ( 'get_mask_selection', args ) ) # send input
+        return self._pipe_receiver_output.recv( ) # retrieve result and return
+    def terminate( self ) :
+        """ # 2022-09-06 23:16:22 
+        terminate the server
+        """
+        self._pipe_sender_input.send( None )
+        self._p.join( ) # wait until the process join the main process
+    
 ''' a class for RAMtx '''
 ''' a class for accessing Zarr-backed count matrix data (RAMtx, Random-Access matrix) '''
 class RAMtx( ) :
@@ -5581,7 +5649,6 @@ class RAMtx( ) :
     # 2022-08-30 11:44:49 
     'combined' mode was initialized.
     
-    
     arguments:
     'path_folder_ramtx' : a folder containing RAMtx object
     'ba_filter_features' : a bitarray filter object for features. active element is marked by 1 and inactive element is marked by 0
@@ -5594,6 +5661,8 @@ class RAMtx( ) :
     'path_folder_ramtx_mask' : a local (local file system) path to the mask of the RAMtx object that allows modifications to be written without modifying the source. if a valid local path to a mask is given, all modifications will be written to the mask
     'is_for_querying_features' : a flag for indicating whether the current RAMtx will be used for querying features. for sparse matrix, this attribute will be fixed. However, for dense matrix, this atrribute can be changed any time.
     'int_total_number_of_values_in_a_batch_for_dense_matrix' : the total number of values that will be loaded in dense format for each minibatch (subbatch) when retrieving sparse data from the dense matrix using multiple number of processes. this setting can be changed later
+    'rtx_template' : a RAMtx object to use as a template (copy arguments except for 'l_rtx', 'rtx_template', 'flag_use_zarr_server') 
+    'flag_use_zarr_server' : if True, use zarr server instead of zarr object to retrieve records. useful when a given zarr object is not fork-safe
     
     === arguments for combined RAMtx === 
     'l_rtx' : list of component RAMtx object for the 'combined' mode. to disable 'combined' mode, set this argument to None
@@ -5604,61 +5673,87 @@ class RAMtx( ) :
     dict_index_mapping_from_combined_to_component_bc : mapping dictionary-line object.
     dict_index_mapping_from_combined_to_component_ft : mapping dictionary-line object.
     """
-    def __init__( self, path_folder_ramtx, l_rtx : Union[ list, tuple, None ] = None, dict_index_mapping_from_component_to_combined_bc : Union[ dict, None ] = None, dict_index_mapping_from_component_to_combined_ft : Union[ dict, None ] = None, dict_index_mapping_from_combined_to_component_bc : Union[ dict, None ] = None, dict_index_mapping_from_combined_to_component_ft : Union[ dict, None ] = None, ramdata = None, dtype_of_feature_and_barcode_indices = np.uint32, dtype_of_values = np.float64, int_num_cpus : int = 1, verbose : bool = False, flag_debugging : bool = False, mode : str = 'a', flag_is_read_only : bool = False, path_folder_ramtx_mask : Union[ str, None ] = None, is_for_querying_features : bool = True, int_total_number_of_values_in_a_batch_for_dense_matrix : int = 10000000 ) :
+    def __init__( self, path_folder_ramtx = None, l_rtx : Union[ list, tuple, None ] = None, dict_index_mapping_from_component_to_combined_bc : Union[ dict, None ] = None, dict_index_mapping_from_component_to_combined_ft : Union[ dict, None ] = None, dict_index_mapping_from_combined_to_component_bc : Union[ dict, None ] = None, dict_index_mapping_from_combined_to_component_ft : Union[ dict, None ] = None, ramdata = None, dtype_of_feature_and_barcode_indices = np.uint32, dtype_of_values = np.float64, int_num_cpus : int = 1, verbose : bool = False, flag_debugging : bool = False, mode : str = 'a', flag_is_read_only : bool = False, path_folder_ramtx_mask : Union[ str, None ] = None, is_for_querying_features : bool = True, int_total_number_of_values_in_a_batch_for_dense_matrix : int = 10000000, rtx_template = None, flag_use_zarr_server = False ) :
         """ # 2022-07-31 00:49:59 
         """
-        # set attributes 
-        self._dtype_of_feature_and_barcode_indices = dtype_of_feature_and_barcode_indices
-        self._dtype_of_values = dtype_of_values
-        self._path_folder_ramtx = path_folder_ramtx
-        self.verbose = verbose 
-        self.flag_debugging = flag_debugging
-        self.int_num_cpus = int_num_cpus
-        self._ramdata = ramdata
-        self._mode = mode
-        self._flag_is_read_only = flag_is_read_only
-        self._path_folder_ramtx_mask = path_folder_ramtx_mask
-        self.int_total_number_of_values_in_a_batch_for_dense_matrix = int_total_number_of_values_in_a_batch_for_dense_matrix
-        self._l_rtx = l_rtx
-        # mapping dictionaries
-        self._dict_index_mapping_from_component_to_combined_bc = dict_index_mapping_from_component_to_combined_bc
-        self._dict_index_mapping_from_component_to_combined_ft = dict_index_mapping_from_component_to_combined_ft
-        self._dict_index_mapping_from_combined_to_component_ft = dict_index_mapping_from_combined_to_component_ft
-        self._dict_index_mapping_from_combined_to_component_bc = dict_index_mapping_from_combined_to_component_bc
-        
-        # compose metadata for the combined ramtx
-        # %% COMBINED %%
-        if self.is_combined :
-            ''' write metadata '''
-            if not zarr_exists( path_folder_ramtx ) :
-                self._root = zarr.open( path_folder_ramtx, 'w' )
-                # compose metadata
-                self._dict_metadata = { 
-                    'path_folder_mtx_10x_input' : None,
-                    'mode' : '___'.join( list( 'None' if rtx is None else rtx.mode for rtx in l_rtx ) ), # compose mode
-                    'str_completed_time' : TIME_GET_timestamp( True ),
-                    'int_num_features' : ramdata.ft.int_num_entries,
-                    'int_num_barcodes' : ramdata.bc.int_num_entries,
-                    'int_num_records' : sum( rtx._int_num_records for rtx in l_rtx if rtx is not None ), # calculate the total number of records
-                    'version' : _version_,
-                }
-                self._root.attrs[ 'dict_metadata' ] = self._dict_metadata # write the metadata
+        if rtx_template is not None : # when template has been given, copy attributes and metadata
+            # set attributes
+            self._path_folder_ramtx = rtx_template._path_folder_ramtx
+            self._dict_index_mapping_from_component_to_combined_bc = rtx_template._dict_index_mapping_from_component_to_combined_bc
+            self._dict_index_mapping_from_component_to_combined_ft = rtx_template._dict_index_mapping_from_component_to_combined_ft
+            self._dict_index_mapping_from_combined_to_component_bc = rtx_template._dict_index_mapping_from_combined_to_component_bc
+            self._dict_index_mapping_from_combined_to_component_ft = rtx_template._dict_index_mapping_from_combined_to_component_ft
+            self._ramdata = rtx_template._ramdata
+            self._dtype_of_feature_and_barcode_indices = rtx_template._dtype_of_feature_and_barcode_indices
+            self._dtype_of_values = rtx_template._dtype_of_values
+            self.int_num_cpus = rtx_template.int_num_cpus
+            self.verbose = rtx_template.verbose
+            self.flag_debugging = rtx_template.flag_debugging
+            self._mode = rtx_template._mode
+            self._flag_is_read_only = rtx_template._flag_is_read_only
+            self._path_folder_ramtx_mask = rtx_template._path_folder_ramtx_mask
+            self._is_for_querying_features = rtx_template._is_for_querying_features
+            self.int_total_number_of_values_in_a_batch_for_dense_matrix = rtx_template.int_total_number_of_values_in_a_batch_for_dense_matrix
+            
+            # set metadata (avoid zarr operation)
+            self._root = rtx_template._root
+            self._dict_metadata = rtx_template._dict_metadata
+            
+            # set 'l_rtx'
+            self._l_rtx = l_rtx
+        else :
+            # set attributes 
+            self._dtype_of_feature_and_barcode_indices = dtype_of_feature_and_barcode_indices
+            self._dtype_of_values = dtype_of_values
+            self._path_folder_ramtx = path_folder_ramtx
+            self.verbose = verbose 
+            self.flag_debugging = flag_debugging
+            self.int_num_cpus = int_num_cpus
+            self._ramdata = ramdata
+            self._mode = mode
+            self._flag_is_read_only = flag_is_read_only
+            self._path_folder_ramtx_mask = path_folder_ramtx_mask
+            self.int_total_number_of_values_in_a_batch_for_dense_matrix = int_total_number_of_values_in_a_batch_for_dense_matrix
+            self._l_rtx = l_rtx
+            # mapping dictionaries
+            self._dict_index_mapping_from_component_to_combined_bc = dict_index_mapping_from_component_to_combined_bc
+            self._dict_index_mapping_from_component_to_combined_ft = dict_index_mapping_from_component_to_combined_ft
+            self._dict_index_mapping_from_combined_to_component_ft = dict_index_mapping_from_combined_to_component_ft
+            self._dict_index_mapping_from_combined_to_component_bc = dict_index_mapping_from_combined_to_component_bc
 
-            # set component indices mapping dictionaries
-            for rtx, dict_index_mapping_from_component_to_combined_bc, dict_index_mapping_from_component_to_combined_ft, dict_index_mapping_from_combined_to_component_bc, dict_index_mapping_from_combined_to_component_ft in zip( l_rtx, ramdata.bc._l_dict_index_mapping_from_component_to_combined, ramdata.ft._l_dict_index_mapping_from_component_to_combined, ramdata.bc._l_dict_index_mapping_from_combined_to_component, ramdata.ft._l_dict_index_mapping_from_combined_to_component ) :
-                if rtx is not None :
-                    # set mapping dictionaries to each rtx component
-                    rtx._dict_index_mapping_from_component_to_combined_ft = dict_index_mapping_from_component_to_combined_ft
-                    rtx._dict_index_mapping_from_component_to_combined_bc = dict_index_mapping_from_component_to_combined_bc
-                    rtx._dict_index_mapping_from_combined_to_component_ft = dict_index_mapping_from_combined_to_component_ft
-                    rtx._dict_index_mapping_from_combined_to_component_bc = dict_index_mapping_from_combined_to_component_bc
-        # read metadata
-        self._root = zarr.open( path_folder_ramtx, 'a' )
-        self._dict_metadata = self._root.attrs[ 'dict_metadata' ] # retrieve the metadata
-        
+            # compose metadata for the combined ramtx
+            # %% COMBINED %%
+            if self.is_combined :
+                ''' write metadata '''
+                if not zarr_exists( path_folder_ramtx ) :
+                    self._root = zarr.open( path_folder_ramtx, 'w' )
+                    # compose metadata
+                    self._dict_metadata = { 
+                        'path_folder_mtx_10x_input' : None,
+                        'mode' : '___'.join( list( 'None' if rtx is None else rtx.mode for rtx in l_rtx ) ), # compose mode
+                        'str_completed_time' : TIME_GET_timestamp( True ),
+                        'int_num_features' : ramdata.ft.int_num_entries,
+                        'int_num_barcodes' : ramdata.bc.int_num_entries,
+                        'int_num_records' : sum( rtx._int_num_records for rtx in l_rtx if rtx is not None ), # calculate the total number of records
+                        'version' : _version_,
+                    }
+                    self._root.attrs[ 'dict_metadata' ] = self._dict_metadata # write the metadata
+
+                # set component indices mapping dictionaries
+                for rtx, dict_index_mapping_from_component_to_combined_bc, dict_index_mapping_from_component_to_combined_ft, dict_index_mapping_from_combined_to_component_bc, dict_index_mapping_from_combined_to_component_ft in zip( l_rtx, ramdata.bc._l_dict_index_mapping_from_component_to_combined, ramdata.ft._l_dict_index_mapping_from_component_to_combined, ramdata.bc._l_dict_index_mapping_from_combined_to_component, ramdata.ft._l_dict_index_mapping_from_combined_to_component ) :
+                    if rtx is not None :
+                        # set mapping dictionaries to each rtx component
+                        rtx._dict_index_mapping_from_component_to_combined_ft = dict_index_mapping_from_component_to_combined_ft
+                        rtx._dict_index_mapping_from_component_to_combined_bc = dict_index_mapping_from_component_to_combined_bc
+                        rtx._dict_index_mapping_from_combined_to_component_ft = dict_index_mapping_from_combined_to_component_ft
+                        rtx._dict_index_mapping_from_combined_to_component_bc = dict_index_mapping_from_combined_to_component_bc
+            # read metadata
+            self._root = zarr.open( path_folder_ramtx, 'a' )
+            self._dict_metadata = self._root.attrs[ 'dict_metadata' ] # retrieve the metadata
+
         # parse the metadata of the RAMtx object
         self._int_num_features, self._int_num_barcodes, self._int_num_records = self._dict_metadata[ 'int_num_features' ], self._dict_metadata[ 'int_num_barcodes' ], self._dict_metadata[ 'int_num_records' ]
-        
+
         # set filters using RamData
         self.ba_filter_features = ramdata.ft.filter if ramdata is not None else None
         self.ba_filter_barcodes = ramdata.bc.filter if ramdata is not None else None
@@ -5670,11 +5765,11 @@ class RAMtx( ) :
             if self.is_sparse :
                 self._is_for_querying_features = self._dict_metadata[ 'flag_ramtx_sorted_by_id_feature' ] # for sparse matrix, this attribute is fixed
                 # open Zarr object containing matrix and matrix indices
-                self._za_mtx_index = zarr.open( f'{self._path_folder_ramtx}matrix.index.zarr', 'r', synchronizer = zarr.ThreadSynchronizer( ) )
-                self._za_mtx = zarr.open( f'{self._path_folder_ramtx}matrix.zarr', 'r', synchronizer = zarr.ThreadSynchronizer( ) )
+                self._za_mtx_index = ZarrServer( f'{self._path_folder_ramtx}matrix.index.zarr', 'r' ) if flag_use_zarr_server else zarr.open( f'{self._path_folder_ramtx}matrix.index.zarr', 'r', synchronizer = zarr.ThreadSynchronizer( ) )
+                self._za_mtx = ZarrServer( f'{self._path_folder_ramtx}matrix.zarr', 'r' ) if flag_use_zarr_server else zarr.open( f'{self._path_folder_ramtx}matrix.zarr', 'r', synchronizer = zarr.ThreadSynchronizer( ) )
             else : # dense matrix
                 self.is_for_querying_features = is_for_querying_features # set this attribute
-                self._za_mtx = zarr.open( f'{self._path_folder_ramtx}matrix.zarr', 'r', synchronizer = zarr.ThreadSynchronizer( ) )
+                self._za_mtx = ZarrServer( f'{self._path_folder_ramtx}matrix.zarr', 'r' ) if flag_use_zarr_server else zarr.open( f'{self._path_folder_ramtx}matrix.zarr', 'r', synchronizer = zarr.ThreadSynchronizer( ) )
         else :
             # %% COMBINED %%
             self._is_sparse = None
@@ -5698,13 +5793,43 @@ class RAMtx( ) :
         """ # 2022-09-03 17:17:32 
         return True if the RAMtx is located remotely
         """
-        return 'http' == self._path_folder_ramtx[ : len( 'http' ) ]
+        return 'http' == self._path_folder_ramtx[ : len( 'http' ) ]     
+    def load_zarr_server( self ) :
+        """ # 2022-09-06 23:38:07 
+        replace zarr objects with zarr_server objects if current RAMtx object is located remotely
+        """
+        # for remote zarr object, load the zarr object using the ZarrServer to avoid fork-not-safe error
+        if not self.is_combined :
+            rtx_with_zarr_server = RAMtx( rtx_template = self, flag_use_zarr_server = True )
+        else :
+            # load zarr server for each component RAMtx object
+            rtx_with_zarr_server = RAMtx( rtx_template = self, l_rtx = list( None if rtx is None else rtx.load_zarr_server( ) for rtx in self._l_rtx ) )
+        return rtx_with_zarr_server
+    def destroy_zarr_server( self ) :
+        """ # 2022-09-07 02:33:48 
+        destroy zarr server objects if they exists in the current RAMtx
+        """
+        # for remote zarr object, load the zarr object using the ZarrServer to avoid fork-not-safe error
+        if not self.is_combined and self.is_remote  :
+            if self.is_sparse :
+                # destroy Zarr object hosted in spawned process
+                if hasattr( self._za_mtx_index, 'terminate' ) :
+                    self._za_mtx_index.terminate( )
+                if hasattr( self._za_mtx, 'terminate' ) :
+                    self._za_mtx.terminate( )
+            else : # dense matrix
+                if hasattr( self._za_mtx, 'terminate' ) :
+                    self._za_mtx.terminate( )
+        else :
+            # destroy zarr server for each component RAMtx object
+            for rtx in self._l_rtx :
+                if rtx is not None :
+                    rtx.destroy_zarr_server( )
     def get_za( self ) :
         """ # 2022-09-05 11:11:05 
-        get zarr objects for operating RAMtx matrix.  the primary function of this function is to re-load zarr objects when the source is remotely located (http)
+        get zarr objects for operating RAMtx matrix.  the primary function of this function is to retrieve a zarr objects hosted in a thread-safe spawned process when the source is remotely located (http)
         """
         # retrieve zarr object for index and matrix
-        # for remote zarr object, re-load the zarr object to avoid fork-not-safe error
         za_mtx_index, za_mtx = None, None
         if not self.is_combined :
             # open zarr objects
@@ -6321,7 +6446,7 @@ class RAMtx( ) :
                 """
                 arr_index_of_a_batch = np.array( l_index_in_a_batch ) # convert index of the batch to a numpy array
                 st_batch, en_batch = arr_index_of_a_batch[ 0, 0 ], arr_index_of_a_batch[ - 1, 1 ] # retrieve start and end positions of the current batch
-                arr_int_entry_of_axis_not_for_querying, arr_value = za_mtx[ st_batch : en_batch ].T # fetch data from the Zarr object
+                arr_int_entry_of_axis_not_for_querying, arr_value = za_mtx.get_orthogonal_selection( slice( st_batch, en_batch ) ).T # fetch data from the Zarr object
                 
                 for int_entry, index in zip( l_int_entry_in_a_batch, arr_index_of_a_batch - st_batch ) : # substract the start position of the batch to retrieve the local index
                     st, en = index
@@ -6554,7 +6679,6 @@ class RAMtx( ) :
                 path_folder_zarr_weight = f"{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/" # define an existing zarr object path
                 flag_weight_available = True
                 za_weight = zarr.open( path_folder_zarr_weight ) # open zarr object containing weights if available
-        print( 'flag_weight_available', flag_weight_available )
         
         def __update_total_num_records( ) :
             """ # 2022-08-05 00:56:12 
@@ -7616,10 +7740,6 @@ class RamData( ) :
                 print( f'it appears that the current layer {self.layer.name} appears to be empty, exiting' )
             return
         
-        # if rtx matrix contains remotely hosted data, disable multi-processing mode, since current Zarr HTTPStore does not support multi-processing...
-        if rtx.contains_remote :
-            int_num_threads = 1
-        
         # retrieve Axis object to summarize 
         ax = self.bc if flag_summarizing_barcode else self.ft
         
@@ -7628,6 +7748,9 @@ class RamData( ) :
             ''' # 2022-05-08 13:19:07 
             summarize a given list of entries, and send summarized result through a pipe
             '''
+            # retrieve fork-safe RAMtx
+            rtx_fork_safe = rtx.load_zarr_server( ) if rtx.contains_remote else rtx # load zarr_server (if RAMtx contains remote data source) to be thread-safe
+
             while True :
                 batch = pipe_receiver_batch.recv( )
                 if batch is None :
@@ -7643,7 +7766,7 @@ class RamData( ) :
                 # iterate through the data of each entry
                 dict_data = dict( ( name_col, [ ] ) for name_col in l_name_col_summarized ) # collect results
                 l_int_entry_of_axis_for_querying = [ ] # collect list of queried entries with valid results
-                for int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying, arr_value in zip( * rtx[ l_int_entry_current_batch ] ) : # retrieve data for the current batch
+                for int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying, arr_value in zip( * rtx_fork_safe[ l_int_entry_current_batch ] ) : # retrieve data for the current batch
                     # retrieve summary for the entry
                     dict_res = summarizing_func( self, int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying, arr_value ) # summarize the data for the entry
                     # if the result empty, does not collect the result
@@ -7656,6 +7779,10 @@ class RamData( ) :
                     for name_col in l_name_col_summarized :
                         dict_data[ name_col ].append( dict_res[ name_col ] if name_col in dict_res else np.nan )
                 pipe_sender_result.send( ( int_num_processed_records, l_int_entry_of_axis_for_querying, dict_data ) ) # send information about the output file
+                
+            # destroy zarr servers
+            if rtx_fork_safe.contains_remote :
+                rtx_fork_safe.destroy_zarr_server( )
         # initialize the progress bar
         pbar = progress_bar( total = rtx.get_total_num_records( int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ) )
         def post_process_batch( res ) :
@@ -7815,10 +7942,6 @@ class RamData( ) :
 
             'rtx': an input RAMtx object
             '''
-            # if rtx matrix contains remotely hosted data, disable multi-processing mode, since current Zarr HTTPStore does not support multi-processing...
-            if rtx.contains_remote :
-                int_num_threads = 1
-            
             ''' prepare '''
             ax = self.ft if rtx.is_for_querying_features else self.bc # retrieve appropriate axis
             ns = dict( ) # create a namespace that can safely shared between different scopes of the functions
@@ -7861,6 +7984,9 @@ class RamData( ) :
                 ''' # 2022-05-08 13:19:07 
                 retrieve data for a given list of entries, transform values, and save to a Zarr object and index the object, and returns the number of written records and the paths of the written objects (index and Zarr matrix)
                 '''
+                # retrieve fork-safe RAMtx
+                rtx_fork_safe = rtx.load_zarr_server( ) if rtx.contains_remote else rtx # load zarr_server (if RAMtx contains remote data source) to be thread-safe
+
                 while True :
                     batch = pipe_receiver_batch.recv( )
                     if batch is None :
@@ -7881,13 +8007,13 @@ class RamData( ) :
                     if flag_sparse_ramtx_output : # if sparse output is present
                         # open an Zarr object
                         path_folder_zarr_output_sparse = f"{path_folder_temp}{UUID( )}.zarr/" # define output Zarr object path
-                        za_output_sparse = zarr.open( path_folder_zarr_output_sparse, mode = 'w', shape = ( rtx._int_num_records, 2 ), chunks = za_mtx_sparse.chunks, dtype = dtype_of_value, synchronizer = zarr.ThreadSynchronizer( ) )
+                        za_output_sparse = zarr.open( path_folder_zarr_output_sparse, mode = 'w', shape = ( rtx_fork_safe._int_num_records, 2 ), chunks = za_mtx_sparse.chunks, dtype = dtype_of_value, synchronizer = zarr.ThreadSynchronizer( ) )
                         # define an index file
                         path_file_index_output_sparse = f"{path_folder_temp}{UUID( )}.index.tsv.gz" # define output index file path
                         l_index = [ ] # collect index
 
                     # iterate through the data of each entry and transform the data
-                    for int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying, arr_value in zip( * rtx[ l_int_entry_current_batch ] ) : # retrieve data for the current batch
+                    for int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying, arr_value in zip( * rtx_fork_safe[ l_int_entry_current_batch ] ) : # retrieve data for the current batch
                         # transform the values of an entry
                         int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying, arr_value = func( self, int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying, arr_value ) 
                         int_num_records = len( arr_value ) # retrieve number of returned records
@@ -7921,7 +8047,7 @@ class RamData( ) :
 
                     """ %% DENSE %% """
                     if flag_dense_ramtx_output : # if dense output is present
-                        za_mtx_dense.set_coordinate_selection( ( arr_int_entry_of_axis_not_for_querying, arr_int_entry_of_axis_for_querying ) if rtx.is_for_querying_features else ( arr_int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying ), arr_value ) # write dense zarr matrix
+                        za_mtx_dense.set_coordinate_selection( ( arr_int_entry_of_axis_not_for_querying, arr_int_entry_of_axis_for_querying ) if rtx_fork_safe.is_for_querying_features else ( arr_int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying ), arr_value ) # write dense zarr matrix
 
                     """ %% SPARSE %% """
                     if flag_sparse_ramtx_output : # if sparse output is present
@@ -7930,6 +8056,9 @@ class RamData( ) :
                         pd.DataFrame( l_index ).to_csv( path_file_index_output_sparse, header = None, index = None, sep = '\t' ) # write the index file
 
                     pipe_sender_result.send( ( index_batch, int_num_processed_records, int_num_records_written, path_folder_zarr_output_sparse, path_file_index_output_sparse ) ) # send information about the output files
+                # destroy zarr servers
+                if rtx_fork_safe.contains_remote :
+                    rtx_fork_safe.destroy_zarr_server( )
             # initialize the progress bar
             pbar = progress_bar( total = rtx.get_total_num_records( int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ) )
             def post_process_batch( res ) :
@@ -7978,7 +8107,7 @@ class RamData( ) :
                         ns[ 'l_res_sparse' ][ ns[ 'index_batch_waiting_to_be_written_sparse' ] ] = None # remove the result from the list of batch outputs
                         ns[ 'index_batch_waiting_to_be_written_sparse' ] += 1 # start waiting for the next batch to be completed
                         pbar.update( int_num_processed_records ) # update the progress bar
-                
+                os.chdir( path_folder_layer_new ) # change path to layer before deleting temp folder
             # transform the values of the RAMtx using multiple processes
             bk.Multiprocessing_Batch_Generator_and_Workers( rtx.batch_generator( ax.filter, int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, int_total_weight_for_each_batch = self.int_total_weight_for_each_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) # create batch considering chunk boundaries # return batch index to allow combining sparse matrix in an ascending order.
             pbar.close( ) # close the progress bar
