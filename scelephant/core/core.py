@@ -174,6 +174,27 @@ multiprocessing and load-balancing algorithm was improved (biobookshelf.Multipro
 
 # 2022-09-07 21:13:29 
 a multiprocessing support for HTTP-stored RamData objects was implemented by hosting zarr objects in spawned processes, making them thread-safe by isolating zarr objects from each other.
+
+# 2022-09-08 18:18:13 
+RamDataAxis.select_component method was added.
+
+# 2022-09-09 14:58:02 
+RamDataAxis.iterate_str method was added 
+
+# 2022-09-11 23:53:36 
+ZarrDataFrame.lazy_load method draft implementation completed 
+
+##### Future implementations #####
+- lazy loading implementation for remotely-located combined ZarrDataFrame :
+    combined ZarrDataFrame should be optimized more. When only a subset of data is needed, a filter will be assigned to combined column indicating which entry contains data and data of entries will be downloaded as it is accessed (lazy loading). 
+
+- lazy loading implementation of string representation of Axis objects :
+    similar mechanism to ZarrDataFrame's lazy-loading will be used
+
+- KNN models will be combined in to a single model, and associated filter and column name will be saved together in order to check validity of the model.
+
+
+
 """
 
 ''' previosuly written for biobookshelf '''
@@ -3627,6 +3648,7 @@ class ZarrDataFrame( ) :
     # 2022-07-04 10:40:20 also, implement a flag-based switch for returning series-based outputs
     # 2022-07-20 22:29:41 : masking functionality was added for the analysis of remote, read-only ZarrDataFrame
     # 2022-08-02 02:17:32 : will enable the use of multi-dimensional data as the 'column'. the primary axis of the data should be same as the length of ZarrDataFrame (the number of rows when no filter is active). By default, the chunking will be only available along the primary axis.
+    # 2022-09-09 14:54:28 : will implement lazy-loading of combined and masked ZarrDataFrame, in order to improve performance when source ZarrDataFrame is hosted remotely.
     
     === arguments ===
     'path_folder_zdf' : a folder to store persistant zarr dataframe.
@@ -3683,9 +3705,38 @@ class ZarrDataFrame( ) :
     'path_folder_zdf' : a path to the 'combined' ZarrDataFrame object.
     'int_num_rows' : when ZarrDataFrame is in combined mode and 'int_num_rows' argument is not given, 'int_num_rows' will be inferred from the given list of ZarrDataFrame 'l_zdf' and 'l_dict_index_mapping_interleaved'
     
+    === arguments for mask operation ===
+    'zdf_source' : reference to the ZarrDataFrame that will act as a data source for the current zdf
     
+    === settings for lazy-loading ===
+    flag_use_lazy_loading = True : if False, all values from a column from masked ZDF or combined ZDF will be retrieved and saved as a new column of the current ZDF even when a single entry was accessed. 
+        if True, based on the availability mask, only the accessed entries will be transferred to the current ZDF object, reducing significant overhead when the number of rows are extremely large (e.g. > 10 million entries)
     """
-    def __init__( self, path_folder_zdf : str, l_zdf : Union[ list, tuple, None ] = None, index_zdf_data_source_when_interleaved : int = 0, l_dict_index_mapping_interleaved : Union[ List[ dict ], None ] = None, int_max_num_entries_per_batch = 1000000, df = None, int_num_rows = None, int_num_rows_in_a_chunk = 10000, ba_filter = None, flag_enforce_name_col_with_only_valid_characters = False, flag_store_string_as_categorical = True, flag_retrieve_categorical_data_as_integers = False, flag_load_data_after_adding_new_column = True, mode = 'a', path_folder_mask = None, flag_is_read_only = False, flag_use_mask_for_caching = True, verbose = True ) :
+    def __init__( 
+        self, 
+        path_folder_zdf : str, 
+        l_zdf : Union[ list, tuple, None ] = None, 
+        index_zdf_data_source_when_interleaved : int = 0, 
+        l_dict_index_mapping_interleaved : Union[ List[ dict ], None ] = None, 
+        l_dict_index_mapping_from_combined_to_component = None,
+        l_dict_index_mapping_from_component_to_combined = None,
+        int_max_num_entries_per_batch : int = 1000000, 
+        df : Union[ pd.DataFrame, None ] = None, 
+        int_num_rows : Union[ int, None ] = None, 
+        int_num_rows_in_a_chunk : int = 10000, 
+        ba_filter : Union[ bitarray, None ] = None, 
+        flag_enforce_name_col_with_only_valid_characters : bool = False, 
+        flag_store_string_as_categorical : bool = True, 
+        flag_retrieve_categorical_data_as_integers : bool = False, 
+        flag_load_data_after_adding_new_column : bool = True, 
+        mode : str = 'a', 
+        path_folder_mask = None, 
+        zdf_source = None, 
+        flag_is_read_only : bool = False, 
+        flag_use_mask_for_caching : bool = True, 
+        verbose : bool = True,
+        flag_use_lazy_loading : bool = True
+    ) :
         """ # 2022-07-20 10:50:23 
         """
         # handle path
@@ -3704,11 +3755,15 @@ class ZarrDataFrame( ) :
         self._ba_filter = None # initialize the '_ba_filter' attribute
         self.verbose = verbose
         self.int_max_num_entries_per_batch = int_max_num_entries_per_batch
+        self._zdf_source = zdf_source
+        self._flag_use_lazy_loading = flag_use_lazy_loading
         
         # %% COMBINED MODE %%
         self._l_zdf = l_zdf
         self.index_zdf_data_source_when_interleaved = index_zdf_data_source_when_interleaved
         self._l_dict_index_mapping_interleaved = l_dict_index_mapping_interleaved
+        self._l_dict_index_mapping_from_combined_to_component = l_dict_index_mapping_from_combined_to_component
+        self._l_dict_index_mapping_from_component_to_combined = l_dict_index_mapping_from_component_to_combined
 
         # %% COMBINED = STACKED %%
         if self.is_combined and not self.is_interleaved :
@@ -3763,7 +3818,11 @@ class ZarrDataFrame( ) :
                 flag_is_read_only = False,
                 l_zdf = l_zdf,
                 index_zdf_data_source_when_interleaved = index_zdf_data_source_when_interleaved,
-                dict_index_mapping_interleaved = dict_index_mapping_interleaved,
+                l_dict_index_mapping_interleaved = l_dict_index_mapping_interleaved,
+                l_dict_index_mapping_from_combined_to_component = l_dict_index_mapping_from_combined_to_component,
+                l_dict_index_mapping_from_component_to_combined = l_dict_index_mapping_from_component_to_combined,
+                zdf_source = self, # give reference to current source zdf
+                flag_use_lazy_loading = self._flag_use_lazy_loading,
             ) # the mask ZarrDataFrame shoud not have mask, should be modifiable, and not mode == 'r'.
         
         # handle input arguments
@@ -3778,6 +3837,12 @@ class ZarrDataFrame( ) :
             
         # initialize attribute storing columns as dictionaries
         self.dict = dict( )
+    @property
+    def is_mask( self ) :
+        """ # 2022-09-10 22:14:40 
+        return True if the current ZarrDataFrame will act as a mask of another ZarrDataFrame the act as a data source
+        """
+        return self._zdf_source is not None
     @property
     def is_combined( self ) :
         """ # 2022-08-25 13:53:20 
@@ -3908,6 +3973,169 @@ class ZarrDataFrame( ) :
             za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'r' ) # read data from the Zarr object
             dict_col_metadata = za.attrs[ 'dict_col_metadata' ] # retrieve metadata of the current column
             return dict_col_metadata
+    def lazy_load( self, queries, name_col_sink : Union[ str, None ] = None, l_new_value = None, path_column_sink : Union[ str, None ] = None, l_path_column_source : Union[ list, None ] = None, name_col_availability : Union[ None, str ] = None ) -> None :
+        """ # 2022-09-10 21:52:44 
+        perform lazy-loading of a given column using the column containing availability values.
+        it will automatically detect the source objects based on the current setting.
+        
+        # ** warning ** : assumes component ZDF objects contain fully-loaded columns
+        
+        === general ===
+        'queries' : queries for the 'get_integer_indices' method for retrieving the list of integer representations of the entries to load/update
+        'l_new_value' : the list of new values to update. if this argument has been set, this function will operate in 'update' mode. if None is given, this function will operate in 'load' mode
+        'name_col_sink' : the name of the column that will be used as a data sink. if the column does not exist in the current zdf, the column will be initialized using the l_new_values. (should be 'update' mode)
+        
+        === arguments for managing external locations ===
+        'path_column_sink' : the path to a writable zarr object that can be used as a data sink. the column will be annotated with zarrdataframe column metadata for lazy-loading operation.
+        'path_column_source' : the path of source column from which data will be retrieved when 'mask' mode is used.
+        'l_path_column_source' : A list of source columns from which data will be retrieved when 'combined' mode is used. these columns should be have the same length as the given list of component ZarrDataFrame objects
+        'name_col_availability' : by default (if None will be given), default availability column name will be used. alternatively, a column name in the current ZarrDataFrame can be given (if it does not exists, it will be initialized)
+        """      
+        # if mask is present, return the result of the mask
+        if self._mask is not None :
+            return self._mask.lazy_load( queries = queries, name_col_sink = name_col_sink, l_new_value = l_new_value, path_column_sink = path_column_sink, l_path_column_source = l_path_column_source, name_col_availability = name_col_availability )
+        
+        if name_col_sink is None and path_column_sink is None :
+            if self.verbose :
+                print( f"[ZDF][lazy_load] sink column cannot be identified, exiting" )
+            return
+        # check whether the sink column is being lazy-loaded
+        path_column_sink = f"{self._path_folder_zdf}{name_col_sink}/" if path_column_sink is None else path_column_sink
+        if zarr_exists( path_column_sink ) :
+            za = zarr.open( path_column_sink, 'r' )
+            if 'flag_is_being_lazy_loaded' not in za.attrs : # if the column has not been marked with a flag indicating lazy-loading has been started, exit
+                return
+            elif not za.attrs[ 'flag_is_being_lazy_loaded' ] : # if lazy-loading has been completed, exit
+                return
+            
+        # handle invalid inputs
+        if name_col_sink is not None :
+            if name_col_sink[ - len( '__availability__' ) : ] == '__availability__' : # availability column should not be lazy-loaded
+                return
+            if self.is_combined and name_col_sink not in self.columns :
+                return
+            if self.is_mask and name_col_sink not in self._zdf_source.columns :
+                return
+        
+        # retrieve list of integer representations of the entries
+        l_int_entry = list( self.get_integer_indices( queries ) )
+        
+        # retrieve operation modes
+        flag_mode_write = l_new_value is not None and len( l_new_value ) == len( l_int_entry ) # 'write/read' or 'read'
+        flag_mode_internal = path_column_sink is None or l_path_column_source is None or name_col_availability is None # 'internal locations' or 'external locations'
+        
+        if flag_mode_internal : # retrieve internal locations
+            if name_col_sink is None : # check validity of input setting
+                if self.verbose :
+                    print( f"[ZDF][lazy_load] internal mode is active, but 'name_col_sink' has not been given" )
+                return
+            path_column_sink = f"{self._path_folder_zdf}{name_col_sink}/"
+            name_col_availability = f"{name_col_sink}__availability__"
+            if self.is_combined and l_path_column_source is None : # if combined mode is active, pathes of the input component zarr objects will be retrieved
+                l_path_column_source = list( f"{self._path_folder_zdf}{name_col_sink}/" if name_col_sink in zdf else None for zdf in self._l_zdf )
+            if self.is_mask : # if mask mode is active, path of the source column will be retrieved
+                path_column_source = f"{self._zdf_source._path_folder_zdf}{name_col_sink}"
+        if name_col_availability is None :
+            if self.verbose :
+                print( f"[ZDF][lazy_load] 'name_col_availability' has not been given" )
+            return
+        
+        # initialize sink column
+        if flag_mode_write and not zarr_exists( path_column_sink ) : # if sink column does not exist
+            # initialize sink column by retrieving the value of the first entry
+            self.lazy_load( l_int_entry = [ 0 ], name_col_sink = name_col_sink, l_new_value = None, path_column_sink = path_column_sink, l_path_column_source = l_path_column_source, name_col_availability = name_col_availability )
+            
+        # handle invalid modes
+        if not( self.is_combined or self.is_mask ) : # if source data is not available for the current ZarrDataFrame object, exit
+            return
+        
+        # initialize availability column
+        if name_col_availability not in self : # if 'name_col_availability' column does not exist, initialize the column
+            self.initialize_column( name_col_availability, dtype = bool, fill_value = False )
+        dict_col_metadata_availbility = self.get_column_metadata( name_col_availability ) # retrieve metadata
+        if 'flag_is_availability_column' not in dict_col_metadata_availbility : # initialize metadata for availability column
+            # initialize metadata for availability column
+            dict_col_metadata_availbility[ 'flag_is_availability_column' ] = True
+            dict_col_metadata_availbility[ 'int_num_entries_available' ] = 0
+        
+        return_value = None
+        # update sink column (write operation)
+        if flag_mode_write : # write operation
+            dict_col_metadata_availbility[ 'int_num_entries_available' ] += np.sum( ~ self[ name_col_availability, l_int_entry ] ) # update the number of entries available
+            self[ name_col_availability, l_int_entry ] = True # update availability
+            za_sink = zarr.open( path_column_sink, 'a' )
+            za_sink.set_orthogonal_selection( l_int_entry, l_new_value ) # update values
+        else :
+            # retrieve values from sink column (read operation)
+            l_int_entry_that_needs_fetching = np.array( l_int_entry, dtype = int )[ ~ self[ name_col_availability, l_int_entry ] ] # retrieve int_entry that need updates
+            if len( l_int_entry_that_needs_fetching ) > 0 :
+                dict_col_metadata_availbility[ 'int_num_entries_available' ] += len( l_int_entry_that_needs_fetching ) # update the number of entries available
+
+                # fetch data according to the modes of current zdf
+                if self.is_mask and self.is_combined :
+                    pass
+                elif self.is_mask :
+                    za_source = zarr.open( path_column_source, 'r' ) # open source zarr object
+                    # open sink zarr object
+                    if not zarr_exists( path_column_sink ) :
+                        za_sink = zarr.open( path_column_sink, 'a', shape = za_source.shape, chunks = za_source.chunks, fill_value = za_source.fill_value, dtype = str if za_source.dtype is np.dtype( 'O' ) else za_source.dtype )
+                        za_sink.attrs[ 'flag_is_being_lazy_loaded' ] = True # update metadata of the sink column
+                    else :
+                        za_sink = zarr.open( path_column_sink, 'a' )
+                    # fetch and save fetched data to the output column
+                    za_sink.set_orthogonal_selection( l_int_entry_that_needs_fetching, za_source.get_orthogonal_selection( l_int_entry_that_needs_fetching ) ) # update sink column values from values using the source ZarrDataFrame
+                elif self.is_combined :
+                    # %% COMBINED MODE %%
+                    # iterate over components
+                    for int_index_component, zdf, dict_index_mapping_from_combined_to_component, path_column_source in zip( np.arange( len( self._l_zdf ) ), self._l_zdf, self._l_dict_index_mapping_from_combined_to_component, l_path_column_source ) :
+                        # when combined mode is interleaved, retrieve data from a single component
+                        if self.is_interleaved and int_index_component != self.index_zdf_data_source_when_interleaved :
+                            continue
+                        # if source column does not exist, continue
+                        if path_column_source is None :
+                            continue
+
+                        # initialize 'path_column_sink'
+                        if flag_mode_internal : # internal mode
+                            # initialize the 'name_col_sink' column of the current zdf object using the column from the current component zdf
+                            self.initialize_column( name_col = name_col_sink, zdf_template = zdf, name_col_template = name_col_sink ) 
+                        else : # external mode
+                            za_source = zarr.open( path_column_source, 'r' ) # open source zarr object
+                            if not zarr_exists( path_column_sink ) :
+                                za_sink = zarr.open( path_column_sink, 'a', shape = tuple( [ self._n_rows_unfiltered ] + list( za_source.shape[ 1 : ] ) ), chunks = tuple( [ self.int_num_rows_in_a_chunk ] + list( za_source.chunks[ 1 : ] ) ), fill_value = za_source.fill_value, dtype = str if za_source.dtype is np.dtype( 'O' ) else za_source.dtype )
+                                za_sink.attrs[ 'flag_is_being_lazy_loaded' ] = True # update metadata of the sink column
+                            else :
+                                za_sink = zarr.open( path_column_sink, 'a' ) # open sink zarr object
+
+                        # retrieve coordinates of the component zdf
+                        l_int_entry_combined, l_int_entry_component = [ ], [ ] # initialize the array 
+                        for int_entry_combined in l_int_entry_that_needs_fetching :
+                            if int_entry_combined in dict_index_mapping_from_combined_to_component : # if the entry exist in the source column
+                                l_int_entry_combined.append( int_entry_combined )
+                                l_int_entry_component.append( dict_index_mapping_from_combined_to_component[ int_entry_combined ] )
+
+                        # update sink column if there is valid entries to retrieve data and update
+                        if len( l_int_entry_combined ) > 0 :
+                            if flag_mode_internal :
+                                self[ name_col_sink, l_int_entry_combined ] = zdf[ name_col_sink, l_int_entry_component ] # transfer data from the source zdf to the combined column of the current zdf for the current batch
+                            else :
+                                za_sink.set_orthogonal_selection( l_int_entry_combined, za_source.get_orthogonal_selection( l_int_entry_component ) ) # update sink column values from values using the source ZarrDataFrame
+                        del l_int_entry_combined, l_int_entry_component
+                self[ name_col_availability, l_int_entry_that_needs_fetching ] = True # update availability
+            else :
+                za_sink = zarr.open( path_column_sink, 'a' ) # open sink zarr object
+            # return_value = za_sink.get_orthogonal_selection( l_int_entry ) # return values from the sink column
+
+        # when all entries were loaded, delete the availbility column and modify the sink column metadata
+        if dict_col_metadata_availbility[ 'int_num_entries_available' ] == self._n_rows_unfiltered :
+            del self[ name_col_availability ] # delete the column
+            # update metadata of the sink column
+            za = zarr.open( path_column_sink, 'a' )
+            za.attrs[ 'flag_is_being_lazy_loaded' ] = False 
+        # save metadata
+        self._set_column_metadata( name_col_availability, dict_col_metadata_availbility ) # save metadata
+            
+        return return_value # return values
     def _set_column_metadata( self, name_col, dict_col_metadata ) :
         """ # 2022-08-22 12:36:13 
         a semi-private method for setting metadata of a given column (metadata is supposed to be read-only)
@@ -3947,6 +4175,50 @@ class ZarrDataFrame( ) :
                             path_col = f"{zdf._path_folder_zdf}{name_col}/"
                             break
         return path_col # return the path of the matched column
+    def get_integer_indices( self, queries = None ) :
+        """ # 2022-09-11 21:44:43 
+        retrieve integer indices from advanced indexing queries.
+        
+        queries # slice, list of integer indices, bitarray, numpy arrays (boolean) are one of the possible queries
+        """
+        # check coordinate arrays
+        if isinstance( queries, tuple ) : # if a tuple is given as queries, assumes it contains a list of coordinate arrays
+            queries = queries[ 0 ] # retrieve coordinates in the first axis 
+        elif isinstance( queries, slice ) : # if a slice object has been given
+            queries = range( * queries.indices( self._n_rows_unfiltered ) ) # convert slice to range
+        else :
+            # detect boolean mask
+            flag_queries_in_bool_mask = bk.BA.detect_boolean_mask( queries )
+            # convert boolean masks to np.ndarray object
+            if flag_queries_in_bool_mask :
+                if not isinstance( queries, bitarray ) : # if type is not bitarray
+                    # handle list of boolean values
+                    if not isinstance( queries, np.ndarray ) :
+                        queries = np.array( queries, dtype = bool ) # change to ndarray
+                    # handle np.ndarray 
+                    if isinstance( queries, np.ndarray ) and queries.dtype != bool :
+                        queries = queries.astype( bool ) # change to ndarray
+                    queries = bk.BA.to_bitarray( queries ) # convert numpy boolean array to bitarray
+                queries = bk.BA.find( queries ) # convert bitarray to generator
+        return iter( queries ) if hasattr( queries, '__iter__' ) else queries # iterate over integer indices
+        
+#         if self._mask is not None : # if mask is available, return the result of the mask (assuming mask is more accessible, possibly available in the local storage)
+#             return self._mask.get_integer_indices( queries )
+        
+#         # if the 'index' column is available in the columns, perform query using zarr module and return the result
+#         if '__index__' in self.columns_excluding_components : 
+#             return self[ '__index__', queries ] # return integer indices of the queries
+        
+#         # write the 'index' column
+#         self.initialize_column( '__index__', dtype = int ) # initialize the index column
+#         int_pos = 0
+#         while int_pos < self._n_rows_unfiltered :
+#             int_pos_end_batch = min( int_pos + self.int_num_rows_in_a_chunk, self._n_rows_unfiltered ) # retrieve end coordinate of the current batch
+#             self[ '__index__', int_pos : int_pos_end_batch ] = np.arange( int_pos, int_pos_end_batch ) # write the integer indices
+#             int_pos += self.int_num_rows_in_a_chunk # update 'int_pos'
+#         if self.verbose :
+#             print( f'[ZarrDataFrame] a column for quering integer indices was written' )
+        return self[ '__index__', queries ] # return integer indices of the queries
     def initialize_column( self, name_col, dtype = np.float64, shape_not_primary_axis = ( ), chunks = ( ), categorical_values = None, fill_value = 0, zdf_template = None, name_col_template : Union[ str, None ] = None, path_col_template : Union[ str, None ] = None ) : 
         """ # 2022-08-22 16:30:48 
         initialize columns with a given shape and given dtype
@@ -4066,17 +4338,19 @@ class ZarrDataFrame( ) :
                 name_col, coords, coords_rest = args[ 0 ], args[ 1 ], None 
             elif len( args ) > 2 :
                 name_col, coords, coords_rest = args[ 0 ], args[ 1 ], args[ 2 : ]
-            # detect boolean mask
-            flag_coords_in_bool_mask = bk.BA.detect_boolean_mask( coords )
-            # convert boolean masks to np.ndarray object
-            if flag_coords_in_bool_mask :
-                # handle np.ndarray mask
-                if isinstance( coords, np.ndarray ) and coords.dtype != bool :
-                    coords = coords.astype( bool ) # change dtype
-                else : # handle other masks
-                    coords = bk.BA.convert_mask_to_array( coords )
-            elif isinstance( coords, tuple ) : # if a tuple is given as coords, assumes it contains a list of coordinate arrays
+            # check coordinate arrays
+            if isinstance( coords, tuple ) : # if a tuple is given as coords, assumes it contains a list of coordinate arrays
                 flag_coords_in_coordinate_arrays = True
+            else :
+                # detect boolean mask
+                flag_coords_in_bool_mask = bk.BA.detect_boolean_mask( coords )
+                # convert boolean masks to np.ndarray object
+                if flag_coords_in_bool_mask :
+                    # handle np.ndarray mask
+                    if isinstance( coords, np.ndarray ) and coords.dtype != bool :
+                        coords = coords.astype( bool ) # change dtype
+                    else : # handle other masks
+                        coords = bk.BA.convert_mask_to_array( coords )
         else : 
             # when indexing on the primary axis is not active
             coords = slice( None, None, None ) if self.filter is None else bk.BA.to_array( self.filter ) # retrieve selection filter for the primary axis according to the self.filter
@@ -4091,53 +4365,64 @@ class ZarrDataFrame( ) :
         """
         if name_col not in self : # if name_col is not valid (name_col does not exists in current ZDF, including the mask), exit by returning None
             return None
-        # off load to mask
-        if self._mask is not None : # if mask is available
-            if self.flag_use_mask_for_caching and name_col not in self._mask : # if 'flag_use_mask_for_caching' option is active and the column is not available in the mask, copy the column from the source to the mask
-                zarr_copy( f"{self._path_folder_zdf}{name_col}/", f"{self._mask._path_folder_zdf}{name_col}/" ) # copy zarr object from the source to the mask
-                self._mask._add_column( name_col ) # manually add column label to the mask
-            if name_col in self._mask : # if 'name_col' is available in the mask, retrieve data from the mask.
-                return self._mask[ args ]
-        # collect data from component zdfs and compose a combined column
-        if self.is_combined and name_col not in self.columns_excluding_components : # if data reside only in the component zdf objects, retrieve data from the component objects and save as a column in the current zdf object 
-            # %% COMBINED MODE %%
-            # if the queried column does not exist in the current zdf or mask zdf, fetch data from component zdf objects and save the data to the current zdf or the mask of it
-            if self.is_interleaved :
-                # %% COMBINED INTERLEAVED %%
-                zdf = self._l_zdf[ self.index_zdf_data_source_when_interleaved ] # retrieve source zdf
-                dict_index_mapping_interleaved = self._l_dict_index_mapping_interleaved[ self.index_zdf_data_source_when_interleaved ] # retrieve index-mapping dictionary of source zdf
-                assert name_col in zdf # the name_col should exist in the zdf object
-                # initialize the 'name_col' column of the current zdf object using the column from the current component zdf
-                self.initialize_column( name_col = name_col, zdf_template = zdf, name_col_template = name_col ) 
-                
-                # transfer data from the source zdf to the combined column of the current zdf 
-                l_int_entry_combined, l_int_entry_component = [ ], [ ] # initialize the array 
-                for int_entry_combined in dict_index_mapping_interleaved :
-                    l_int_entry_combined.append( int_entry_combined )
-                    l_int_entry_component.append( dict_index_mapping_interleaved[ int_entry_combined ] )
-                    if len( l_int_entry_component ) >= self.int_max_num_entries_per_batch : # if a batch is full, flush the buffer
+        # load data from mask/combined ZarrDataFrame
+        if self._flag_use_lazy_loading : # use lazy-loading when only partial data will be retrieved
+            self.lazy_load( 
+                coords, 
+                name_col_sink = name_col, 
+            )
+            # off load to mask
+            if self._mask is not None : # if mask is available
+                if name_col in self._mask : # if 'name_col' is available in the mask, retrieve data from the mask.
+                    return self._mask[ args ]
+        else : # load an entire column from mask/combined ZarrDataFrame
+            # off load to mask
+            if self._mask is not None : # if mask is available
+                if self.flag_use_mask_for_caching and name_col not in self._mask : # if 'flag_use_mask_for_caching' option is active and the column is not available in the mask, copy the column from the source to the mask
+                    zarr_copy( f"{self._path_folder_zdf}{name_col}/", f"{self._mask._path_folder_zdf}{name_col}/" ) # copy zarr object from the source to the mask
+                    self._mask._add_column( name_col ) # manually add column label to the mask
+                if name_col in self._mask : # if 'name_col' is available in the mask, retrieve data from the mask.
+                    return self._mask[ args ]
+            # collect data from component zdfs and compose a combined column
+            if self.is_combined and name_col not in self.columns_excluding_components : # if data reside only in the component zdf objects, retrieve data from the component objects and save as a column in the current zdf object 
+                # %% COMBINED MODE %%
+                # if the queried column does not exist in the current zdf or mask zdf, fetch data from component zdf objects and save the data to the current zdf or the mask of it
+                if self.is_interleaved :
+                    # %% COMBINED INTERLEAVED %%
+                    zdf = self._l_zdf[ self.index_zdf_data_source_when_interleaved ] # retrieve source zdf
+                    dict_index_mapping_interleaved = self._l_dict_index_mapping_interleaved[ self.index_zdf_data_source_when_interleaved ] # retrieve index-mapping dictionary of source zdf
+                    assert name_col in zdf # the name_col should exist in the zdf object
+                    # initialize the 'name_col' column of the current zdf object using the column from the current component zdf
+                    self.initialize_column( name_col = name_col, zdf_template = zdf, name_col_template = name_col ) 
+
+                    # transfer data from the source zdf to the combined column of the current zdf 
+                    l_int_entry_combined, l_int_entry_component = [ ], [ ] # initialize the array 
+                    for int_entry_combined in dict_index_mapping_interleaved :
+                        l_int_entry_combined.append( int_entry_combined )
+                        l_int_entry_component.append( dict_index_mapping_interleaved[ int_entry_combined ] )
+                        if len( l_int_entry_component ) >= self.int_max_num_entries_per_batch : # if a batch is full, flush the buffer
+                            self[ name_col, l_int_entry_combined ] = zdf[ name_col, l_int_entry_component ] # transfer data from the source zdf to the combined column of the current zdf for the current batch
+                            l_int_entry_combined, l_int_entry_component = [ ], [ ] # initialize the next batch
+                    if len( l_int_entry_component ) >= 0 : # if the current batch is not empty, flush the buffer
                         self[ name_col, l_int_entry_combined ] = zdf[ name_col, l_int_entry_component ] # transfer data from the source zdf to the combined column of the current zdf for the current batch
-                        l_int_entry_combined, l_int_entry_component = [ ], [ ] # initialize the next batch
-                if len( l_int_entry_component ) >= 0 : # if the current batch is not empty, flush the buffer
-                    self[ name_col, l_int_entry_combined ] = zdf[ name_col, l_int_entry_component ] # transfer data from the source zdf to the combined column of the current zdf for the current batch
-                del l_int_entry_combined, l_int_entry_component
-            else :
-                # %% COMBINED STACKED %%
-                # collect data from stacked czdf 
-                int_pos = 0 # initialize the position
-                for zdf in self._l_zdf :
-                    if name_col in zdf : # if the 'name_col' exist in the current component zdf
-                        # initialize the 'name_col' column of the current zdf object using the column from the current component zdf
-                        self.initialize_column( name_col = name_col, zdf_template = zdf, name_col_template = name_col ) 
-                        
-                        # transfer data from component zdf to the combined column of the current zdf object batch by batch
-                        st, en = int_pos, int_pos + zdf._n_rows_unfiltered # retrieve start and end coordinates for the current component
-                        int_pos_current_component = 0 # initialize the position of current entry in the current batch
-                        while st + int_pos_current_component < en : # until all entries for the current component have been processed
-                            # transfer data from component zdf to the combined column of the current zdf object for the current batch
-                            self[ name_col, slice( st + int_pos_current_component, min( en, st + int_pos_current_component + self.int_max_num_entries_per_batch ) ) ] =  zdf[ name_col, slice( int_pos_current_component, min( en - st, int_pos_current_component + self.int_max_num_entries_per_batch ) ) ] # update the combined column using the values retrieved from the current zdf object
-                            int_pos_current_component += self.int_max_num_entries_per_batch # update 'int_pos_current_component' for the next batch
-                    int_pos += zdf._n_rows_unfiltered # update 'int_pos'
+                    del l_int_entry_combined, l_int_entry_component
+                else :
+                    # %% COMBINED STACKED %%
+                    # collect data from stacked czdf 
+                    int_pos = 0 # initialize the position
+                    for zdf in self._l_zdf :
+                        if name_col in zdf : # if the 'name_col' exist in the current component zdf
+                            # initialize the 'name_col' column of the current zdf object using the column from the current component zdf
+                            self.initialize_column( name_col = name_col, zdf_template = zdf, name_col_template = name_col ) 
+
+                            # transfer data from component zdf to the combined column of the current zdf object batch by batch
+                            st, en = int_pos, int_pos + zdf._n_rows_unfiltered # retrieve start and end coordinates for the current component
+                            int_pos_current_component = 0 # initialize the position of current entry in the current batch
+                            while st + int_pos_current_component < en : # until all entries for the current component have been processed
+                                # transfer data from component zdf to the combined column of the current zdf object for the current batch
+                                self[ name_col, slice( st + int_pos_current_component, min( en, st + int_pos_current_component + self.int_max_num_entries_per_batch ) ) ] =  zdf[ name_col, slice( int_pos_current_component, min( en - st, int_pos_current_component + self.int_max_num_entries_per_batch ) ) ] # update the combined column using the values retrieved from the current zdf object
+                                int_pos_current_component += self.int_max_num_entries_per_batch # update 'int_pos_current_component' for the next batch
+                        int_pos += zdf._n_rows_unfiltered # update 'int_pos'
         
         # retrieve data from zdf objects excluding components (current zdf and mask zdf)
         if name_col in self : # if name_col is valid
@@ -4147,7 +4432,6 @@ class ZarrDataFrame( ) :
                 return data[ :, coords_rest ] if flag_indexing_in_non_primary_axis else data # return a subset of result if 'flag_indexing_in_non_primary_axis' is True
             else : 
                 """ read data from zarr object """
-                
                 # open the zarr object
                 za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'r' ) 
                 
@@ -4205,17 +4489,19 @@ class ZarrDataFrame( ) :
                 name_col, coords, coords_rest = args[ 0 ], args[ 1 ], None 
             elif len( args ) > 2 :
                 name_col, coords, coords_rest = args[ 0 ], args[ 1 ], args[ 2 : ]
-            # detect boolean mask
-            flag_coords_in_bool_mask = bk.BA.detect_boolean_mask( coords )
-            # convert boolean masks to np.ndarray object
-            if flag_coords_in_bool_mask :
-                # handle np.ndarray mask
-                if isinstance( coords, np.ndarray ) and coords.dtype != bool :
-                    coords = coords.astype( bool ) # change dtype
-                else : # handle other masks
-                    coords = bk.BA.convert_mask_to_array( coords )
-            elif isinstance( coords, tuple ) : # if a tuple is given as coords, assumes it contains a list of coordinate arrays
+            # check coordinate arrays
+            if isinstance( coords, tuple ) : # if a tuple is given as coords, assumes it contains a list of coordinate arrays
                 flag_coords_in_coordinate_arrays = True
+            else :
+                # detect boolean mask
+                flag_coords_in_bool_mask = bk.BA.detect_boolean_mask( coords )
+                # convert boolean masks to np.ndarray object
+                if flag_coords_in_bool_mask :
+                    # handle np.ndarray mask
+                    if isinstance( coords, np.ndarray ) and coords.dtype != bool :
+                        coords = coords.astype( bool ) # change dtype
+                    else : # handle other masks
+                        coords = bk.BA.convert_mask_to_array( coords )
         else : 
             # when indexing on the primary axis is not active
             coords = slice( None, None, None ) if self.filter is None else bk.BA.to_array( self.filter ) # retrieve selection filter for the primary axis according to the self.filter
@@ -4233,13 +4519,25 @@ class ZarrDataFrame( ) :
         """
         2) set data
         """
-        # if mask is available, save new data/modify existing data to the mask # overwriting on the mask
-        if self._mask is not None : # if mask is available, save new data to the mask
-            if name_col in self and name_col not in self._mask : # if the 'name_col' exists in the current ZarrDataFrame and not in mask, copy the column to the mask
-                zarr_copy( f"{self._path_folder_zdf}{name_col}/", f"{self._mask._path_folder_zdf}{name_col}/" ) # copy zarr object from the source to the mask
-                self._mask._add_column( name_col ) # manually add column label to the mask
-            self._mask[ args ] = values # set values to the mask
-            return # exit
+        # load data from mask/combined ZarrDataFrame
+        if self._flag_use_lazy_loading : # use lazy-loading when only partial data will be retrieved
+            self.lazy_load( 
+                coords, 
+                name_col_sink = name_col, 
+                l_new_value = values
+            )
+            # off load to mask
+            if self._mask is not None : # if mask is available, save new data to the mask
+                if name_col in self._mask :
+                    self._mask[ args ] = values # set values to the mask
+        else :
+            # if mask is available, save new data/modify existing data to the mask # overwriting on the mask
+            if self._mask is not None : # if mask is available, save new data to the mask
+                if name_col in self and name_col not in self._mask : # if the 'name_col' exists in the current ZarrDataFrame and not in mask, copy the column to the mask
+                    zarr_copy( f"{self._path_folder_zdf}{name_col}/", f"{self._mask._path_folder_zdf}{name_col}/" ) # copy zarr object from the source to the mask
+                    self._mask._add_column( name_col ) # manually add column label to the mask
+                self._mask[ args ] = values # set values to the mask
+                return # exit
     
         if self._flag_is_read_only : # if current store is read-only (and mask is not set), exit
             return # exit
@@ -4756,6 +5054,7 @@ class RamDataAxis( ) :
         # setting for combined RamDataAxis
         self._l_ax = l_ax
         self._index_ax_data_source_when_interleaved = index_ax_data_source_when_interleaved
+        self._l_cumulated_len_stacked = None # a list of cumulated stacked length of entries when current axis is in 'stacked-combined' mode
         self._l_dict_index_mapping_interleaved = None # set default value for 'self._l_dict_index_mapping_interleaved', which is required for self.is_interleaved function. # similar to 'self._l_dict_index_mapping_from_combined_to_component' but specific to interleaved combined axis object
         self._l_dict_index_mapping_from_combined_to_component = None 
         self._l_dict_index_mapping_from_component_to_combined = None # set default value for list of dictionaries (or similar class) for mapping component indices to combined indices. this will be used for both combined-stacked and combined-interleaved.
@@ -4906,16 +5205,20 @@ class RamDataAxis( ) :
                 self._l_dict_index_mapping_from_combined_to_component = self._l_dict_index_mapping_interleaved
             else :
                 # %% COMBINED-STACKED %%
+                l_cumulated_len_stacked = [ ] # a list of cumulated number of entries of stacked axis objects
                 l_dict_index_mapping_from_component_to_combined = [ ] # retrieve component -> combined axis mapping
                 l_dict_index_mapping_from_combined_to_component = [ ] # retrieve combined -> component axis mapping
                 int_pos = 0 # initialize the start position
                 for ax in self._l_ax :
                     l_dict_index_mapping_from_component_to_combined.append( IndexMappingDictionary( int_length_component_axis = ax.int_num_entries, int_offset = int_pos, flag_component_to_combined = True ) )
                     l_dict_index_mapping_from_combined_to_component.append( IndexMappingDictionary( int_length_component_axis = ax.int_num_entries, int_offset = int_pos, flag_component_to_combined = False ) )
+                    l_cumulated_len_stacked.append( int_pos ) # update stacked length
                     int_pos += ax.int_num_entries # update 'int_pos'
+                l_cumulated_len_stacked.append( int_pos ) # update stacked length
                 # set attributes
                 self._l_dict_index_mapping_from_component_to_combined = l_dict_index_mapping_from_component_to_combined 
                 self._l_dict_index_mapping_from_combined_to_component = l_dict_index_mapping_from_combined_to_component 
+                self._l_cumulated_len_stacked = l_cumulated_len_stacked
                 
                 # compose/load string representations
                 path_folder_str_rep = f'{path_folder}{name_axis}.str.zarr' # define a folder where string representations will be saved
@@ -4968,13 +5271,24 @@ class RamDataAxis( ) :
                             with open( f"{path_folder_str_chunks}{index_chunk}.{index_col}", 'wt' ) as newfile : # similar organization to zarr
                                 newfile.write( _base64_encode( _gzip_bytes( ( '\n'.join( arr_val ) + '\n' ).encode( ) ) ) )
                     del arr_str_rep_buffer
-                    
                                 
         # initialize the mapping dictionaries
         self._dict_str_to_i = None 
         self._dict_i_to_str = None 
         
-        self.meta = ZarrDataFrame( f"{path_folder}{name_axis}.num_and_cat.zdf", l_zdf = list( ax.meta for ax in self._l_ax ) if self._l_ax is not None else None, index_zdf_data_source_when_interleaved = self.index_ax_data_source_when_interleaved, l_dict_index_mapping_interleaved = self._l_dict_index_mapping_interleaved, ba_filter = ba_filter, mode = mode, path_folder_mask = None if path_folder_mask is None else f"{path_folder_mask}{name_axis}.num_and_cat.zdf", flag_is_read_only = self._flag_is_read_only, ** dict_kw_zdf ) # open a ZarrDataFrame with a given filter
+        self.meta = ZarrDataFrame( 
+            f"{path_folder}{name_axis}.num_and_cat.zdf", 
+            l_zdf = list( ax.meta for ax in self._l_ax ) if self._l_ax is not None else None, 
+            index_zdf_data_source_when_interleaved = self.index_ax_data_source_when_interleaved, 
+            l_dict_index_mapping_interleaved = self._l_dict_index_mapping_interleaved, 
+            l_dict_index_mapping_from_combined_to_component = self._l_dict_index_mapping_from_combined_to_component,
+            l_dict_index_mapping_from_component_to_combined = self._l_dict_index_mapping_from_component_to_combined,
+            ba_filter = ba_filter, 
+            mode = mode, 
+            path_folder_mask = None if path_folder_mask is None else f"{path_folder_mask}{name_axis}.num_and_cat.zdf", 
+            flag_is_read_only = self._flag_is_read_only, 
+            ** dict_kw_zdf
+        ) # open a ZarrDataFrame with a given filter
         self.int_num_entries = self.meta._n_rows_unfiltered # retrieve number of entries
         
         self.filter = ba_filter # set filter
@@ -4984,6 +5298,15 @@ class RamDataAxis( ) :
         self._dict_kw_view = dict_kw_view
         self.dict_change = None # initialize view
         self._dict_change_backup = None
+    @property
+    def n_components( self ) :
+        """ # 2022-09-08 18:07:55 
+        return the number of components when current RamDataAxis is in 'combined' mode. if the current object is not in a 'combined' mode, 
+        """
+        int_n_components = 0 # set default
+        if self.is_combined :
+            int_n_components = len( self._l_ax ) # retrieve the number of components
+        return int_n_components
     @property
     def index_ax_data_source_when_interleaved( self ) :
         """ # 2022-08-28 15:11:47 
@@ -5157,12 +5480,12 @@ class RamDataAxis( ) :
         if a filter is not active, return the return value of Axis.all( flag_return_valid_entries_in_the_currently_active_layer = True )
         """
         return self.all( flag_return_valid_entries_in_the_currently_active_layer = True ) if self.filter is None else self.filter
-    def get_str( self, queries = None, int_index_col = None ) :
+    def get_str( self, queries = None, int_index_col : Union[ int, None ] = None ) :
         """ # 2022-08-28 12:28:41 
         get string representations of the queries
         
         'queries' : queries (slice, integer indices, bitarray, etc.) of the entries for which string representations will be loaded. if None is given, all entries will be retrieved.
-        'int_index_col' : the index of the column containing string representation to retrieve. if a single integer index is given, retrieve values from a single column. If a list or a tuple of integer indices are given, values of the columns will be retrieved.
+        int_index_col : Union[ int, None ] = None : the index of the column containing string representation to retrieve. if a single integer index is given, retrieve values from a single column. If a list or a tuple of integer indices are given, values of the columns will be retrieved.
         """
         # retrieve all entries for the 'default' queries
         if queries is None :
@@ -5178,6 +5501,22 @@ class RamDataAxis( ) :
         # open a zarr object containing the string representation of the entries
         za = zarr.open( path_folder_str_zarr, 'r' )
         return za.get_orthogonal_selection( ( queries, int_index_col ) )
+    def iterate_str( self, int_num_entries_in_a_batch : int = 1000, int_index_col : Union[ int, None ] = None ) :
+        """ # iterate through string representations of the active entries of the current axis object
+        
+        int_num_entries_in_a_batch : int = 1000 # the number of entries that will be included in a batch
+        int_index_col : Union[ int, None ] = None : the index of the column containing string representation to retrieve. if a single integer index is given, retrieve values from a single column. If a list or a tuple of integer indices are given, values of the columns will be retrieved.
+        """
+        l_int_entry_in_a_batch = [ ] # initialize a batch container 
+        for int_entry in ( range( self.int_num_entries ) if self.filter is None else bk.BA.find( self.filter ) ) : # iterate through integer indices of the active entries
+            l_int_entry_in_a_batch.append( int_entry )
+            # if a batch is full, flush the batch
+            if len( l_int_entry_in_a_batch ) >= int_num_entries_in_a_batch :
+                yield { 'l_int_entry' : l_int_entry_in_a_batch, 'l_str_entry' : self.get_str( queries = l_int_entry_in_a_batch, int_index_col = int_index_col ) }
+                l_int_entry_in_a_batch = [ ] # initialize the next batch
+        # if there are remaining entries, flush the batch
+        if len( l_int_entry_in_a_batch ) > 0 : 
+            yield { 'l_int_entry' : l_int_entry_in_a_batch, 'l_str_entry' : self.get_str( queries = l_int_entry_in_a_batch, int_index_col = int_index_col ) }
     def load_str( self, int_index_col = None ) : 
         ''' # 2022-06-24 22:38:18 
         load string representation of all the active entries of the current axis, and retrieve a mapping from string representation to integer representation
@@ -5395,6 +5734,13 @@ class RamDataAxis( ) :
         """ # 2022-07-20 23:12:47 
         """
         return f"<Axis '{self._name_axis}' containing {'' if self.filter is None else f'{self.meta.n_rows}/'}{self.meta._n_rows_unfiltered} entries available at {self._path_folder}\n\tavailable metadata columns are {sorted( self.meta.columns )}>"
+    def none( self ) :
+        """ # 2022-09-08 11:30:33 
+        return an empty bitarray filter
+        """
+        ba = bitarray( self.int_num_entries )
+        ba.setall( 0 )
+        return ba
     def all( self, flag_return_valid_entries_in_the_currently_active_layer = True ) :
         """ # 2022-09-02 00:33:56 
         return bitarray filter with all entries marked 'active'
@@ -5560,6 +5906,26 @@ class RamDataAxis( ) :
         
         # return subsampled entries
         return ba_subsampled
+    def select_component( self, int_index_component : int = 0 ) :
+        """ # 2022-09-08 17:25:28 
+        return a filter containing entries of the selected component 
+        """
+        if self.is_combined :
+            # handle invalid input
+            if int_index_component >= self.n_components or int_index_component < 0 : # check validity of the input component index
+                int_index_component = 0 # set default component when invalid input is used
+            # initialize an empty filter
+            ba = bitarray( self.int_num_entries )
+            ba.setall( 0 )
+            # select the entries of the selected component
+            if self.is_interleaved : # when 'combined-interleaved' mode is active, iterate over entries of the combined axis present in the component axis.
+                for int_entry_combined in self._l_dict_index_mapping_from_combined_to_component[ int_index_component ] :
+                    ba[ int_entry_combined ] = 1
+            else : # when 'combined-stacked' mode is active
+                ba[ self._l_cumulated_len_stacked[ int_index_component ] : self._l_cumulated_len_stacked[ int_index_component + 1 ] ] = 1
+            return ba # return filter containing the selection
+        else : # if current axis is not in 'combined' mode, return a filter containing all entries
+            return self.all( flag_return_valid_entries_in_the_currently_active_layer = False )
     
 ''' a class for serving zarr object from remote source in multiple forked processes '''
 def zarr_object_server( path_folder_zarr, pipe_receiver_input, pipe_sender_output, mode = 'r' ) :
@@ -7014,13 +7380,21 @@ class RamDataLayer( ) :
         if rtx is None :
             return self[ list( self.modes )[ 0 ] ] # return any ramtx as a fallback
         return rtx
-    def get_ramtx( self, flag_is_for_querying_features = True, flag_prefer_dense = False ) :
+    def get_ramtx( self, flag_is_for_querying_features = True, flag_prefer_dense = False, set_int_index_component_to_exclude : Union[ None, set ] = None ) :
         """ # 2022-09-01 11:37:10 
         retrieve ramtx for querying feature/barcodes
+        
+        flag_is_for_querying_features = True # if True, return RAMtx that can be queried by features
+        flag_prefer_dense = False # prefer dense matrix over sparse matrix
+        set_int_index_component_to_exclude : Union[ None, set ] = None # set of integer indices of the components to exclude.
+            the intended usage of this argument is to exclude RAMtx of the component that will be used as a reference
         """
         if self.is_combined  :
             # %% COMBINED %%
-            l_rtx = list( layer.get_ramtx( flag_is_for_querying_features = flag_is_for_querying_features, flag_prefer_dense = flag_prefer_dense ) for layer in self._l_layer ) # retrieve list of rtx with the given settings
+            # set default 'set_int_index_component_to_exclude'
+            if set_int_index_component_to_exclude is None :
+                set_int_index_component_to_exclude = set( )
+            l_rtx = list( None if int_index_component in set_int_index_component_to_exclude else layer.get_ramtx( flag_is_for_querying_features = flag_is_for_querying_features, flag_prefer_dense = flag_prefer_dense ) for int_index_component, layer in enumerate( self._l_layer ) ) # retrieve list of rtx with the given settings
             mode = '___'.join( list( 'None' if rtx is None else rtx.mode for rtx in l_rtx ) ) # retrieve the name of 'mode' for the current ramtx
             # define arguments for opening a RAMtx object
             dict_kwargs = {
@@ -7115,7 +7489,7 @@ class RamData( ) :
         """
         ''' hard-coded settings  '''
         # define a set of picklable models :
-        self._set_type_model_picklable = { 'ipca', 'hdbscan', 'knn_classifier', 'knngraph' }
+        self._set_type_model_picklable = { 'ipca', 'hdbscan', 'knn_classifier', 'knn_embedder', 'knngraph' }
         
         ''' modifiable settings '''
         # handle input object paths
@@ -7145,6 +7519,7 @@ class RamData( ) :
         self._ramdata_composite = ramdata_composite
         self._flag_combined_ramdata_barcodes_shared_across_ramdata = flag_combined_ramdata_barcodes_shared_across_ramdata
         self._flag_combined_ramdata_features_shared_across_ramdata = flag_combined_ramdata_features_shared_across_ramdata
+        # combined ramdata setting, which can be changed later
         self.index_ramdata_source_for_combined_barcodes_shared_across_ramdata = index_ramdata_source_for_combined_barcodes_shared_across_ramdata
         self.index_ramdata_source_for_combined_features_shared_across_ramdata = index_ramdata_source_for_combined_features_shared_across_ramdata
         if self.is_combined :
@@ -7616,8 +7991,8 @@ class RamData( ) :
             path_folder_temp = f"{path_folder}temp_{UUID( )}/"
             os.makedirs( path_folder_temp, exist_ok = True ) # create the temporary folder
             return path_folder_temp # return the path to the temporary folder
-    def summarize( self, name_layer : str, axis : Union[ int, str ], summarizing_func, l_name_col_summarized : Union[ list, None ] = None, str_suffix : str = '' ) :
-        ''' # 2022-09-05 18:35:32 
+    def summarize( self, name_layer : str, axis : Union[ int, str ], summarizing_func, l_name_col_summarized : Union[ list, None ] = None, str_prefix : Union[ str, None ] = None, str_suffix : str = '', flag_overwrite : bool = False ) :
+        ''' # 2022-09-07 21:24:50 
         this function summarize entries of the given axis (0 = barcode, 1 = feature) using the given function
         
         example usage: calculate total sum, standard deviation, pathway enrichment score calculation, etc.
@@ -7654,7 +8029,10 @@ class RamData( ) :
                             returns: 'count', 'max', 'min'
                             
         'l_name_col_summarized' : list of column names returned by 'summarizing_func'. by default (when None is given), the list of column names will be inferred by observing output when giving zero values as inputs
+        'str_prefix' : an additional prefix on the new columns of the axis metadata. if None is given (by default), f"{name_layer}_" will be used as a prefix
         'str_suffix' : an additional suffix of the new columns of the axis metadata that will contain summarized results
+            * the output column name will be f"{str_prefix}{e}{str_suffix}", where {e} is the key of the dictionary returned by the 'summarizing_func'
+        'flag_overwrite' : a flag indicating whether to overwrite existing columns if all the output columns already exist in the metadata of the given axis. ** warning ** if at least one column is missing, existing columns will be overwritten regardless of this flag.
         
         =========
         outputs 
@@ -7680,7 +8058,10 @@ class RamData( ) :
         self.layer = name_layer
         # handle inputs
         flag_summarizing_barcode = axis in { 0, 'barcode', 'barcodes', 'bc' } # retrieve a flag indicating whether the data is summarized for each barcode or not
-        
+        # set default 'str_prefix' for new column names
+        if not isinstance( str_prefix, str ) :
+            str_prefix = f"{name_layer}_"
+            
         # retrieve the total number of entries in the axis that was not indexed (if calculating average expression of feature across barcodes, divide expression with # of barcodes, and vice versa.)
         int_total_num_entries_not_indexed = self.ft.meta.n_rows if flag_summarizing_barcode else self.bc.meta.n_rows 
 
@@ -7731,17 +8112,21 @@ class RamData( ) :
             arr_dummy_one, arr_dummy_zero = np.ones( 10, dtype = int ), np.zeros( 10, dtype = int )
             l_name_col_summarized = list( summarizing_func( self, 0, arr_dummy_zero, arr_dummy_one ) )
         l_name_col_summarized = sorted( l_name_col_summarized ) # retrieve the list of key values of an dict_res result returned by 'summarizing_func'
-        l_name_col_summarized_with_name_layer_prefix_and_suffix = list( f"{name_layer}_{e}{str_suffix}" for e in l_name_col_summarized ) # retrieve the name_col containing summarized data with f'{name_layer}_' prefix 
+        l_name_col_summarized_with_name_layer_prefix_and_suffix = list( f"{str_prefix}{e}{str_suffix}" for e in l_name_col_summarized ) # retrieve the name_col containing summarized data with f'{name_layer}_' prefix 
+
+        # retrieve Axis object to summarize 
+        ax = self.bc if flag_summarizing_barcode else self.ft
         
+        # check whether all the output columns already exist in the metadata of the target axis, and if 'flag_overwrite' has not been set, exit
+        if not flag_overwrite and len( set( l_name_col_summarized_with_name_layer_prefix_and_suffix ).difference( ax.meta.columns ) ) == 0 :
+            return
+                
         # retrieve RAMtx object to summarize
         rtx = self.layer.get_ramtx( not flag_summarizing_barcode )
         if rtx is None :
             if self.verbose :
                 print( f'it appears that the current layer {self.layer.name} appears to be empty, exiting' )
             return
-        
-        # retrieve Axis object to summarize 
-        ax = self.bc if flag_summarizing_barcode else self.ft
         
         # define functions for multiprocessing step
         def process_batch( pipe_receiver_batch, pipe_sender_result ) :
@@ -7801,7 +8186,7 @@ class RamData( ) :
         bk.Multiprocessing_Batch_Generator_and_Workers( rtx.batch_generator( ax.filter, int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, int_total_weight_for_each_batch = self.int_total_weight_for_each_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 )
         pbar.close( ) # close the progress bar
     def apply( self, name_layer, name_layer_new, func = None, mode_instructions = 'sparse_for_querying_features', path_folder_ramdata_output = None, dtype_of_row_and_col_indices = np.int32, dtype_of_value = np.float64, int_num_threads = None, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = True, int_num_of_records_in_a_chunk_zarr_matrix = 20000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, chunks_dense = ( 2000, 1000 ), dtype_dense_mtx = np.float64, dtype_sparse_mtx = np.float64, dtype_sparse_mtx_index = np.float64 ) :
-        ''' # 2022-09-01 21:31:55 
+        ''' # 2022-09-07 22:00:00 
         this function apply a function and/or filters to the records of the given data, and create a new data object with 'name_layer_new' as its name.
         
         example usage: calculate normalized count data, perform log1p transformation, cell filtering, etc.                             
@@ -8201,9 +8586,10 @@ class RamData( ) :
                     flag_dense_ramtx_output = True
                     set_modes_sink.add( 'dense' ) # update written (or will be written) sink ramtx modes
                 
+                flag_source_querying_by_feature = 'features' in ramtx_mode_source # retrieve a flag indicating whether the source can be queried by features
                 # add a process if valid output exists
                 if flag_sparse_ramtx_output or flag_dense_ramtx_output :
-                    l_args.append( ( self, self.layer[ ramtx_mode_source ], func_ft if 'features' in ramtx_mode_source else func_bc, flag_dense_ramtx_output, flag_sparse_ramtx_output, int_num_threads ) ) # add process based on which axis will be queried for source ramtx
+                    l_args.append( ( self, self.layer.get_ramtx( flag_source_querying_by_feature, flag_prefer_dense = False ), func_ft if flag_source_querying_by_feature else func_bc, flag_dense_ramtx_output, flag_sparse_ramtx_output, int_num_threads ) ) # add process based on which axis will be queried for source ramtx # prefer sparse RAMtx over dense matrix when selecting matrix
             else : # dense source
                 set_modes_sink.update( set_ramtx_mode_sink ) # update written (or will be written) sink ramtx modes. dense source can write all sink modes
                 if 'dense' in set_ramtx_mode_sink : # dense sink presents
@@ -8358,8 +8744,8 @@ class RamData( ) :
     
         if not flag_name_col_total_count_already_loaded : # unload count data of barcodes from memory if the count data was not loaded before calling this method
             del self.bc.meta.dict[ name_col_total_count ]
-    def scale( self, name_layer = 'normalized_log1p', name_layer_new = 'normalized_log1p_scaled', name_col_variance = 'normalized_log1p_variance', name_col_mean = 'normalized_log1p_mean', max_value = 10, mode_instructions = [ [ 'sparse_for_querying_features', 'sparse_for_querying_features' ], [ 'sparse_for_querying_barcodes', 'sparse_for_querying_barcodes' ] ], int_num_threads = None, ** kwargs ) :
-        """ # 2022-07-27 16:32:26 
+    def scale( self, name_layer = 'normalized_log1p', name_layer_new = 'normalized_log1p_scaled', name_col_variance = 'normalized_log1p_variance', max_value = 10, mode_instructions = [ [ 'sparse_for_querying_features', 'sparse_for_querying_features' ], [ 'sparse_for_querying_barcodes', 'sparse_for_querying_barcodes' ] ], int_num_threads = None, ** kwargs ) :
+        """ # 2022-09-07 22:46:09 
         current implementation only allows output values to be not zero-centered. the zero-value will remain zero, while Z-scores of the non-zero values will be increased by Z-score of zero values, enabling processing of sparse count data
 
         'name_layer' : the name of the data source layer
@@ -8378,19 +8764,14 @@ class RamData( ) :
             if self.verbose :
                 print( f"[RamData.scale] 'name_col_variance' '{name_col_total_count}' does not exist in the 'barcodes' metadata, exiting" )
             return
-    #     assert name_col_mean in self.ft.meta 
 
         # load feature data
         # retrieve flag indicating whether the data has been already loaded 
         flag_name_col_variance_already_loaded = name_col_variance in self.ft.meta.dict 
         if not flag_name_col_variance_already_loaded : # load data in memory
             self.ft.meta.load_as_dict( name_col_variance )
-    #     flag_name_col_mean_already_loaded = name_col_mean in self.ft.meta.dict 
-    #     if not flag_name_col_mean_already_loaded : 
-    #         self.ft.meta.load_as_dict( name_col_mean )
         # retrieve data as a dictionary
         dict_variance = self.ft.meta.dict[ name_col_variance ]
-    #     dict_mean = self.ft.meta.dict[ name_col_mean ]
 
         # load layer
         self.layer = name_layer
@@ -8423,8 +8804,8 @@ class RamData( ) :
     #         del self.ft.meta.dict[ name_col_mean ]
         if not flag_name_col_variance_already_loaded : 
             del self.ft.meta.dict[ name_col_variance ]
-    def identify_highly_variable_features( self, name_layer : str = 'normalized_log1p', int_num_highly_variable_features : int = 2000, float_min_mean : float = 0.01, float_min_variance : float = 0.01, str_suffix_summarized_metrics : str = '', name_col_filter : str = 'filter_normalized_log1p_highly_variable', flag_show_graph : bool = True ) :
-        """ # 2022-06-07 22:53:55 
+    def identify_highly_variable_features( self, name_layer : str = 'normalized_log1p', int_num_highly_variable_features : int = 2000, float_min_mean : float = 0.01, float_min_variance : float = 0.01, str_suffix_summarized_metrics : str = '', name_col_filter : str = 'filter_normalized_log1p_highly_variable', flag_load_filter : bool = True, flag_show_graph : bool = True ) :
+        """ # 2022-09-07 23:21:11 
         identify highly variable features
         learns mean-variable relationship from the given data, and calculate residual variance to identify highly variable features.
         **Warning** : filters of the current RamData will be reset, and filters based on the identified highly variable features will be set.
@@ -8435,6 +8816,7 @@ class RamData( ) :
         'float_min_variance' : minimum variance of expression for selecting highly variable features
         'str_suffix_summarized_metrics' : suffix of the new columns of the 'barcodes' axis that will contain summarized metrics of the features
         'name_col_filter' : the name of column that will contain a feature/barcode filter containing selected highly variable features (and barcode filter for cells that have non-zero expression values for the selected list of highly-variable features)
+        'flag_load_filter' : if True, load the filter of the column name 'name_col_filter'
         'flag_show_graph' : show graphs
         ==========
         returns
@@ -8442,6 +8824,23 @@ class RamData( ) :
 
         new columns will be added to self.ft.meta metadata
         """
+        '''
+        prepare
+        '''
+        # retrieve axis object
+        ax = self.ft
+        # check whether the output is already available, and if exist, exit
+        if name_col_filter in ax.meta : # if the output already exists
+            if flag_load_filter : # load filter according to the filter
+                self.ft.change_filter( name_col_filter )
+            return
+        
+        # back up filter
+        ba_filter_backup = ax.filter
+        
+        # reset filter
+        ax.filter = None
+        
         """
         (1) Calculate metrics for identification of highly variable features
         """
@@ -8510,10 +8909,24 @@ class RamData( ) :
         ba = self.ft.AND( ba, self.ft.meta[ f'{name_layer}__float_score_highly_variable_feature_from_mean{str_suffix_summarized_metrics}' ] > float_min_score_highly_variable ) 
         self.ft.filter = ba
         self.ft.save_filter( name_col_filter ) # save the feature filter as a metadata
+        
+        if not flag_load_filter : # if filter should not be loaded, restore the filter
+            # restore the previously set filter once all operations were completed
+            ax.filter = ba_filter_backup
     ''' function for fast exploratory analysis '''
-    def prepare_dimension_reduction_from_raw( self, name_layer_raw : str = 'raw', name_layer_raw_copy : str = 'raw_copy', name_layer_normalized : str = 'normalized', name_layer_log_transformed : str = 'normalized_log1p', name_layer_scaled : str = 'normalized_log1p_scaled', name_col_filter_filtered_barcode : str = 'filtered_barcodes', min_counts : int = 500, min_features : int = 100, int_total_count_target : int = 10000, int_num_highly_variable_features : int = 2000, max_value : float = 10, dict_kw_hv : dict = { 'float_min_mean' : 0.01, 'float_min_variance' : 0.01, 'name_col_filter' : 'filter_normalized_log1p_highly_variable', 'str_suffix_summarized_metrics' : '' }, flag_use_fast_mode : bool = True, flag_copy_raw_from_remote_source : bool = True ) :
+    def prepare_dimension_reduction_from_raw( self, name_layer_raw : Union[ str, None ] = 'raw', name_layer_raw_copy : Union[ str, None ] = 'raw_copy', name_layer_normalized : Union[ str, None ] = 'normalized', name_layer_log_transformed : Union[ str, None ] = 'normalized_log1p', name_layer_scaled : str = 'normalized_log1p_scaled', name_col_filter_filtered_barcode : str = 'filtered_barcodes', min_counts : int = 500, min_features : int = 100, int_total_count_target : int = 10000, int_num_highly_variable_features : int = 2000, max_value : float = 10, dict_kw_hv : dict = { 'float_min_mean' : 0.01, 'float_min_variance' : 0.01, 'name_col_filter' : 'filter_normalized_log1p_highly_variable', 'str_suffix_summarized_metrics' : '' }, flag_use_fast_mode : bool = True, flag_copy_raw_from_remote_source : bool = True, name_col_total_count : Union[ str, None ] = None, name_col_variance : Union[ str, None ] = None, int_index_component_reference : Union[ int, None ] = None ) :
         """ # 2022-08-24 17:02:11 
+        This function provides convenience interface for pre-processing step for preparing normalized, scaled expression data for PCA dimension reduction
         assumes raw count data (or the equivalent of it) is available in 'dense' format (local) or 'sparse_for_querying_features' and 'sparse_for_querying_barcodes' format (remote source)
+        
+        # Fast mode
+        - rely on a single dense RAMtx containing raw count data
+        - only a single output layer with sparse RAMtx (that can be queried for each barcode) will be generated, containing filtered barcoes and only highly variable genes.
+        
+        # Slow mode 
+        - sparse RAMtx will be generated for every layer
+        - all features, all barcodes will be available in the layer, which reduce time for re-analysis 
+        
 
         === general ===
         flag_use_fast_mode : bool = True : if True, a fast method designed for fast global exploratory analysis (UMAP projection) of the raw data, removing unncessary layer building operations as much as possible. if False, every layer will be written to disk, unfiltered (containing all barcodes and features). 'slow' mode will be much slower but can be re-analyzed more efficiently later (subclustering, etc.)
@@ -8531,15 +8944,31 @@ class RamData( ) :
         
         'int_total_count_target' : total count target for normalization
         'min_counts' = 500, 'min_features' = 100 : for barcode filtering
+        
+        === highly variable feature detection ===
         'int_num_highly_variable_features' : the number of highly variable genes to retrieve
+        'dict_kw_hv' : settings for 'RamData.identify_highly_variable_features'
+        
+        === normalization ===
+        int_total_count_target : int = 10000 # total target count of cells
+        name_col_total_count : Union[ str, None ] = None # name of column of the 'barcodes' metadata containing the total count of barcodes
+        
+        === scaling ===
         'max_value' = 10 : capping at this value during scaling
+        name_col_variance : Union[ str, None ] = None # name of column of the 'features' metadata containing variance of the features
+        
         """
+        # set default column names
+        name_col_total_count = f'{name_layer_raw}_sum' if name_col_total_count is None else name_col_total_count
+        name_col_variance = f'{name_layer_log_transformed}_variance' if name_col_variance is None else name_col_variance
+        
         # load a raw count layer
-        self.layer = name_layer_raw 
-        self.layer[ 'dense' ].survey_number_of_records_for_each_entry( ) # prepare operation on dense RAMtx
+        if name_layer_raw is not None : # check validity of name_layer
+            self.layer = name_layer_raw 
+            self.layer[ 'dense' ].survey_number_of_records_for_each_entry( ) # prepare operation on dense RAMtx
         
         # in 'slow' mode, use sparse matrix for more efficient operation
-        if not flag_use_fast_mode :
+        if not flag_use_fast_mode and name_layer_raw is not None : # check validity of name_layer
             """ %% SLOW MODE %% """
             if self.verbose :
                 print( f"[RamData.prepare_dimension_reduction_from_raw] [SLOW MODE] converting dense to sparse formats ... " )
@@ -8548,7 +8977,7 @@ class RamData( ) :
             
         # copy raw count data available remotely to local storage for caching
         flag_raw_in_remote_location = self.contains_remote and name_layer_raw in self.layers and name_layer_raw not in self.layers_excluding_components # retrieve a flag indicating raw count data resides in remote location
-        if flag_raw_in_remote_location and flag_copy_raw_from_remote_source and name_layer_raw_copy is not None : # 
+        if flag_raw_in_remote_location and flag_copy_raw_from_remote_source and name_layer_raw_copy is not None : # check validity of name_layer
             if self.verbose :
                 print( f"[RamData.prepare_dimension_reduction_from_raw] copying raw count data available in remote source to local storage ... " )
             self.apply( name_layer_raw, name_layer_raw_copy, 'ident', mode_instructions = [ [ 'sparse_for_querying_features', 'sparse_for_querying_features' ], [ 'sparse_for_querying_barcodes', 'sparse_for_querying_barcodes' ] ] ) # copy raw count data to local storage # assumes raw count data (or the equivalent of it) is available in 'sparse_for_querying_features' and 'sparse_for_querying_barcodes' format (remote source)
@@ -8556,28 +8985,37 @@ class RamData( ) :
             self.layer = name_layer_raw_copy # load the layer
 
         # calculate total counts for each barcode
-        if self.verbose :
-            print( f"[RamData.prepare_dimension_reduction_from_raw] summarizing total count for each barcode ... " )
-        self.summarize( name_layer_raw, 'barcode', 'sum' )
+        if name_layer_raw is not None : # check validity of name_layer
+            if self.verbose :
+                print( f"[RamData.prepare_dimension_reduction_from_raw] summarizing total count for each barcode ... " )
+            self.summarize( name_layer_raw, 'barcode', 'sum' )
 
         # filter cells
-        if self.verbose :
-            print( f"[RamData.prepare_dimension_reduction_from_raw] filtering barcodes ... " )
-        if name_col_filter_filtered_barcode in self.bc.meta : # if the filter is available, load the filter
-            self.bc.change_filter( name_col_filter_filtered_barcode )
-        else : # if the filter is not available, filter barcodes based on the settings
-            self.bc.filter = ( self.bc.all( ) if self.bc.filter is None else self.bc.filter ) & BA.to_bitarray( self.bc.meta[ f'{name_layer_raw}_sum', : ] > min_counts ) & BA.to_bitarray( self.bc.meta[ f'{name_layer_raw}_num_nonzero_values', : ] > min_features )
-            self.bc.save_filter( name_col_filter_filtered_barcode ) # save filter for later analysis
+        ba_filter_bc_back_up = self.bc.filter # back up the filter of the 'barcodes' axis 
+        if name_col_filter_filtered_barcode is not None : # check validity of 'name_col_filter_filtered_barcode' column
+            if self.verbose :
+                print( f"[RamData.prepare_dimension_reduction_from_raw] filtering barcodes ... " )
+            if name_col_filter_filtered_barcode in self.bc.meta : # if the filter is available, load the filter
+                self.bc.change_filter( name_col_filter_filtered_barcode )
+            else : # if the filter is not available, filter barcodes based on the settings
+                self.bc.filter = ( self.bc.all( ) if self.bc.filter is None else self.bc.filter ) & BA.to_bitarray( self.bc.meta[ f'{name_layer_raw}_sum', : ] > min_counts ) & BA.to_bitarray( self.bc.meta[ f'{name_layer_raw}_num_nonzero_values', : ] > min_features )
+                self.bc.save_filter( name_col_filter_filtered_barcode ) # save filter for later analysis
 
         if flag_use_fast_mode :
             """ %% FAST MODE %% """
             # retrieve total raw count data for normalization
-            self.bc.meta.load_as_dict( f'{name_layer_raw}_sum' )
-            dict_count = self.bc.meta.dict[ f'{name_layer_raw}_sum' ] # retrieve total counts for each barcode as a dictionary
+            self.bc.meta.load_as_dict( name_col_total_count )
+            dict_count = self.bc.meta.dict[ name_col_total_count ] # retrieve total counts for each barcode as a dictionary
 
             # retrieve the total number of barcodes
             int_total_num_barcodes = self.bc.meta.n_rows
 
+            # define name of the output keys
+            name_key_sum = f'{name_layer_log_transformed}_sum'
+            name_key_mean = f'{name_layer_log_transformed}_mean'
+            name_key_deviation = f'{name_layer_log_transformed}_deviation'
+            name_key_variance = f'{name_layer_log_transformed}_variance'
+            
             def func( self, int_entry_of_axis_for_querying : int, arr_int_entries_of_axis_not_for_querying : np.ndarray, arr_value : np.ndarray ) : # normalize count data of a single feature containing (possibly) multiple barcodes
                 """ # 2022-07-06 23:58:38 
                 """
@@ -8591,29 +9029,30 @@ class RamData( ) :
 
                 # calculate deviation
                 int_num_records = len( arr_value ) # retrieve the number of records of the current entry
-                dict_summary = { 'normalized_log1p_sum' : np.sum( arr_value ) if int_num_records > 30 else sum( arr_value ) } # if an input array has more than 30 elements, use np.sum to calculate the sum
-                dict_summary[ 'normalized_log1p_mean' ] = dict_summary[ 'normalized_log1p_sum' ] / int_total_num_barcodes # calculate the mean
-                arr_dev = ( arr_value - dict_summary[ 'normalized_log1p_mean' ] ) ** 2 # calculate the deviation
-                dict_summary[ 'normalized_log1p_deviation' ] = np.sum( arr_dev ) if int_num_records > 30 else sum( arr_dev )
-                dict_summary[ 'normalized_log1p_variance' ] = dict_summary[ 'normalized_log1p_deviation' ] / ( int_total_num_barcodes - 1 ) if int_total_num_barcodes > 1 else np.nan
+                dict_summary = { name_key_sum : np.sum( arr_value ) if int_num_records > 30 else sum( arr_value ) } # if an input array has more than 30 elements, use np.sum to calculate the sum
+                dict_summary[ name_key_mean ] = dict_summary[ name_key_sum ] / int_total_num_barcodes # calculate the mean
+                arr_dev = ( arr_value - dict_summary[ name_key_mean ] ) ** 2 # calculate the deviation
+                dict_summary[ name_key_deviation ] = np.sum( arr_dev ) if int_num_records > 30 else sum( arr_dev )
+                dict_summary[ name_key_variance ] = dict_summary[ name_key_deviation ] / ( int_total_num_barcodes - 1 ) if int_total_num_barcodes > 1 else np.nan
                 return dict_summary    
 
             # calculate the metric for identifying highly variable genes
             if self.verbose :
                 print( f"[RamData.prepare_dimension_reduction_from_raw] [FAST MODE] calculating metrics for highly variable feature detection ... " )
-            self.summarize( name_layer_raw, 'feature', func, l_name_col_summarized = [ 'normalized_log1p_sum', 'normalized_log1p_mean', 'normalized_log1p_deviation', 'normalized_log1p_variance' ] )
+            self.summarize( name_layer_raw, 'feature', func, l_name_col_summarized = [ name_key_sum, name_key_mean, name_key_deviation, name_key_variance ], str_prefix = '' ) # set prefix as ''
 
             # identify highly variable genes
             self.identify_highly_variable_features( 
-                name_layer = f'{name_layer_raw}_normalized_log1p', 
+                name_layer = name_layer_log_transformed, 
                 int_num_highly_variable_features = int_num_highly_variable_features, 
                 flag_show_graph = True,
+                flag_load_filter = True,
                 ** dict_kw_hv
             )
 
             # retrieve variance
-            self.ft.meta.load_as_dict( f'{name_layer_raw}_normalized_log1p_variance' )
-            dict_var = self.ft.meta.dict[ f'{name_layer_raw}_normalized_log1p_variance' ] # retrieve total counts for each barcode as a dictionary
+            self.ft.meta.load_as_dict( name_col_variance )
+            dict_var = self.ft.meta.dict[ name_col_variance ] # retrieve total counts for each barcode as a dictionary
 
             # write log-normalized, scaled data for the selected highly variable features
             def func( self, int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value ) : 
@@ -8634,49 +9073,55 @@ class RamData( ) :
                 return int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value
             if self.verbose :
                 print( f"[RamData.prepare_dimension_reduction_from_raw] [FAST MODE] write log-normalized, scaled data for the selected highly variable features ... " )
-            self.apply( name_layer_raw, name_layer_scaled, func, [ [ 'dense', 'sparse_for_querying_barcodes' ] ] )
+            self.apply( name_layer_raw, name_layer_scaled, func, [ [ 'sparse_for_querying_barcodes', 'sparse_for_querying_barcodes' ] ] ) # use sparse input as a source if available
         else :
             """ %% SLOW MODE %% """
-            self.bc.filter = None # clear barcode filter (in order to preserve every record in the output layers)
+            self.bc.filter = ba_filter_bc_back_up # restore the barcode filter (in order to contain records of all barcodes in the output layers)
             
             # normalize
-            self.normalize( 
-                name_layer_raw, 
-                name_layer_normalized, 
-                name_col_total_count = f'{name_layer_raw}_sum',
-                int_total_count_target = int_total_count_target,
-                mode_instructions = [ [ 'sparse_for_querying_features', 'sparse_for_querying_features' ], [ 'sparse_for_querying_barcodes', 'sparse_for_querying_barcodes' ] ]
-            ) 
+            if name_layer_normalized is not None :
+                self.normalize( 
+                    name_layer_raw, 
+                    name_layer_normalized, 
+                    name_col_total_count = name_col_total_count,
+                    int_total_count_target = int_total_count_target,
+                    mode_instructions = [ [ 'sparse_for_querying_features', 'sparse_for_querying_features' ], [ 'sparse_for_querying_barcodes', 'sparse_for_querying_barcodes' ] ]
+                ) 
 
             # log-transform
-            self.apply( 
-                name_layer_normalized, 
-                name_layer_log_transformed, 
-                'log1p',
-                mode_instructions = [ [ 'sparse_for_querying_features', 'sparse_for_querying_features' ], [ 'sparse_for_querying_barcodes', 'sparse_for_querying_barcodes' ] ]
-            ) 
+            if name_layer_log_transformed is not None :
+                self.apply( 
+                    name_layer_normalized, 
+                    name_layer_log_transformed, 
+                    'log1p',
+                    mode_instructions = [ [ 'sparse_for_querying_features', 'sparse_for_querying_features' ], [ 'sparse_for_querying_barcodes', 'sparse_for_querying_barcodes' ] ]
+                ) 
             
-            # load filter for filtered barcodes
-            self.bc.change_filter( name_col_filter_filtered_barcode )
+            # load filter for filtered barcodes (if the filter exists)
+            if name_col_filter_filtered_barcode in self.bc.meta : # check validity of the name_col
+                self.bc.change_filter( name_col_filter_filtered_barcode )
 
             # identify highly variable features (with filtered barcodes)
             self.identify_highly_variable_features( 
                 name_layer_log_transformed, 
                 int_num_highly_variable_features = int_num_highly_variable_features,
                 flag_show_graph = True,
+                flag_load_filter = False, # clear feature filter (in order to contain records of every features in the output layer)
                 ** dict_kw_hv
             )
-
+            
+            self.bc.filter = ba_filter_bc_back_up # restore the barcode filter (in order to contain records of all barcodes in the output layers)
+            
             # scale data (with metrics from the filtered barcodes)
-            self.scale( 
-                name_layer_log_transformed,
-                name_layer_scaled, 
-                name_col_variance = f'{name_layer_log_transformed}_variance',
-                name_col_mean = f'{name_layer_log_transformed}_mean',
-                max_value = max_value,
-                mode_instructions = [ [ 'sparse_for_querying_features', 'sparse_for_querying_features' ], [ 'sparse_for_querying_barcodes', 'sparse_for_querying_barcodes' ] ]
-            ) # scale data
-    def perform_dimension_reduction_and_clustering( self, name_layer_pca, name_filter_barocodes, int_num_components : int = 30, int_num_barcodes_in_pumap_batch : int = 50000, int_num_barcodes_for_a_batch : int = 50000, float_prop_subsampling_pca : float = 0.5, str_suffix : str = '', flag_subsample = False, dict_kw_subsample = dict( ) ) :
+            if name_layer_scaled is not None : # check validity of name_layer
+                self.scale( 
+                    name_layer_log_transformed,
+                    name_layer_scaled, 
+                    name_col_variance = name_col_variance,
+                    max_value = max_value,
+                    mode_instructions = [ [ 'sparse_for_querying_features', 'sparse_for_querying_features' ], [ 'sparse_for_querying_barcodes', 'sparse_for_querying_barcodes' ] ]
+                ) # scale data
+    def perform_dimension_reduction_and_clustering( self, name_layer_pca, name_filter_barocodes, int_num_components : int = 30, int_num_barcodes_in_pumap_batch : int = 50000, int_num_barcodes_for_a_batch : int = 50000, float_prop_subsampling_pca : float = 0.5, str_suffix : str = '', flag_subsample = False, dict_kw_subsample = dict( ), str_embedding_method : typing.Literal[ 'pumap', 'scanpy-umap', 'scanpy-tsne', 'knn_embedder', 'knngraph' ] = 'pumap' ) :
         """ # 2022-09-05 00:06:44 
         perform dimension rediction and clustering 
 
@@ -8684,7 +9129,9 @@ class RamData( ) :
         'name_filter_barocodes' : the name of the filter containing the barcode entries that will be analyzed by the current function
         'int_num_components' : the number of PCA components to use
         'flag_subsample' : if True, perform subsampling. if False, perform leiden clustering and UMAP embedding using all barcodes.
-        'str_suffix' : a suffix to add to the name of the results
+        'str_suffix' : a suffix to add to the name of the results.
+        
+        'str_embedding_method' : 
         """
         # calculate PCA values
         self.train_pca( 
@@ -8845,7 +9292,7 @@ class RamData( ) :
             self._save_metadata_( )
         models = deepcopy( self._dict_metadata[ 'models' ] ) # create a copy
         return models
-    def load_model( self, name_model, type_model : typing.Literal[ 'ipca', 'pumap', 'hdbscan', 'knn_classifier', 'knngraph' ] ) :
+    def load_model( self, name_model, type_model : typing.Literal[ 'ipca', 'pumap', 'hdbscan', 'knn_classifier', 'knn_embedder', 'knngraph' ] ) :
         """ # 2022-08-07 16:55:55 
         load model from RamData
         """
@@ -8946,7 +9393,7 @@ class RamData( ) :
             if not hasattr( model, 'decoder' ) : 
                 model.decoder = None
         return model # return loaded model
-    def save_model( self, model, name_model : str, type_model : typing.Literal[ 'ipca', 'pumap', 'hdbscan', 'knn_classifier', 'knngraph' ] ) :
+    def save_model( self, model, name_model : str, type_model : typing.Literal[ 'ipca', 'pumap', 'hdbscan', 'knn_classifier', 'knn_embedder', 'knngraph' ] ) :
         """ # 2022-08-07 16:56:07 
         save model to RamData
         
