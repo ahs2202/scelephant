@@ -41,13 +41,22 @@ import pynndescent
 # for leiden clustering
 import igraph as ig
 
+# for deep-learning based embedder and classifier
+import tensorflow as tf
+from tensorflow.keras import layers
+
+# define logging levels
+# logger = multiprocessing.log_to_stderr( )
+# logger.setLevel( logging.INFO )
+# Info = multiprocessing.get_logger( ).info
+
 # for thread-safe start of processes
 mpsp = mp.get_context('spawn')
 
 # define version
 _version_ = '0.0.7'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-09-07 21:15:52'
+_last_modified_time_ = '2022-09-15 22:07:56'
 
 """ # 2022-07-21 10:35:42  realease note
 
@@ -184,18 +193,29 @@ RamDataAxis.iterate_str method was added
 # 2022-09-11 23:53:36 
 ZarrDataFrame.lazy_load method draft implementation completed 
 
-##### Future implementations #####
+# 2022-09-12 15:51:48 
 - lazy loading implementation for remotely-located combined ZarrDataFrame :
     combined ZarrDataFrame should be optimized more. When only a subset of data is needed, a filter will be assigned to combined column indicating which entry contains data and data of entries will be downloaded as it is accessed (lazy loading). 
-
 - lazy loading implementation of string representation of Axis objects :
     similar mechanism to ZarrDataFrame's lazy-loading will be used
 
-- KNN models will be combined in to a single model, and associated filter and column name will be saved together in order to check validity of the model.
+# 2022-09-12 17:50:10 
+RamDataAxis object will be no longer modify filter using current RamDataLayer's active entries
 
+# 2022-09-14 10:11:34 
+- KNN models will be combined in to a single model, and associated filter and column name will be saved together in order to check validity of the model.
+- RamData.train_knn method was implemented, for building knnindex using the given X
+- RamData.apply_knn method was implemented for knnindex-based embedding and classification
+
+# 2022-09-15 22:06:09 
+- RamData.train_dl method was implemented, for training deep-learning based model for classification/embedding task
+- RamData.apply_dl method was implemented, for applying the trained deep-learning model across the entries
+
+##### Future implementations #####
 
 
 """
+
 
 ''' previosuly written for biobookshelf '''
 def CB_Parse_list_of_id_cell( l_id_cell, dropna = True ) :
@@ -3973,7 +3993,7 @@ class ZarrDataFrame( ) :
             za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'r' ) # read data from the Zarr object
             dict_col_metadata = za.attrs[ 'dict_col_metadata' ] # retrieve metadata of the current column
             return dict_col_metadata
-    def lazy_load( self, queries, name_col_sink : Union[ str, None ] = None, l_new_value = None, path_column_sink : Union[ str, None ] = None, l_path_column_source : Union[ list, None ] = None, name_col_availability : Union[ None, str ] = None ) -> None :
+    def lazy_load( self, queries, name_col_sink : Union[ str, None ] = None, l_new_value = None, path_column_sink : Union[ str, None ] = None, path_column_source : Union[ str, None ] = None, l_path_column_source : Union[ list, None ] = None, name_col_availability : Union[ None, str ] = None, flag_retrieve_from_all_interleaved_components : bool = False ) -> None :
         """ # 2022-09-10 21:52:44 
         perform lazy-loading of a given column using the column containing availability values.
         it will automatically detect the source objects based on the current setting.
@@ -3990,10 +4010,13 @@ class ZarrDataFrame( ) :
         'path_column_source' : the path of source column from which data will be retrieved when 'mask' mode is used.
         'l_path_column_source' : A list of source columns from which data will be retrieved when 'combined' mode is used. these columns should be have the same length as the given list of component ZarrDataFrame objects
         'name_col_availability' : by default (if None will be given), default availability column name will be used. alternatively, a column name in the current ZarrDataFrame can be given (if it does not exists, it will be initialized)
+        
+        === when fetching from combined components ===
+        'flag_retrieve_from_all_interleaved_components' : bool = False # if True, 
         """      
         # if mask is present, return the result of the mask
         if self._mask is not None :
-            return self._mask.lazy_load( queries = queries, name_col_sink = name_col_sink, l_new_value = l_new_value, path_column_sink = path_column_sink, l_path_column_source = l_path_column_source, name_col_availability = name_col_availability )
+            return self._mask.lazy_load( queries = queries, name_col_sink = name_col_sink, l_new_value = l_new_value, path_column_sink = path_column_sink, path_column_source = path_column_source, l_path_column_source = l_path_column_source, name_col_availability = name_col_availability, flag_retrieve_from_all_interleaved_components = flag_retrieve_from_all_interleaved_components )
         
         if name_col_sink is None and path_column_sink is None :
             if self.verbose :
@@ -4016,13 +4039,20 @@ class ZarrDataFrame( ) :
                 return
             if self.is_mask and name_col_sink not in self._zdf_source.columns :
                 return
+            
+        # handle invalid modes
+        if not( self.is_combined or self.is_mask ) : # if source data is not available for the current ZarrDataFrame object, exit
+            return
+        
+        # retrieve a flag indicating all entries will be available in the sink column
+        flag_will_be_fully_loaded = isinstance( queries, slice ) and queries == slice( None, None, None )
         
         # retrieve list of integer representations of the entries
         l_int_entry = list( self.get_integer_indices( queries ) )
         
         # retrieve operation modes
         flag_mode_write = l_new_value is not None and len( l_new_value ) == len( l_int_entry ) # 'write/read' or 'read'
-        flag_mode_internal = path_column_sink is None or l_path_column_source is None or name_col_availability is None # 'internal locations' or 'external locations'
+        flag_mode_internal = name_col_sink is not None # 'internal locations' or 'external locations'
         
         if flag_mode_internal : # retrieve internal locations
             if name_col_sink is None : # check validity of input setting
@@ -4043,11 +4073,7 @@ class ZarrDataFrame( ) :
         # initialize sink column
         if flag_mode_write and not zarr_exists( path_column_sink ) : # if sink column does not exist
             # initialize sink column by retrieving the value of the first entry
-            self.lazy_load( l_int_entry = [ 0 ], name_col_sink = name_col_sink, l_new_value = None, path_column_sink = path_column_sink, l_path_column_source = l_path_column_source, name_col_availability = name_col_availability )
-            
-        # handle invalid modes
-        if not( self.is_combined or self.is_mask ) : # if source data is not available for the current ZarrDataFrame object, exit
-            return
+            self.lazy_load( queries = [ 0 ], name_col_sink = name_col_sink, l_new_value = None, path_column_sink = path_column_sink, path_column_source = path_column_source, l_path_column_source = l_path_column_source, name_col_availability = name_col_availability )
         
         # initialize availability column
         if name_col_availability not in self : # if 'name_col_availability' column does not exist, initialize the column
@@ -4062,9 +4088,12 @@ class ZarrDataFrame( ) :
         # update sink column (write operation)
         if flag_mode_write : # write operation
             dict_col_metadata_availbility[ 'int_num_entries_available' ] += np.sum( ~ self[ name_col_availability, l_int_entry ] ) # update the number of entries available
-            self[ name_col_availability, l_int_entry ] = True # update availability
+            # update availability
+            if not flag_will_be_fully_loaded : # if the column will be fully loaded, do not update the availability column
+                self[ name_col_availability, l_int_entry ] = True 
+            # update values
             za_sink = zarr.open( path_column_sink, 'a' )
-            za_sink.set_orthogonal_selection( l_int_entry, l_new_value ) # update values
+            za_sink.set_orthogonal_selection( l_int_entry, l_new_value ) 
         else :
             # retrieve values from sink column (read operation)
             l_int_entry_that_needs_fetching = np.array( l_int_entry, dtype = int )[ ~ self[ name_col_availability, l_int_entry ] ] # retrieve int_entry that need updates
@@ -4087,9 +4116,13 @@ class ZarrDataFrame( ) :
                 elif self.is_combined :
                     # %% COMBINED MODE %%
                     # iterate over components
+                    # initialize mask
+                    if self.is_interleaved and flag_retrieve_from_all_interleaved_components :
+                        ba_retrieved = bitarray( self._n_rows_unfiltered )
+                        ba_retrieved.setall( 0 )
                     for int_index_component, zdf, dict_index_mapping_from_combined_to_component, path_column_source in zip( np.arange( len( self._l_zdf ) ), self._l_zdf, self._l_dict_index_mapping_from_combined_to_component, l_path_column_source ) :
-                        # when combined mode is interleaved, retrieve data from a single component
-                        if self.is_interleaved and int_index_component != self.index_zdf_data_source_when_interleaved :
+                        # when combined mode is interleaved and only single component is used as a data source, retrieve data from a single component
+                        if self.is_interleaved and not flag_retrieve_from_all_interleaved_components and int_index_component != self.index_zdf_data_source_when_interleaved :
                             continue
                         # if source column does not exist, continue
                         if path_column_source is None :
@@ -4111,8 +4144,15 @@ class ZarrDataFrame( ) :
                         l_int_entry_combined, l_int_entry_component = [ ], [ ] # initialize the array 
                         for int_entry_combined in l_int_entry_that_needs_fetching :
                             if int_entry_combined in dict_index_mapping_from_combined_to_component : # if the entry exist in the source column
-                                l_int_entry_combined.append( int_entry_combined )
-                                l_int_entry_component.append( dict_index_mapping_from_combined_to_component[ int_entry_combined ] )
+                                if self.is_interleaved and flag_retrieve_from_all_interleaved_components : 
+                                    if not ba_retrieved[ int_entry_combined ] : # if value for the current entry was not retrieved
+                                        ba_retrieved[ int_entry_combined ] = 1 # update the flag
+                                        l_int_entry_combined.append( int_entry_combined )
+                                        l_int_entry_component.append( dict_index_mapping_from_combined_to_component[ int_entry_combined ] )
+                                else :
+                                    l_int_entry_combined.append( int_entry_combined )
+                                    l_int_entry_component.append( dict_index_mapping_from_combined_to_component[ int_entry_combined ] )
+
 
                         # update sink column if there is valid entries to retrieve data and update
                         if len( l_int_entry_combined ) > 0 :
@@ -4121,19 +4161,23 @@ class ZarrDataFrame( ) :
                             else :
                                 za_sink.set_orthogonal_selection( l_int_entry_combined, za_source.get_orthogonal_selection( l_int_entry_component ) ) # update sink column values from values using the source ZarrDataFrame
                         del l_int_entry_combined, l_int_entry_component
-                self[ name_col_availability, l_int_entry_that_needs_fetching ] = True # update availability
+                # update availability
+                if not flag_will_be_fully_loaded : # if the column will be fully loaded, do not update the availability column
+                    self[ name_col_availability, l_int_entry_that_needs_fetching ] = True # update availability
             else :
                 za_sink = zarr.open( path_column_sink, 'a' ) # open sink zarr object
             # return_value = za_sink.get_orthogonal_selection( l_int_entry ) # return values from the sink column
 
+        # update availability column
         # when all entries were loaded, delete the availbility column and modify the sink column metadata
         if dict_col_metadata_availbility[ 'int_num_entries_available' ] == self._n_rows_unfiltered :
             del self[ name_col_availability ] # delete the column
             # update metadata of the sink column
             za = zarr.open( path_column_sink, 'a' )
             za.attrs[ 'flag_is_being_lazy_loaded' ] = False 
-        # save metadata
-        self._set_column_metadata( name_col_availability, dict_col_metadata_availbility ) # save metadata
+        else :
+            # save metadata of availability column
+            self._set_column_metadata( name_col_availability, dict_col_metadata_availbility ) # save metadata
             
         return return_value # return values
     def _set_column_metadata( self, name_col, dict_col_metadata ) :
@@ -4150,7 +4194,7 @@ class ZarrDataFrame( ) :
             za.attrs[ 'dict_col_metadata' ] = dict_col_metadata # retrieve metadata of the current column
     def _get_column_path( self, name_col ) :
         """ # 2022-08-26 10:34:35 
-        if 'name_col' column exists in the current ZDF object, return the path of the column
+        if 'name_col' column exists in the current ZDF object, return the path of the column. the columns in mask, or component ZarrDataFrame will be found and retrieved.
         
         === arguments ===
         'name_col' : the name of the column to search
@@ -5035,9 +5079,32 @@ class RamDataAxis( ) :
             
     'flag_is_interleaved' = False # indicate the type of current 'combined' RamDataAxis, indicating whether to interpret the given list of RamDataAxis object as interleaved (if True) or stacked (if False). 
             if True and the current RamDataAxis is in 'combined' mode, an index mapping dictionary will be constructed for each axis.
+            
+    'flag_load_all_string_representations_from_components' = False # if True, load all string representations in zarr format AND chunks format (for compatibility with Zarr.js). 
+        if False, string representations will be loaded as it is accessed. to load string representations in chunks format (lazy-loading not supported), please run RamDataAxis.prepare_javascript_application method.
     
     """
-    def __init__( self, path_folder : str, name_axis : str, l_ax : Union[ list, tuple, None ] = None, index_ax_data_source_when_interleaved = 0, flag_check_combined_type = False, flag_is_interleaved : bool = False, int_max_num_entries_per_batch = 1000000, int_num_entries_in_a_chunk = 5000, ba_filter : Union[ bitarray, None ] = None, ramdata = None, int_index_str_rep : int = 0, mode : str = 'a', path_folder_mask : Union[ str, None ] = None, flag_is_read_only : bool = False, dict_kw_zdf : dict = { 'flag_retrieve_categorical_data_as_integers' : False, 'flag_load_data_after_adding_new_column' : True, 'flag_enforce_name_col_with_only_valid_characters' : True, 'int_max_num_entries_per_batch' : 1000000 }, dict_kw_view : dict = { 'float_min_proportion_of_active_entries_in_an_axis_for_using_array' : 0.1, 'dtype' : np.int32 }, verbose : bool = True ) :
+    def __init__( 
+        self, 
+        path_folder : str, 
+        name_axis : str, 
+        l_ax : Union[ list, tuple, None ] = None, 
+        index_ax_data_source_when_interleaved = 0, 
+        flag_check_combined_type = False, 
+        flag_is_interleaved : bool = False, 
+        int_max_num_entries_per_batch = 1000000, 
+        int_num_entries_in_a_chunk = 5000, 
+        ba_filter : Union[ bitarray, None ] = None, 
+        ramdata = None, 
+        int_index_str_rep : int = 0, 
+        mode : str = 'a', 
+        path_folder_mask : Union[ str, None ] = None, 
+        flag_is_read_only : bool = False, 
+        dict_kw_zdf : dict = { 'flag_retrieve_categorical_data_as_integers' : False, 'flag_load_data_after_adding_new_column' : True, 'flag_enforce_name_col_with_only_valid_characters' : True, 'int_max_num_entries_per_batch' : 1000000 }, 
+        dict_kw_view : dict = { 'float_min_proportion_of_active_entries_in_an_axis_for_using_array' : 0.1, 'dtype' : np.int32 }, 
+        flag_load_all_string_representations_from_components : bool = False,
+        verbose : bool = True
+    ) :
         """ # 2022-08-30 12:25:03 
         """
         # set attributes
@@ -5154,51 +5221,52 @@ class RamDataAxis( ) :
                     za.attrs[ 'dict_metadata' ] = dict_metadata
                     
                     ''' write the combined axis '''
-                    ''' prepare data for the axis object write barcodes and features files to zarr objects '''
-                    # initialize
-                    int_num_entries = len( dict_str_entry_to_int_entry ) # retrieve the number of entries 
-                    index_chunk = 0 # initialize chunk size
-                    int_pos = 0 # initialize the start position
+                    if flag_load_all_string_representations_from_components :
+                        ''' prepare data for the axis object write barcodes and features files to zarr objects '''
+                        # initialize
+                        int_num_entries = len( dict_str_entry_to_int_entry ) # retrieve the number of entries 
+                        index_chunk = 0 # initialize chunk size
+                        int_pos = 0 # initialize the start position
 
-                    # write zarr object for random access of string representation of the entries of the axis object
-                    
-                    num_available_columns_string_representation = self._l_ax[ 0 ].num_available_columns_string_representation # use the number of string representation columns from the first axis object as the number of available string representation columns of the combined axis
-                    za = zarr.open( f'{path_folder}{name_axis}.str.zarr', mode = 'w', shape = ( int_num_entries, num_available_columns_string_representation ), chunks = ( int_num_entries_in_a_chunk, 1 ), dtype = str, synchronizer = zarr.ThreadSynchronizer( ) ) # string object # individual columns will be chucked, so that each column can be retrieved separately.
+                        # write zarr object for random access of string representation of the entries of the axis object
 
-                    # create a folder to save a chunked string representations
-                    path_folder_str_chunks = f'{path_folder}{name_axis}.str.chunks/'
-                    os.makedirs( path_folder_str_chunks, exist_ok = True )
-                    za_str_chunks = zarr.group( path_folder_str_chunks )
-                    za_str_chunks.attrs[ 'dict_metadata' ] = { 'int_num_entries' : int_num_entries, 'int_num_of_entries_in_a_chunk' : int_num_entries_in_a_chunk } # write essential metadata for str.chunks
+                        num_available_columns_string_representation = self._l_ax[ 0 ].num_available_columns_string_representation # use the number of string representation columns from the first axis object as the number of available string representation columns of the combined axis
+                        za = zarr.open( f'{path_folder}{name_axis}.str.zarr', mode = 'w', shape = ( int_num_entries, num_available_columns_string_representation ), chunks = ( int_num_entries_in_a_chunk, 1 ), dtype = str, synchronizer = zarr.ThreadSynchronizer( ) ) # string object # individual columns will be chucked, so that each column can be retrieved separately.
 
-                    while int_pos < int_num_entries : # until all entries were processed. 
-                        int_num_entries_chunk = min( int_num_entries_in_a_chunk, int_num_entries - int_pos ) # retrieve the number of entries in a chunk
-                        
-                        arr_str_chunk = np.zeros( ( int_num_entries_chunk, num_available_columns_string_representation ), dtype = object ) # initialize an array containing a chunk of string representations
+                        # create a folder to save a chunked string representations
+                        path_folder_str_chunks = f'{path_folder}{name_axis}.str.chunks/'
+                        os.makedirs( path_folder_str_chunks, exist_ok = True )
+                        za_str_chunks = zarr.group( path_folder_str_chunks )
+                        za_str_chunks.attrs[ 'dict_metadata' ] = { 'int_num_entries' : int_num_entries, 'int_num_of_entries_in_a_chunk' : int_num_entries_in_a_chunk } # write essential metadata for str.chunks
 
-                        ba_flag_retrieved_chunk = bitarray( int_num_entries_chunk ) # initialize the bitarray of flags indicating which entry has been retrieved.
-                        ba_flag_retrieved_chunk.setall( 0 ) # all entries to False
-                        
-                        for ax, dict_index_mapping_interleaved in zip( self._l_ax, l_dict_index_mapping_interleaved ) : # for each component axis object, retrieve axis object and its mapping dictionary
-                            l_int_entry_combined, l_int_entry_component = [ ], [ ] # initialize list of 'int_entry_combined' and 'int_entry_component' for the current chunk
-                            for int_entry_combined in range( int_pos, min( int_num_entries, int_pos + int_num_entries_in_a_chunk ) ) :
-                                if int_entry_combined in dict_index_mapping_interleaved and not ba_flag_retrieved_chunk[ int_entry_combined - int_pos ] : # if the 'int_entry_combined' exist in the current axis and the data has not been retrieved.
-                                    # collect 'int_entry_component' for the current batch
-                                    l_int_entry_combined.append( int_entry_combined )
-                                    l_int_entry_component.append( dict_index_mapping_interleaved[ int_entry_combined ] )
-                                    # update bitarray mask
-                                    ba_flag_retrieved_chunk[ int_entry_combined - int_pos ] = 1 # indicate that the data for the current entry has been retrieved.
-                            if len( l_int_entry_combined ) > 0 : # if the current chunk for the current axis object contains valid entries 
-                                arr_str_chunk[ np.array( l_int_entry_combined, dtype = int ) - int_pos ] = ax.get_str( l_int_entry_component, np.arange( num_available_columns_string_representation ) ) # correct the coordinates # retrieve string representations and save to the combined array
-                                
-                        sl_chunk = slice( int_pos, min( int_num_entries, int_pos + int_num_entries_in_a_chunk ) )
-                        za[ sl_chunk ] = arr_str_chunk # set str.zarr
-                        # set str.chunks
-                        for index_col, arr_val in enumerate( arr_str_chunk.T ) :
-                            with open( f"{path_folder_str_chunks}{index_chunk}.{index_col}", 'wt' ) as newfile : # similar organization to zarr
-                                newfile.write( _base64_encode( _gzip_bytes( ( '\n'.join( arr_val ) + '\n' ).encode( ) ) ) )
-                        int_pos += int_num_entries_in_a_chunk # update 'int_pos'
-                        index_chunk += 1 # update 'index_chunk'
+                        while int_pos < int_num_entries : # until all entries were processed. 
+                            int_num_entries_chunk = min( int_num_entries_in_a_chunk, int_num_entries - int_pos ) # retrieve the number of entries in a chunk
+
+                            arr_str_chunk = np.zeros( ( int_num_entries_chunk, num_available_columns_string_representation ), dtype = object ) # initialize an array containing a chunk of string representations
+
+                            ba_flag_retrieved_chunk = bitarray( int_num_entries_chunk ) # initialize the bitarray of flags indicating which entry has been retrieved.
+                            ba_flag_retrieved_chunk.setall( 0 ) # all entries to False
+
+                            for ax, dict_index_mapping_interleaved in zip( self._l_ax, l_dict_index_mapping_interleaved ) : # for each component axis object, retrieve axis object and its mapping dictionary
+                                l_int_entry_combined, l_int_entry_component = [ ], [ ] # initialize list of 'int_entry_combined' and 'int_entry_component' for the current chunk
+                                for int_entry_combined in range( int_pos, min( int_num_entries, int_pos + int_num_entries_in_a_chunk ) ) :
+                                    if int_entry_combined in dict_index_mapping_interleaved and not ba_flag_retrieved_chunk[ int_entry_combined - int_pos ] : # if the 'int_entry_combined' exist in the current axis and the data has not been retrieved.
+                                        # collect 'int_entry_component' for the current batch
+                                        l_int_entry_combined.append( int_entry_combined )
+                                        l_int_entry_component.append( dict_index_mapping_interleaved[ int_entry_combined ] )
+                                        # update bitarray mask
+                                        ba_flag_retrieved_chunk[ int_entry_combined - int_pos ] = 1 # indicate that the data for the current entry has been retrieved.
+                                if len( l_int_entry_combined ) > 0 : # if the current chunk for the current axis object contains valid entries 
+                                    arr_str_chunk[ np.array( l_int_entry_combined, dtype = int ) - int_pos ] = ax.get_str( l_int_entry_component, np.arange( num_available_columns_string_representation ) ) # correct the coordinates # retrieve string representations and save to the combined array
+
+                            sl_chunk = slice( int_pos, min( int_num_entries, int_pos + int_num_entries_in_a_chunk ) )
+                            za[ sl_chunk ] = arr_str_chunk # set str.zarr
+                            # set str.chunks
+                            for index_col, arr_val in enumerate( arr_str_chunk.T ) :
+                                with open( f"{path_folder_str_chunks}{index_chunk}.{index_col}", 'wt' ) as newfile : # similar organization to zarr
+                                    newfile.write( _base64_encode( _gzip_bytes( ( '\n'.join( arr_val ) + '\n' ).encode( ) ) ) )
+                            int_pos += int_num_entries_in_a_chunk # update 'int_pos'
+                            index_chunk += 1 # update 'index_chunk'
                 # set attributes
                 self._l_dict_index_mapping_interleaved = l_dict_index_mapping_interleaved # save a list of constructed dictionaries for indices mapping as an attribute
                 self._l_dict_index_mapping_from_component_to_combined = l_dict_index_mapping_from_component_to_combined # save a list of dictionaries mapping component coordinates to those of the combined axis.
@@ -5234,43 +5302,44 @@ class RamDataAxis( ) :
                     len_arr_str_rep_buffer = 0 # track the number of entries in the buffer 'arr_str_rep_buffer'
 
                     # write a zarr object for the random access of string representation of the entries of the axis object
-                    za = zarr.open( f'{path_folder}{name_axis}.str.zarr', mode = 'w', shape = ( int_num_entries, num_available_columns_string_representation ), chunks = ( int_num_entries_in_a_chunk, 1 ), dtype = str, synchronizer = zarr.ThreadSynchronizer( ) ) # string object # individual columns will be chucked, so that each column can be retrieved separately.
+                    if flag_load_all_string_representations_from_components :
+                        za = zarr.open( f'{path_folder}{name_axis}.str.zarr', mode = 'w', shape = ( int_num_entries, num_available_columns_string_representation ), chunks = ( int_num_entries_in_a_chunk, 1 ), dtype = str, synchronizer = zarr.ThreadSynchronizer( ) ) # string object # individual columns will be chucked, so that each column can be retrieved separately.
 
-                    # create a folder to save a chunked string representations (for web application)
-                    path_folder_str_chunks = f'{path_folder}{name_axis}.str.chunks/'
-                    os.makedirs( path_folder_str_chunks, exist_ok = True )
-                    za_str_chunks = zarr.group( path_folder_str_chunks )
-                    za_str_chunks.attrs[ 'dict_metadata' ] = { 'int_num_entries' : int_num_entries, 'int_num_of_entries_in_a_chunk' : int_num_entries_in_a_chunk } # write essential metadata for str.chunks
+                        # create a folder to save a chunked string representations (for web application)
+                        path_folder_str_chunks = f'{path_folder}{name_axis}.str.chunks/'
+                        os.makedirs( path_folder_str_chunks, exist_ok = True )
+                        za_str_chunks = zarr.group( path_folder_str_chunks )
+                        za_str_chunks.attrs[ 'dict_metadata' ] = { 'int_num_entries' : int_num_entries, 'int_num_of_entries_in_a_chunk' : int_num_entries_in_a_chunk } # write essential metadata for str.chunks
 
-                    for ax in self._l_ax : # iterate over each axis object 
-                        int_pos_component = 0 # initialize 'int_pos_component' for the iteration of the current axis object
-                        while int_pos_component < ax.int_num_entries : # until all entries of the current component were processed. 
-                            int_num_entries_batch = min( int_num_entries_in_a_chunk, ax.int_num_entries - int_pos_component ) # retrieve the number of entries in a batch (a chunk)
-                            # write zarr object
-                            arr_str_rep_batch = ax.get_str( slice( int_pos_component, int_pos_component + int_num_entries_batch ), np.arange( num_available_columns_string_representation ) ) # retrieve string representations for the current batch
-                            za[ int_pos + int_pos_component : int_pos + int_pos_component + int_num_entries_batch ] = arr_str_rep_batch
+                        for ax in self._l_ax : # iterate over each axis object 
+                            int_pos_component = 0 # initialize 'int_pos_component' for the iteration of the current axis object
+                            while int_pos_component < ax.int_num_entries : # until all entries of the current component were processed. 
+                                int_num_entries_batch = min( int_num_entries_in_a_chunk, ax.int_num_entries - int_pos_component ) # retrieve the number of entries in a batch (a chunk)
+                                # write zarr object
+                                arr_str_rep_batch = ax.get_str( slice( int_pos_component, int_pos_component + int_num_entries_batch ), np.arange( num_available_columns_string_representation ) ) # retrieve string representations for the current batch
+                                za[ int_pos + int_pos_component : int_pos + int_pos_component + int_num_entries_batch ] = arr_str_rep_batch
 
-                            # update the string representation buffer for 'str.chunks'
-                            arr_str_rep_buffer[ len_arr_str_rep_buffer : len_arr_str_rep_buffer + int_num_entries_batch ] = arr_str_rep_batch
-                            del arr_str_rep_batch
-                            len_arr_str_rep_buffer += int_num_entries_batch # update length of the buffer
-                            # write 'str.chunks'
-                            if len_arr_str_rep_buffer >= int_num_entries_in_a_chunk : # if more than a chunk of data is present in the buffer, write a chunk
-                                for index_col, arr_val in enumerate( arr_str_rep_buffer[ : int_num_entries_in_a_chunk ].T ) :
-                                    with open( f"{path_folder_str_chunks}{index_chunk}.{index_col}", 'wt' ) as newfile : # similar organization to zarr
-                                        newfile.write( _base64_encode( _gzip_bytes( ( '\n'.join( arr_val ) + '\n' ).encode( ) ) ) )
-                                arr_str_rep_buffer[ : int_num_entries_in_a_chunk ] = arr_str_rep_buffer[ int_num_entries_in_a_chunk : ] # remove the values written to the disk as a chunk from the buffer
-                                len_arr_str_rep_buffer -= int_num_entries_in_a_chunk # update length of the buffer
-                                index_chunk += 1 # update 'index_chunk'
+                                # update the string representation buffer for 'str.chunks'
+                                arr_str_rep_buffer[ len_arr_str_rep_buffer : len_arr_str_rep_buffer + int_num_entries_batch ] = arr_str_rep_batch
+                                del arr_str_rep_batch
+                                len_arr_str_rep_buffer += int_num_entries_batch # update length of the buffer
+                                # write 'str.chunks'
+                                if len_arr_str_rep_buffer >= int_num_entries_in_a_chunk : # if more than a chunk of data is present in the buffer, write a chunk
+                                    for index_col, arr_val in enumerate( arr_str_rep_buffer[ : int_num_entries_in_a_chunk ].T ) :
+                                        with open( f"{path_folder_str_chunks}{index_chunk}.{index_col}", 'wt' ) as newfile : # similar organization to zarr
+                                            newfile.write( _base64_encode( _gzip_bytes( ( '\n'.join( arr_val ) + '\n' ).encode( ) ) ) )
+                                    arr_str_rep_buffer[ : int_num_entries_in_a_chunk ] = arr_str_rep_buffer[ int_num_entries_in_a_chunk : ] # remove the values written to the disk as a chunk from the buffer
+                                    len_arr_str_rep_buffer -= int_num_entries_in_a_chunk # update length of the buffer
+                                    index_chunk += 1 # update 'index_chunk'
 
-                            int_pos_component += int_num_entries_batch # update 'int_pos_component'
-                        int_pos += ax.int_num_entries # update 'int_pos'
+                                int_pos_component += int_num_entries_batch # update 'int_pos_component'
+                            int_pos += ax.int_num_entries # update 'int_pos'
 
-                    if len_arr_str_rep_buffer >= 0 : # if buffer is not empty, write the remaining data as a chunk
-                        for index_col, arr_val in enumerate( arr_str_rep_buffer[ : len_arr_str_rep_buffer ].T ) :
-                            with open( f"{path_folder_str_chunks}{index_chunk}.{index_col}", 'wt' ) as newfile : # similar organization to zarr
-                                newfile.write( _base64_encode( _gzip_bytes( ( '\n'.join( arr_val ) + '\n' ).encode( ) ) ) )
-                    del arr_str_rep_buffer
+                        if len_arr_str_rep_buffer >= 0 : # if buffer is not empty, write the remaining data as a chunk
+                            for index_col, arr_val in enumerate( arr_str_rep_buffer[ : len_arr_str_rep_buffer ].T ) :
+                                with open( f"{path_folder_str_chunks}{index_chunk}.{index_col}", 'wt' ) as newfile : # similar organization to zarr
+                                    newfile.write( _base64_encode( _gzip_bytes( ( '\n'.join( arr_val ) + '\n' ).encode( ) ) ) )
+                        del arr_str_rep_buffer
                                 
         # initialize the mapping dictionaries
         self._dict_str_to_i = None 
@@ -5422,7 +5491,7 @@ class RamDataAxis( ) :
         return self._ba_filter
     @filter.setter
     def filter( self, ba_filter ) :
-        """ # 2022-07-05 23:12:34 
+        """ # 2022-09-12 17:50:01 
         set a new bitarray filter on the Axis and the RamData object to which the current axis belongs to.
         
         a given mask will be further masked so that only entries with a valid count data is included in the resulting filter
@@ -5433,9 +5502,6 @@ class RamDataAxis( ) :
         
         if ba_filter is not None :
             ba_filter = self._convert_to_bitarray( ba_filter ) # convert mask to bitarray filter
-            # if current axis object has been attached to RamData object, retrieve intersection with the filter containing active entries
-            if self._ramdata is not None and self._ramdata.layer is not None :
-                ba_filter &= self.all( flag_return_valid_entries_in_the_currently_active_layer = True ) # only use the entries with a valid count data
         
         # propagate the filter
         self.meta.filter = ba_filter # change filter of metadata zdf
@@ -5443,7 +5509,7 @@ class RamDataAxis( ) :
         # set the filter of layer object of the RamData to which the current axis object has been attached.
         if self._ramdata is not None and self._ramdata.layer is not None : # if a layor object has been loaded in the RamData to which the current Axis object belongs to.
             setattr( self._ramdata._layer, f'ba_filter_{self._name_axis}', ba_filter )
-            
+        
         # propagate the filter to component RamData objects
         if self.is_combined :
             # %% COMBINED %%
@@ -5494,13 +5560,24 @@ class RamDataAxis( ) :
         if int_index_col is None :
             int_index_col = self.int_index_str_rep
         # check whether string representation of the entries of the given axis is available 
-        path_folder_str_zarr = f"{self._path_folder}{self._name_axis}.str.zarr"
-        if not zarr_exists( path_folder_str_zarr ) :  # if the zarr object containing string representations are not available, exits
-            return None
+        path_folder_str_zarr = f"{self._path_folder if self._path_folder_mask is None else self._path_folder_mask}{self._name_axis}.str.zarr" # retrieve sink column path
+        
+        # perform lazy-loading
+        self.meta.lazy_load( 
+            queries, 
+            name_col_sink = None, 
+            l_new_value = None, 
+            path_column_sink = path_folder_str_zarr,
+            path_column_source = f"{self._path_folder}{self._name_axis}.str.zarr", # retrieve sink column path
+            l_path_column_source = list( f"{ax._path_folder}{ax._name_axis}.str.zarr" if zarr_exists( f"{ax._path_folder}{ax._name_axis}.str.zarr" ) else None for ax in self._l_ax ) if self.is_combined else None, 
+            name_col_availability = '__str__availability__',
+            flag_retrieve_from_all_interleaved_components = True, # retrieve string representations from all component
+        )
         
         # open a zarr object containing the string representation of the entries
-        za = zarr.open( path_folder_str_zarr, 'r' )
-        return za.get_orthogonal_selection( ( queries, int_index_col ) )
+        if zarr_exists( path_folder_str_zarr ) :
+            za = zarr.open( path_folder_str_zarr, 'r' )
+            return za.get_orthogonal_selection( ( queries, int_index_col ) )
     def iterate_str( self, int_num_entries_in_a_batch : int = 1000, int_index_col : Union[ int, None ] = None ) :
         """ # iterate through string representations of the active entries of the current axis object
         
@@ -5518,7 +5595,7 @@ class RamDataAxis( ) :
         if len( l_int_entry_in_a_batch ) > 0 : 
             yield { 'l_int_entry' : l_int_entry_in_a_batch, 'l_str_entry' : self.get_str( queries = l_int_entry_in_a_batch, int_index_col = int_index_col ) }
     def load_str( self, int_index_col = None ) : 
-        ''' # 2022-06-24 22:38:18 
+        ''' # 2022-09-12 02:28:49 
         load string representation of all the active entries of the current axis, and retrieve a mapping from string representation to integer representation
         
         'int_index_col' : default value is 'self.int_index_str_rep'
@@ -5528,36 +5605,11 @@ class RamDataAxis( ) :
             int_index_col = self.int_index_str_rep
         # check whether string representation of the entries of the given axis is available 
         path_folder_str_zarr = f"{self._path_folder}{self._name_axis}.str.zarr"
-        if not zarr_exists( path_folder_str_zarr ) :  # if the zarr object containing string representations are not available, exits
-            return None
         
-        # open a zarr object containing the string representation of the entries
-        za = zarr.open( path_folder_str_zarr, 'r' ) 
-        
-        # retrieve string representations from the Zarr object
-        if self.filter is None : # when the filter is inactive
-            arr_str = za[ :, int_index_col ]
-        else : # when a filter has been applied
-            # perform mask selection to retrieve filter-applied string values
-            int_num_entries = self.int_num_entries
-            assert int_num_entries == za.shape[ 0 ] # make sure the number of rows of the Zarr object is same as number of element in a filter
-            arr_filter = bk.BA.to_array( self.filter ) # retrieve mask for a column
-            if za.shape[ 1 ] == 1 : # if there is a single column
-                arr_mask = arr_filter.reshape( int_num_entries, 1 ) # retrieve mask from filter 
-            else : # if there are more than one column, since Zarr mask selection requires the use of mask with same shape, compose such a array
-                arr_mask = np.zeros( za.shape, dtype = bool )
-                arr_false = np.zeros( int_num_entries, dtype = bool ) # placeholder values to make a mask with the same shape as Zarr object
-                for i in range( za.shape[ 1 ] ) :
-                    if i == int_index_col :
-                        arr_mask[ :, i ] = arr_filter 
-                    else :
-                        arr_mask[ :, i ] = arr_false 
-                del arr_false
-            arr_str = za.get_mask_selection( arr_mask )
-            del arr_mask, arr_filter
-            
         # compose a pair of dictionaries for the conversion
-        arr_int_entry = np.arange( len( arr_str ) ) if self.filter is None else bk.BA.to_integer_indices( self.filter ) # retrieve integer representations of the entries
+        arr_int_entry = np.arange( self.int_num_entries ) if self.filter is None else bk.BA.to_integer_indices( self.filter ) # retrieve integer representations of the entries
+        arr_str = self.get_str( queries = arr_int_entry, int_index_col = int_index_col ) # retrieve string representations of the entries
+        
         self._dict_str_to_i = dict( ( e, i ) for e, i in zip( arr_str, arr_int_entry ) ) 
         self._dict_i_to_str = dict( ( i, e ) for e, i in zip( arr_str, arr_int_entry ) ) 
         if self.verbose :
@@ -5741,6 +5793,11 @@ class RamDataAxis( ) :
         ba = bitarray( self.int_num_entries )
         ba.setall( 0 )
         return ba
+    def exclude( self, filter_to_exclude ) :
+        """ # 2022-09-14 00:12:48 
+        exclude entries in the given filter 'filter_to_exclude' from the current filter
+        """
+        self.filter = self.filter & ( ~ filter_to_exclude ) # exclude the entries in 'filter_to_exclude'
     def all( self, flag_return_valid_entries_in_the_currently_active_layer = True ) :
         """ # 2022-09-02 00:33:56 
         return bitarray filter with all entries marked 'active'
@@ -7489,7 +7546,8 @@ class RamData( ) :
         """
         ''' hard-coded settings  '''
         # define a set of picklable models :
-        self._set_type_model_picklable = { 'ipca', 'hdbscan', 'knn_classifier', 'knn_embedder', 'knngraph' }
+        self._set_type_model_picklable = { 'ipca', 'hdbscan', 'knn_classifier', 'knn_embedder', 'knngraph', 'knnindex' }
+        self._set_type_model_keras_model = { 'deep_learning.keras.classifier', 'deep_learning.keras.embedder' } # model containing keras model. keras model can be retrieved from the 'dict_model' using 'dl_model' as a key
         
         ''' modifiable settings '''
         # handle input object paths
@@ -7834,6 +7892,7 @@ class RamData( ) :
             self.bc.load_str( )
         # retrieve filter for the queried entries
         ba_entry_bc = self.bc[ l_entry_bc ]
+        
         # retrieve str representations of the queried entries
         l_str_bc = None
         if flag_use_str_repr_bc :
@@ -7890,6 +7949,14 @@ class RamData( ) :
         flag_use_str_repr_bc = 'str' in l_col_bc
         flag_use_str_repr_ft = 'str' in l_col_ft
         
+        # load a layer
+        if self.layer is None :
+            if len( self.layers ) == 0 : # if no layer is available
+                if self.verbose :
+                    print( '[scanpy_embedding] no layer is available. current implementation requires at least one layer, exiting' )
+                    return
+            self.layer = list( self.layers )[ 0 ] # load any layer
+        
         # compose filters from the queried entries
         ba_entry_bc, l_str_bc, ba_entry_ft, l_str_ft = self.compose_filters( l_entry_bc = l_entry_bc, l_entry_ft = l_entry_ft, flag_use_str_repr_bc = flag_use_str_repr_bc, flag_use_str_repr_ft = flag_use_str_repr_ft )
         
@@ -7924,10 +7991,12 @@ class RamData( ) :
             for e in l :
                 if isinstance( e, set ) : # retrieve all data in the secondary axis
                     for name_col in e :
-                        getattr( adata, name_attr )[ name_col ] = ax.meta[ name_col ]
+                        if name_col in ax.meta : # if the column exists in the metadata
+                            getattr( adata, name_attr )[ name_col ] = ax.meta[ name_col ]
                 elif isinstance( e, dict ) : # indexing through secondary axis
                     for name_col in e :
-                        getattr( adata, name_attr )[ name_col ] = ax.meta[ name_col ] if e[ name_col ] is None else ax.meta[ name_col, None, e[ name_col ] ] # if e[ name_col ] is None, load all data on the secondary axis
+                        if name_col in ax.meta : # if the column exists in the metadata
+                            getattr( adata, name_attr )[ name_col ] = ax.meta[ name_col ] if e[ name_col ] is None else ax.meta[ name_col, None, e[ name_col ] ] # if e[ name_col ] is None, load all data on the secondary axis
         
 
         # restore the filters once the data retrieval has been completed
@@ -7991,7 +8060,7 @@ class RamData( ) :
             path_folder_temp = f"{path_folder}temp_{UUID( )}/"
             os.makedirs( path_folder_temp, exist_ok = True ) # create the temporary folder
             return path_folder_temp # return the path to the temporary folder
-    def summarize( self, name_layer : str, axis : Union[ int, str ], summarizing_func, l_name_col_summarized : Union[ list, None ] = None, str_prefix : Union[ str, None ] = None, str_suffix : str = '', flag_overwrite : bool = False ) :
+    def summarize( self, name_layer : str, axis : Union[ int, str ], summarizing_func, l_name_col_summarized : Union[ list, None ] = None, str_prefix : Union[ str, None ] = None, str_suffix : str = '' ) :
         ''' # 2022-09-07 21:24:50 
         this function summarize entries of the given axis (0 = barcode, 1 = feature) using the given function
         
@@ -8032,7 +8101,8 @@ class RamData( ) :
         'str_prefix' : an additional prefix on the new columns of the axis metadata. if None is given (by default), f"{name_layer}_" will be used as a prefix
         'str_suffix' : an additional suffix of the new columns of the axis metadata that will contain summarized results
             * the output column name will be f"{str_prefix}{e}{str_suffix}", where {e} is the key of the dictionary returned by the 'summarizing_func'
-        'flag_overwrite' : a flag indicating whether to overwrite existing columns if all the output columns already exist in the metadata of the given axis. ** warning ** if at least one column is missing, existing columns will be overwritten regardless of this flag.
+        
+        ** warning ** existing columns will be overwritten!
         
         =========
         outputs 
@@ -8061,7 +8131,7 @@ class RamData( ) :
         # set default 'str_prefix' for new column names
         if not isinstance( str_prefix, str ) :
             str_prefix = f"{name_layer}_"
-            
+        
         # retrieve the total number of entries in the axis that was not indexed (if calculating average expression of feature across barcodes, divide expression with # of barcodes, and vice versa.)
         int_total_num_entries_not_indexed = self.ft.meta.n_rows if flag_summarizing_barcode else self.bc.meta.n_rows 
 
@@ -8117,10 +8187,6 @@ class RamData( ) :
         # retrieve Axis object to summarize 
         ax = self.bc if flag_summarizing_barcode else self.ft
         
-        # check whether all the output columns already exist in the metadata of the target axis, and if 'flag_overwrite' has not been set, exit
-        if not flag_overwrite and len( set( l_name_col_summarized_with_name_layer_prefix_and_suffix ).difference( ax.meta.columns ) ) == 0 :
-            return
-                
         # retrieve RAMtx object to summarize
         rtx = self.layer.get_ramtx( not flag_summarizing_barcode )
         if rtx is None :
@@ -9121,40 +9187,46 @@ class RamData( ) :
                     max_value = max_value,
                     mode_instructions = [ [ 'sparse_for_querying_features', 'sparse_for_querying_features' ], [ 'sparse_for_querying_barcodes', 'sparse_for_querying_barcodes' ] ]
                 ) # scale data
-    def perform_dimension_reduction_and_clustering( self, name_layer_pca, name_filter_barocodes, int_num_components : int = 30, int_num_barcodes_in_pumap_batch : int = 50000, int_num_barcodes_for_a_batch : int = 50000, float_prop_subsampling_pca : float = 0.5, str_suffix : str = '', flag_subsample = False, dict_kw_subsample = dict( ), str_embedding_method : typing.Literal[ 'pumap', 'scanpy-umap', 'scanpy-tsne', 'knn_embedder', 'knngraph' ] = 'pumap' ) :
-        """ # 2022-09-05 00:06:44 
+    def perform_dimension_reduction_and_clustering( self, name_layer_pca : str, name_filter_barcodes : str, name_filter_features : Union[ str, None ] = None, int_num_components : int = 30, int_num_barcodes_in_pumap_batch : int = 50000, int_num_barcodes_for_a_batch : int = 50000, float_prop_subsampling_pca : float = 0.5, str_suffix : str = '', flag_subsample : bool = True, dict_kw_subsample : dict = dict( ), flag_skip_pca : bool = False, str_embedding_method : typing.Literal[ 'pumap', 'scanpy-umap', 'scanpy-tsne', 'knn_embedder', 'knngraph' ] = 'pumap' ) :
+        """ # 2022-09-14 11:48:38 
         perform dimension rediction and clustering 
 
         'name_layer_pca' : the name of the layer to retrieve expression data for building PCA values
-        'name_filter_barocodes' : the name of the filter containing the barcode entries that will be analyzed by the current function
+        'name_filter_barcodes' : the name of the filter containing the barcode entries that will be analyzed by the current function
+        'name_filter_features' : the name of the filter containing the features entries from which PCA values will be calculated. By default, all currently active features will be used
         'int_num_components' : the number of PCA components to use
         'flag_subsample' : if True, perform subsampling. if False, perform leiden clustering and UMAP embedding using all barcodes.
         'str_suffix' : a suffix to add to the name of the results.
         
-        'str_embedding_method' : 
+        'flag_skip_pca' : bool = False # skip PCA calculation step
         """
+        # load features filter if available
+        if name_filter_features is not None :
+            self.ft.change_filter( name_filter_features )
+        
         # calculate PCA values
-        self.train_pca( 
-            name_layer = name_layer_pca, 
-            int_num_components = int_num_components, 
-            int_num_barcodes_in_ipca_batch = int_num_barcodes_for_a_batch, 
-            name_col_filter = f'filter_pca{str_suffix}', 
-            float_prop_subsampling = float_prop_subsampling_pca, 
-            name_col_filter_subsampled = f'filter_pca_subsampled{str_suffix}', 
-            flag_ipca_whiten = False, 
-            name_model = f'ipca{str_suffix}', 
-            int_num_threads = 3, 
-            flag_show_graph = True
-        )
+        if not flag_skip_pca : # calculate PCA values
+            self.train_pca( 
+                name_layer = name_layer_pca, 
+                int_num_components = int_num_components, 
+                int_num_barcodes_in_ipca_batch = int_num_barcodes_for_a_batch, 
+                name_col_filter = f'filter_pca{str_suffix}', 
+                float_prop_subsampling = float_prop_subsampling_pca, 
+                name_col_filter_subsampled = f'filter_pca_subsampled{str_suffix}', 
+                flag_ipca_whiten = False, 
+                name_model = f'ipca{str_suffix}', 
+                int_num_threads = 3, 
+                flag_show_graph = True
+            )
 
-        self.apply_pca( 
-            name_model = f'ipca{str_suffix}', 
-            name_layer = name_layer_pca, 
-            name_col = f'X_pca{str_suffix}', 
-            name_col_filter = name_filter_barocodes, 
-            int_n_components_in_a_chunk = 20, 
-            int_num_threads = 5
-        )
+            self.apply_pca( 
+                name_model = f'ipca{str_suffix}', 
+                name_layer = name_layer_pca, 
+                name_col = f'X_pca{str_suffix}', 
+                name_col_filter = name_filter_barcodes, 
+                int_n_components_in_a_chunk = 20, 
+                int_num_threads = 5
+            )
 
         if flag_subsample : # perform subsampling for clustering and embedding
             self.subsample( 
@@ -9164,7 +9236,7 @@ class RamData( ) :
                 name_col_label = f'subsampling_label{str_suffix}', 
                 name_col_avg_dist = f'subsampling_avg_dist{str_suffix}', 
                 axis = 'barcodes', 
-                name_col_filter = name_filter_barocodes,
+                name_col_filter = name_filter_barcodes,
                 name_col_filter_subsampled = f"filter_subsampled{str_suffix}", 
                 int_num_entries_in_a_batch = int_num_barcodes_for_a_batch,
                 ** dict_kw_subsample
@@ -9180,8 +9252,8 @@ class RamData( ) :
             )
 
             # 2nd training
-            self.bc.change_filter( name_filter_barocodes )
-            self.bc.filter = ram.bc.subsample( min( 1, int_num_barcodes_in_pumap_batch / ram.bc.filter.count( ) ) )
+            self.bc.change_filter( name_filter_barcodes )
+            self.bc.filter = self.bc.subsample( min( 1, int_num_barcodes_in_pumap_batch / self.bc.filter.count( ) ) )
             self.bc.save_filter( f'filter_subsampled_randomly{str_suffix}' )
             self.train_umap( 
                 name_col_pca = f'X_pca{str_suffix}', 
@@ -9197,15 +9269,15 @@ class RamData( ) :
                 int_num_components_data = int_num_components,
                 name_col_label = f'leiden{str_suffix}',
                 resolution = 0.2,
-                name_col_filter = name_filter_barocodes,
+                name_col_filter = name_filter_barcodes,
             )
 
-            self.bc.change_filter( name_filter_barocodes )
+            self.bc.change_filter( name_filter_barcodes )
             self.train_umap( 
                 name_col_pca = f'X_pca{str_suffix}', 
                 int_num_components_pca = int_num_components, 
                 int_num_components_umap = 2, 
-                name_col_filter = name_filter_barocodes,
+                name_col_filter = name_filter_barcodes,
                 name_pumap_model = f'pumap{str_suffix}'
             )
 
@@ -9214,7 +9286,7 @@ class RamData( ) :
             name_col_pca = f'X_pca{str_suffix}', 
             name_col_umap = f'X_umap{str_suffix}', 
             int_num_barcodes_in_pumap_batch = int_num_barcodes_for_a_batch, 
-            name_col_filter = name_filter_barocodes,
+            name_col_filter = name_filter_barcodes,
             name_pumap_model = f'pumap{str_suffix}'
         )
     ''' utility functions for filter '''
@@ -9292,8 +9364,8 @@ class RamData( ) :
             self._save_metadata_( )
         models = deepcopy( self._dict_metadata[ 'models' ] ) # create a copy
         return models
-    def load_model( self, name_model, type_model : typing.Literal[ 'ipca', 'pumap', 'hdbscan', 'knn_classifier', 'knn_embedder', 'knngraph' ] ) :
-        """ # 2022-08-07 16:55:55 
+    def load_model( self, name_model : str, type_model : Literal[ 'ipca', 'pumap', 'hdbscan', 'knn_classifier', 'knn_embedder', 'knngraph', 'knnindex' ] ) :
+        """ # 2022-09-15 11:10:53 
         load model from RamData
         """
         # if the model does not exists in the RamData, exit
@@ -9371,10 +9443,10 @@ class RamData( ) :
                 return 
                 
             model = PICKLE_Read( path_file_model )
-        elif type_model == 'pumap' :
+        elif type_model == 'pumap' : # parametric umap model
             # define paths
-            name_model_file = f"{name_model}.pumap.tar.gz"
-            path_prefix_model = f"{path_folder_models}{name_model}.pumap"
+            name_model_file = f"{name_model}.{type_model}.tar.gz"
+            path_prefix_model = f"{path_folder_models}{name_model}.{type_model}"
             path_file_model = path_prefix_model + '.tar.gz'
             
             # download the model file
@@ -9392,9 +9464,28 @@ class RamData( ) :
             # fix 'load_ParametricUMAP' error ('decoder' attribute does not exist)
             if not hasattr( model, 'decoder' ) : 
                 model.decoder = None
+        elif type_model in self._set_type_model_keras_model : # handle 'dict_model' containing 'dl_model'
+            # define paths
+            name_model_file = f"{name_model}.{type_model}.tar.gz"
+            path_prefix_model = f"{path_folder_models}{name_model}.{type_model}"
+            path_file_model = path_prefix_model + '.tar.gz'
+            
+            # download the model file
+            __search_and_download_model_file( name_model_file )
+            
+            # exit if the file does not exists
+            if not os.path.exists( path_file_model ) :
+                return 
+            
+            # extract tar.gz
+            if not os.path.exists( path_prefix_model ) : # if the model has not been extracted from the tar.gz archive
+                tar_extract( path_file_model, path_prefix_model ) # extract tar.gz file of pumap object
+            
+            model = PICKLE_Read( f"{path_prefix_model}/metadata.pickle" ) # load metadata first
+            model[ 'dl_model' ] = tf.keras.models.load_model( f"{path_prefix_model}/dl_model.hdf5" ) # load keras model                
         return model # return loaded model
-    def save_model( self, model, name_model : str, type_model : typing.Literal[ 'ipca', 'pumap', 'hdbscan', 'knn_classifier', 'knn_embedder', 'knngraph' ] ) :
-        """ # 2022-08-07 16:56:07 
+    def save_model( self, model, name_model : str, type_model : Literal[ 'ipca', 'pumap', 'hdbscan', 'knn_classifier', 'knn_embedder', 'knngraph' ] ) :
+        """ # 2022-09-15 11:11:01 
         save model to RamData
         
         'model' : input model 
@@ -9419,10 +9510,17 @@ class RamData( ) :
         if type_model in self._set_type_model_picklable : # handle picklable models
             path_file_model = f"{path_folder_models}{name_model}.{type_model}.pickle"
             PICKLE_Write( path_file_model, model )
-        elif type_model == 'pumap' :
+        elif type_model == 'pumap' : # parametric umap model
             path_prefix_model = f"{path_folder_models}{name_model}.pumap"
             path_file_model = path_prefix_model + '.tar.gz'
             model.save( path_prefix_model )
+            tar_create( path_file_model, path_prefix_model ) # create tar.gz file of pumap object for efficient retrieval and download
+        elif type_model in self._set_type_model_keras_model : # handle 'dict_model' containing 'dl_model'
+            path_prefix_model = f"{path_folder_models}{name_model}.{type_model}"
+            path_file_model = path_prefix_model + '.tar.gz'
+            dl_model = model.pop( 'dl_model' ) # remove the keras model 'dl_model' from dict_model, enable the remaining 'dict_model' to become picklable
+            dl_model.save( f"{path_prefix_model}/dl_model.hdf5" ) # save keras model
+            PICKLE_Write( f"{path_prefix_model}/metadata.pickle", model ) # save metadata as a pickle file
             tar_create( path_file_model, path_prefix_model ) # create tar.gz file of pumap object for efficient retrieval and download
         int_file_size = os.path.getsize( path_file_model ) # retrieve file size of the saved model
         
@@ -9436,6 +9534,16 @@ class RamData( ) :
         if self.verbose :
             print( f"{name_model}.{type_model} model saved." )
         return int_file_size # return the number of bytes written
+    def check_model( self, name_model : str, type_model : Literal[ 'ipca', 'pumap', 'hdbscan', 'knn_classifier', 'knn_embedder', 'knngraph', 'knnindex' ], flag_exclude_components : bool = False ) :
+        """ # 2022-09-13 17:17:35 
+        
+        return True if the model exists in the current RamData, and return False if the model does not exist in the current RamData
+        
+        flag_exclude_components : bool = False # the exclude models that only exist in RamData components
+        """
+        models = self.models_excluding_components if flag_exclude_components else self.models # retrieve currently available models
+            
+        return type_model in self.models and name_model in self.models[ type_model ] # exists in the models of the current RamData
     def delete_model( self, name_model : str, type_model : typing.Literal[ 'ipca', 'pumap' ] ) :
         """ # 2022-08-05 19:44:23 
         delete model of the RamData if the model exists in the RamData
@@ -9878,7 +9986,7 @@ class RamData( ) :
 
         return pumap_embedder # return the model
     ''' for community detection '''
-    def hdbscan( self, name_model : str = 'hdbscan', name_col_data : str = 'X_umap', int_num_components_data : int = 2, name_col_label : str = 'hdbscan', min_cluster_size : int = 30, min_samples : int = 30, cut_distance: float = 0.15, flag_reanalysis_of_previous_clustering_result : bool = False, name_col_filter : Union[ str, None ] = 'filter_hdbscan', name_col_embedding : Union[ str, None ] = 'X_umap', dict_kw_scatter : dict = { 's' : 10, 'linewidth' : 0, 'alpha' : 0.05 }, index_col_of_name_col_label : Union[ int, None ] = None ) :
+    def hdbscan( self, name_model : str = 'hdbscan', name_col_data : str = 'X_umap', int_num_components_data : int = 2, name_col_label : str = 'hdbscan', min_cluster_size : int = 30, min_samples : int = 30, cut_distance: float = 0.15, flag_reanalysis_of_previous_clustering_result : bool = False, name_col_filter : Union[ str, None ] = 'filter_hdbscan', name_col_embedding : Union[ str, None ] = None, dict_kw_scatter : dict = { 's' : 10, 'linewidth' : 0, 'alpha' : 0.05 }, index_col_of_name_col_label : Union[ int, None ] = None ) :
         """ # 2022-08-09 02:19:26 
         Perform HDBSCAN for the currently active barcodes
 
@@ -9960,7 +10068,7 @@ class RamData( ) :
             
         # return results
         return arr_cluster_label, clusterer # return the trained model and computed cluster labels
-    def leiden( self, name_model : str = 'leiden', name_col_data : str = 'X_pca', int_num_components_data : int = 15, name_col_label : str = 'leiden', resolution: float = 0.2, int_num_clus_expected : Union[ int, None ] = None, directed: bool = True, use_weights: bool = True, dict_kw_leiden_partition : dict = { 'n_iterations' : -1, 'seed' : 0 }, dict_kw_pynndescent_transformer : dict = { 'n_neighbors' : 10, 'metric' : 'euclidean', 'low_memory' : True }, name_col_filter : Union[ str, None ] = 'filter_leiden', name_col_embedding : Union[ str, None ] = 'X_umap', dict_kw_scatter : dict = { 's' : 10, 'linewidth' : 0, 'alpha' : 0.05 }, index_col_of_name_col_label : Union[ int, None ] = None ) -> None :
+    def leiden( self, name_model : str = 'leiden', name_col_data : str = 'X_pca', int_num_components_data : int = 15, name_col_label : str = 'leiden', resolution: float = 0.2, int_num_clus_expected : Union[ int, None ] = None, directed: bool = True, use_weights: bool = True, dict_kw_leiden_partition : dict = { 'n_iterations' : -1, 'seed' : 0 }, dict_kw_pynndescent_transformer : dict = { 'n_neighbors' : 10, 'metric' : 'euclidean', 'low_memory' : True }, name_col_filter : Union[ str, None ] = 'filter_leiden', name_col_embedding : Union[ str, None ] = None, dict_kw_scatter : dict = { 's' : 10, 'linewidth' : 0, 'alpha' : 0.05 }, index_col_of_name_col_label : Union[ int, None ] = None ) -> None :
         """ # 2022-08-09 02:19:31 
         Perform leiden community detection algorithm (clustering) for the currently active barcodes
 
@@ -10466,6 +10574,551 @@ class RamData( ) :
             
             # prepare next batch
             self.change_filter( name_col_filter_subsampled ) # change filter to currently subsampled entries for the next round
+    ''' scanpy api wrappers '''
+    def run_scanpy_using_pca( 
+        self, 
+        name_col_pca : str = 'X_pca', 
+        int_num_pca_components : int = 30, 
+        int_neighbors_n_neighbors : int = 10, 
+        int_neighbors_n_pcs : int = 30, 
+        set_method : set = { 'leiden', 'umap' }, 
+        str_suffix : str = '_scanpy', 
+        dict_kw_umap : dict = dict( ),
+        dict_leiden : dict = dict( ),
+        dict_kw_tsne : dict = dict( )
+    ) :
+        """ # 2022-09-12 22:43:20 
+        run scanpy methods using the PCA values calculated using scelephant
+
+        name_col_pca : str = 'X_pca' #
+        int_num_pca_components : int = 30 # the number of PCA components to retrieve from RamData
+        int_neighbors_n_neighbors : int = 10 # the number of neighbors to include in the neighborhood graph
+        int_neighbors_n_pcs : int = 30 # the number of PCA components for building the neighborhood graph
+        set_method = { 'leiden', 'umap' } # scanpy methods to use
+        str_suffix = '_scanpy' # suffix for the output column names of the 'barcodes' metadata
+        dict_kw_umap = dict( ) # keyworded arguments for scanpy umap method
+        dict_leiden = dict( ) # keyworded arguments for scanpy leiden method
+        dict_kw_tsne = dict( ) # keyworded arguments for scanpy tsne method
+        """
+        # if no set_method was given, exit early 
+        if len( set_method ) == 0 :
+            return
+
+        # retrieve anndata for embedding
+        adata = ram[ :, [ { name_col_pca } ], [ ], [ ] ] # load all barcodes in the filter, no feature in the filter, load PCA data only, load no feature metadata
+
+        # build a neighborhood graph
+        sc.pp.neighbors( adata, n_neighbors = int_neighbors_n_neighbors, n_pcs = int_neighbors_n_pcs, use_rep = name_col_pca )
+        # perform analysis
+        if 'umap' in set_method :
+            sc.tl.umap( adata, ** dict_kw_umap ) # perform analysis using scanpy
+            self.bc.meta[ f'X_umap{str_suffix}' ] = adata.obsm[ 'X_umap' ] # save result to RamData
+        if 'leiden' in set_method :
+            sc.tl.leiden( adata, ** dict_leiden ) # perform analysis using scanpy
+            self.bc.meta[ f'leiden{str_suffix}' ] = adata.obs[ 'leiden' ].values.astype( int ) # save result to RamData
+        if 'tsne' in set_method :
+            sc.tl.tsne( adata, use_rep = name_col_pca, ** dict_kw_tsne ) # perform analysis using scanpy
+            self.bc.meta[ f'X_tsne{str_suffix}' ] = adata.obsm[ 'X_tsne' ] # save result to RamData
+        return adata # return the resulting anndata
+    ''' knn-index based embedding/classification '''
+    def train_knn( self, name_model : str, name_col_x : str, name_col_filter_training : Union[ str, None ] = None, axis : Union[ int, str ] = 'barcodes', int_num_components_x : Union[ None, int ] = None, n_neighbors : int = 10, dict_kw_pynndescent : dict = { 'low_memory' : True, 'n_jobs' : None, 'compressed' : False } ) :
+        """ # 2022-09-13 10:43:47 
+        
+        use knn index built from subsampled entries to classify (predict labels) or embed (predict embeddings) barcodes.
+        
+        name_model : str # the name of the output model containing knn index
+        name_col_x : str # the name of the column containing X (input) data
+        name_col_filter_training : str # the name of column containing filter for entries that will be used for training
+        axis : Union[ int, str ] = 'barcodes' # axis from which to retrieve X
+        int_num_components_x : Union[ None, int ] = None # by default, use all components available in X
+        n_neighbors : int = 10 # the number of neighbors to use
+        dict_kw_pynndescent : dict = { 'low_memory' : True, 'n_jobs' : None, 'compressed' : False } # the additional keyworded arguments for pynndescent index
+        """
+        # handle inputs
+        flag_axis_is_barcode = axis in { 0, 'barcode', 'barcodes' } # retrieve a flag indicating whether the data is summarized for each barcode or not
+        
+        ax = self.bc if flag_axis_is_barcode else self.ft # retrieve the appropriate Axis object
+        
+        # set filters for operation
+        if name_col_filter_training is not None :
+            self.change_or_save_filter( name_col_filter_training )
+        
+        # exit if the input column does not exist
+        if name_col_x not in ax.meta :
+            print( f"[train_knn] {name_col_x} column does not exist" )
+            return
+        
+        """
+        2) Train model and retrieve cluster labels
+        """
+        # load the model and retrieve cluster labels
+        type_model = 'knnindex'
+        if not self.check_model( name_model, type_model ) : # if the model does not exist
+            
+            if len( self.bc.meta.get_shape( name_col_x ) ) == 0 or int_num_components_x is None : # if only a single component is available or 'int_num_components_x' is None, use all components
+                int_num_components_x = None # correct 'int_num_components_x' if only single component is available but 
+                X = ax.meta[ name_col_x, None, ] # load all components
+            else :
+                X = ax.meta[ name_col_x, None, : int_num_components_x ] # load top 'int_num_components_x' number of components
+            
+            knnindex = pynndescent.NNDescent( X, n_neighbors = n_neighbors, ** dict_kw_pynndescent )
+            knnindex.prepare( ) # prepare index for searching
+
+            # save trained model
+            self.save_model( { 'name_col_x' : name_col_x, 'int_num_components_x' : int_num_components_x, 'filter' : ax.filter, 'knnindex' : knnindex }, name_model, type_model ) # save model to the RamData # save filter along with index (compressed filter for 20M entries is ~ 3MB)
+        # report
+        if self.verbose :
+            print( f"[Info] [RamData.train_knn] knn index building completed for {ax.meta.n_rows} number of entries of the axis '{'barcodes' if flag_axis_is_barcode else 'features'}' using the data from the column '{name_col_x}'" )
+    def apply_knn( self, name_model : str, name_col_y : str, name_col_x : Union[ str, None ] = None, name_col_filter_target : Union[ str, None ] = None, operation : Literal[ 'classifier', 'embedder' ] = 'embedder', axis : Union[ int, str ] = 'barcodes', int_num_entries_in_a_batch : int = 10000, int_num_threads : int = 10 ) :
+        """ # 2022-09-13 10:43:47 
+        
+        use knn index built from subsampled entries to classify (predict labels) or embed (predict embeddings) barcodes.
+        
+        name_model : str # the name of the model containing knn index
+        name_col_x : str # the name of the column containing X (input) data. by default (if None is given), name_col_x stored in the model will be used.
+        name_col_y : str # the name of the column containing y (output) data
+        name_col_filter_target : str # the name of column containing filter for entries to which the model will be applied
+        operation : Literal[ 'classifier', 'embedder' ] = 'embedder' # the name of the operation. 
+            'classifier' : identify the most accurate label for the entry using the majority voting strategy
+            'embedder' : find an approximate embedding of the entry using the weighted averaging strategy
+        axis : Union[ int, str ] = 'barcodes' # axis from which to retrieve X and y data.
+        int_num_entries_in_a_batch : int = 10000 # the number of entries in a batch for each process. the larger the batch size is, the larger memory each process consumes.
+            
+        """
+        """ prepare """
+        # handle inputs
+        flag_axis_is_barcode = axis in { 0, 'barcode', 'barcodes' } # retrieve a flag indicating whether the data is summarized for each barcode or not
+        
+        ax = self.bc if flag_axis_is_barcode else self.ft # retrieve the appropriate Axis object
+            
+        # check whether the input column 'name_col_y' exists
+        if name_col_y not in ax.meta :
+            return
+        
+        """
+        load model and the associated data objects
+        """
+        # load the model and retrieve cluster labels
+        type_model = 'knnindex'
+        model = self.load_model( name_model, type_model )
+        if model is None : # if the model does not exist, initiate the model
+            if self.verbose :
+                print( f"[Error] [RamData.apply_knn] the nearest-neighbor search index '{name_model}' does not exist, exiting" )
+                return 
+        name_col_x_knnindex, _, ba_filter_knnindex, knnindex = model[ 'name_col_x' ], model[ 'int_num_components_x' ], model[ 'filter' ], model[ 'knnindex' ] # parse the model
+        
+        # use name_col_x retrieved from 'knnindex' model by default
+        if name_col_x is None :
+            name_col_x = name_col_x_knnindex
+            
+        # check whether the input column 'name_col_x' exists
+        if name_col_x not in ax.meta :
+            return
+        
+        # retrieve the number of components for the model
+        int_num_components_x = knnindex.dim
+        
+        # set filters for operation
+        if name_col_filter_target is not None :
+            self.change_filter( name_col_filter_target )
+            
+        # exclude entries used for building knnindex from the current filter
+        ba_filter_backup = ax.filter # back up the bitarray filter before excluding entries used to build knnindex
+        ax.filter = ax.filter & ( ~ ba_filter_knnindex )
+        
+        # retrieve y values for the entries used for building knnindex
+        y_knnindex = ax.meta[ name_col_y, ba_filter_knnindex ]
+        
+        # retrieve a flag indicating that the operation is embedding
+        flag_embedder = operation == 'embedder' 
+        """
+        assign labels or retrieve embeddings
+        """
+        if self.verbose :
+            print( f"[Info] [RamData.apply_label] the nearest-neighbor search started" )
+        # define functions for multiprocessing step
+        def process_batch( pipe_receiver_batch, pipe_sender_result ) :
+            ''' # 2022-09-06 17:05:15 
+            '''
+            while True :
+                batch = pipe_receiver_batch.recv( )
+                if batch is None :
+                    break
+                # parse the received batch
+                int_num_of_previously_returned_entries, l_int_entry_current_batch = batch[ 'int_num_of_previously_returned_entries' ], batch[ 'l_int_entry_current_batch' ]
+
+                # retrieve data from the axis metadata
+                X = ax.meta[ name_col_x, l_int_entry_current_batch, : int_num_components_x ]
+
+                neighbors, distances = knnindex.query( X ) # retrieve neighbors using the index
+                del X
+                
+                # knn-index based assignment of label/embedding
+                l_res = [ ]
+                for neighbors_of_an_entry, distances_of_an_entry in zip( neighbors, distances ) :
+                    # mark entries with zero distance
+                    mask_zero_distance = distances_of_an_entry == 0
+                    if ( mask_zero_distance ).sum( ) : # if there is 'neighbor' with 0 distance, use the y of the 0-distance neighbor
+                        res = y_knnindex[ neighbors_of_an_entry ][ mask_zero_distance ][ 0 ] # use the y of the first 0-distance neighbor (there should be at most 1 0-distance neighbor)
+                    else : # when there is no neighbors with 0-distance (all distance values should be larger than 0)
+                        if flag_embedder : # %% EMBEDDER %%
+                            weights = 1 / distances_of_an_entry # calculate weights based on distances
+                            res = ( y_knnindex[ neighbors_of_an_entry ].T * weights ).sum( axis = 1 ) / weights.sum( ) # calculate weighted average of the y values for embedding mode
+                        else : # %% CLASSIFIER %%
+                            # sum weights for each label
+                            dict_label_to_weight = dict( )
+                            for label, dist in zip( y_knnindex[ neighbors_of_an_entry ], distances_of_an_entry ) :
+                                if label not in dict_label_to_weight :
+                                    dict_label_to_weight[ label ] = dist
+                                else :
+                                    dict_label_to_weight[ label ] += dist
+                            res = bk.DICTIONARY_Find_keys_with_max_value( dict_label_to_weight )[ 0 ][ 0 ] # find the label with the maximum weight
+                    l_res.append( res ) # collect a result
+                del neighbors, distances
+
+                pipe_sender_result.send( ( l_int_entry_current_batch, l_res ) ) # send the result back to the main process
+        pbar = progress_bar( total = ax.meta.n_rows ) # initialize the progress bar
+        def post_process_batch( res ) :
+            """ # 2022-07-13 22:18:26 
+            """
+            # parse result 
+            l_int_entry_current_batch, l_res = res
+            int_num_retrieved_entries = len( l_int_entry_current_batch )
+            
+            # write the result to the axis metadata
+            ax.meta[ name_col_y, l_int_entry_current_batch ] = l_res
+            
+            pbar.update( int_num_retrieved_entries ) # update the progress bar
+            del l_res
+        # transform values using iPCA using multiple processes
+        bk.Multiprocessing_Batch_Generator_and_Workers( 
+            ax.batch_generator( 
+                ax.filter, 
+                int_num_entries_for_batch = int_num_entries_in_a_batch, 
+                flag_mix_randomly = False
+            ), 
+            process_batch, 
+            post_process_batch = post_process_batch, 
+            int_num_threads = int_num_threads, 
+            int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2
+        ) 
+        pbar.close( ) # close the progress bar
+        
+        # change back to the filter containing all target entries
+        ax.filter = ba_filter_backup
+        return 
+    ''' deep-learning-based embedding/classification '''
+    def train_dl( 
+        self, 
+        # inputs
+        name_model : str, 
+        name_col_x : str, 
+        name_col_y : str, 
+        name_col_filter_training : Union[ str, None ] = None, 
+        operation : Literal[ 'classifier', 'embedder' ] = 'embedder', 
+        axis : Union[ int, str ] = 'barcodes', 
+        int_num_components_x : Union[ None, int ] = None,
+        # preparing training dataset
+        dict_kw_train_test_split = { 'test_size' : 0.2, 'random_state' : 42 },
+        int_earlystopping_patience = 5,
+        # deep-learning model and training methods
+        l_int_num_nodes = [ 100, 90, 85, 75, 50, 25 ],
+        float_rate_dropout = 0.03,
+        int_num_layers_for_each_dropout = 6,
+        batch_size = 400,
+        epochs = 100,
+    ) :
+        """ # 2022-09-15 14:05:08 
+        use deep-learning based model, built using Keras modules, to classify (predict labels) or embed (predict embeddings) entries.
+
+        name_model : str # the name of the output model containing knn index
+        name_col_x : str # the name of the column containing X (input) data
+        name_col_filter_training : str # the name of column containing filter for entries that will be used for training
+        operation : Literal[ 'classifier', 'embedder' ] = 'embedder' # 'classifier' for classification (e.g. leiden label assignment) and 'embedder' for embedding (e.g. learning PCA -> UMAP/tSNE representation mapping)
+        axis : Union[ int, str ] = 'barcodes' # axis from which to retrieve X
+        int_num_components_x : Union[ None, int ] = None # by default, use all components available in X
+        n_neighbors : int = 10 # the number of neighbors to use
+        dict_kw_pynndescent : dict = { 'low_memory' : True, 'n_jobs' : None, 'compressed' : False } # the additional keyworded arguments for pynndescent index
+        """
+        # handle inputs
+        flag_axis_is_barcode = axis in { 0, 'barcode', 'barcodes' } # retrieve a flag indicating whether the data is summarized for each barcode or not
+
+        ax = self.bc if flag_axis_is_barcode else self.ft # retrieve the appropriate Axis object
+
+        # set filters for operation
+        if name_col_filter_training is not None :
+            self.change_or_save_filter( name_col_filter_training )
+
+        # exit if the input columns do not exist
+        if name_col_x not in ax.meta :
+            Info( f"[Error] [RamData.train_dl] {name_col_x} column does not exist" )
+            return
+        if name_col_y not in ax.meta :
+            Info( f"[Error] [RamData.train_dl] {name_col_y} column does not exist" )
+            return
+
+        # check validity of operation
+        if operation not in { 'classifier', 'embedder' } :
+            Info( f"[Error] [RamData.train_dl] '{operation}' operation is invalid" )
+            return
+
+        # check whether the model of the given name already exists
+        type_model = f'deep_learning.keras.{operation}'
+        if self.check_model( name_model, type_model ) : # if the model exists, return
+            Info( f"[Info] [RamData.train_dl] the model '{name_model}' for '{operation}' operation already exists, exiting" )
+            return
+
+        """
+        retrieve data
+        """
+        # load X
+        if int_num_components_x is None :
+            shape_secondary = self.bc.meta.get_shape( name_col_x )
+            assert len( shape_secondary ) > 0 # more than single component should be available as an input data
+            X = ax.meta[ name_col_x, None ] # load all components
+        else :
+            X = ax.meta[ name_col_x, None, : int_num_components_x ] # load top 'int_num_components_x' number of components
+        # load y
+        y = ax.meta[ name_col_y, None ] 
+
+        """
+        train model for each operation
+        """
+        # retrieve a flag indicating that the operation is embedding
+        flag_embedder = operation == 'embedder' 
+
+        # prepare y
+        if flag_embedder :
+            # %% EMBEDDER %%
+            # scale y
+            y_min, y_max = y.min( axis = 0 ), y.max( axis = 0 ) # retrieve min and max values
+            y = ( y - y_min ) / ( y_max - y_min ) # scale the 'y' from 0 to 1
+        else :
+            # %% CLASSIFIER %%    
+            l_unique_labels = sorted( set( y ) ) # retrieve list of unique labels
+            dict_label_to_int_label = dict( ( label, int_label ) for int_label, label in enumerate( l_unique_labels ) ) # retrieve mapping from label to integer representation of label
+            y_one_hot_encoding = np.zeros( ( len( y ), len( l_unique_labels ) ), dtype = bool ) # initialize y for encoding labels
+            # perform one-hot-encoding
+            for index, label in enumerate( y ) :
+                y_one_hot_encoding[ index, dict_label_to_int_label[ label ] ] = True
+            y = y_one_hot_encoding # use one-hot-encoded y as y
+            del y_one_hot_encoding
+
+        # setting for a neural network
+        int_num_components_x = X.shape[ 1 ]
+
+        # initialize sequential model
+        model = tf.keras.Sequential( )
+
+        # add hiddle dense layers according to the setting
+        for index_layer, int_num_nodes in enumerate( l_int_num_nodes ) :
+            model.add( layers.Dense( int_num_nodes ) )
+            model.add( layers.Activation( 'relu' ) )
+            if float_rate_dropout > 0 :
+                if index_layer % int_num_layers_for_each_dropout == 0 :
+                    model.add( layers.Dropout( float_rate_dropout ) )
+
+        # add final output layer according to each operation
+        if flag_embedder :
+            # %% EMBEDDER %%
+            model.add( layers.Dense( y.shape[ 1 ] ) )
+            model.add( layers.Activation( 'sigmoid' ) )
+            model.compile( loss = 'mean_absolute_error', optimizer = 'adam', metrics = [ 'accuracy' ] )
+        else :
+            # %% CLASSIFIER %%    
+            model.add( layers.Dense( len( y[ 0 ] ) ) )
+            model.add( layers.Activation( 'softmax' ) )
+            model.compile( loss = 'categorical_crossentropy', optimizer = 'adam', metrics = [ tf.keras.metrics.AUC( ), 'accuracy' ] )
+
+        # build and print model
+        model._name = name_model
+        model.build( input_shape = ( 1, int_num_components_x ) )
+        model.summary( )
+
+        # split test/training dataset
+        X_train, X_test, y_train, y_test = skl.model_selection.train_test_split( X, y, ** dict_kw_train_test_split ) # split train/test dataset
+
+        # start training
+        # mirrored_strategy = tf.distribute.MirroredStrategy( ) # distributed training
+        # with mirrored_strategy.scope( ) :
+        earlystopper = tf.keras.callbacks.EarlyStopping( monitor = 'val_loss', patience = int_earlystopping_patience, verbose = 1 ) # earlystopper to prevent overfitting 
+        model.fit( X_train, y_train, batch_size = batch_size, epochs = epochs, shuffle = True, validation_data = ( X_test, y_test ), callbacks = [ earlystopper ] )
+
+        # save trained model
+        dict_model = { 'name_col_x' : name_col_x, 'name_col_y' : name_col_y, 'int_num_components_x' : int_num_components_x,  'dict_kw_train_test_split' : dict_kw_train_test_split, 'flag_axis_is_barcode' : flag_axis_is_barcode, 'filter' : ax.filter, 'dl_model' : model }
+        # collect metadata for reconstructing y from the output of the model
+        if flag_embedder :
+            # %% EMBEDDER %%
+            dict_model.update( { 'y_min' : y_min, 'y_max' : y_max } )
+        else :
+            # %% CLASSIFIER %%    
+            dict_model.update( { 'l_unique_labels' : l_unique_labels, 'dict_label_to_int_label' : dict_label_to_int_label } )
+        self.save_model( dict_model, name_model, type_model ) # save model and associated metadata
+
+        # report
+        if self.verbose :
+            Info( f"[Info] [RamData.train_dl] deep learning {operation} training completed for {ax.meta.n_rows} number of entries of the axis '{'barcodes' if flag_axis_is_barcode else 'features'}' using the data from the column '{name_col_x}' as X and '{name_col_y}' as y" )
+    def apply_dl( 
+        self, 
+        name_model : str, 
+        name_col_y : str, 
+        operation : Literal[ 'classifier', 'embedder' ] = 'embedder', 
+        name_col_x : Union[ str, None ] = None, 
+        name_col_filter_target : Union[ str, None ] = None, 
+        flag_apply_to_entries_used_for_training : bool = True,
+        axis : Union[ int, str, None ] = None, 
+        int_num_entries_in_a_batch : int = 500000, 
+        int_num_threads : int = 3
+    ) :
+        """ # 2022-09-15 21:33:18 
+        use deep-learning based model, built using Keras modules, to classify (predict labels) or embed (predict embeddings) entries.
+
+        name_model : str # the name of the model containing knn index
+        name_col_y : str # the name of the column containing y (output) data. Of note, since deep-learning often do not reproduce the output accurately, 
+            it is recommended to map both the entries used for training and not used for training to output values. Therefore, a new column name that will contains deep-learning predicted values is recommended.
+        name_col_x : Union[ str, None ] # the name of the column containing X (input) data. by default (if None is given), name_col_x stored in the model will be used.
+        name_col_filter_target : str # the name of column containing filter for entries to which the model will be applied
+        operation : Literal[ 'classifier', 'embedder' ] = 'embedder' # the name of the operation. 
+            'classifier' : predict the label with the best score from deep-learning model
+            'embedder' : retrieve embedding using the deep-learning model
+        axis : Union[ int, str, None ] = None # axis from which to retrieve X and y data.
+        int_num_entries_in_a_batch : int = 10000 # the number of entries in a batch for each process. the larger the batch size is, the larger memory each process consumes.
+        int_num_threads : int = 10 # the number of threads to use for applying the model
+        flag_apply_to_entries_used_for_training : bool = True # if True, entries used for training will be also included in the entries to which deep-learning-based model will be applied. It is recommended to map both the entries used for training and not used for training to output values, and thus the default setting of this argument is True.
+            To prevent modification of the original data used for training, when 
+        """
+        ''' load the model '''
+        # check validity of operation
+        if operation not in { 'classifier', 'embedder' } :
+            Info( f"[Error] [RamData.apply_dl] '{operation}' operation is invalid" )
+            return
+
+        # check whether the model of the given name already exists
+        type_model = f'deep_learning.keras.{operation}'
+        if not self.check_model( name_model, type_model ) : # if the model does not exist, return
+            Info( f"[Error] [RamData.apply_dl] the model '{name_model}' for '{operation}' operation does not exist, exiting" )
+            return
+        model = self.load_model( name_model, type_model )
+        dl_model = model.pop( 'dl_model' )
+
+        ''' retrieve the default model '''
+        # set axis
+        if axis is None :
+            flag_axis_is_barcode = model[ 'flag_axis_is_barcode' ] # by default, the axis used for training will be used
+        else :
+            flag_axis_is_barcode = axis in { 0, 'barcode', 'barcodes' } # retrieve a flag indicating whether the data is summarized for each barcode or not
+        ax = self.bc if flag_axis_is_barcode else self.ft # retrieve the appropriate Axis object
+
+        # set default input/output column names
+        if name_col_x is None :
+            name_col_x = model[ 'name_col_x' ]
+        if name_col_y is None :
+            name_col_y = model[ 'name_col_y' ]
+
+        # if name_col of the y used for training is same as the name of column of the y for writing output, automatically exclude entries used for training from generating output and thus overwritting the original values
+        if name_col_y == model[ 'name_col_y' ] :
+            flag_apply_to_entries_used_for_training = False
+
+        # exit if the input columns do not exist
+        if name_col_x not in ax.meta :
+            Info( f"[Error] [RamData.train_dl] {name_col_x} column does not exist" )
+            return
+        # if the output column does not exist, initialize the 'y' output column using the 'y' column used for training.
+        if name_col_y not in ax.meta :
+            Info( f"[Info] [RamData.train_dl] '{name_col_y}' output column will be initialized with '{model[ 'name_col_y' ]}' column" )
+            ax.meta.initialize_column( name_col_y, name_col_template = model[ 'name_col_y' ] ) # initialize the output column using the settings from the y column used for training.
+
+        # set filters for operation
+        if name_col_filter_target is not None :
+            self.change_filter( name_col_filter_target )
+
+        # exclude entries used for building knnindex from the current filter
+        ba_filter_backup = ax.filter # back up the bitarray filter before excluding entries used for training the model
+        if not flag_apply_to_entries_used_for_training :
+            ax.filter = ax.filter & ( ~ model[ 'filter' ] ) # exclude the entries used for training the model
+
+        # retrieve 'int_num_components_x'
+        int_num_components_x = model[ 'int_num_components_x' ]
+
+        # retrieve a flag indicating that the operation is embedding
+        flag_embedder = operation == 'embedder' 
+
+        """
+        assign labels or retrieve embeddings
+        """
+        if self.verbose :
+            Info( f"[Info] [RamData.apply_dl] applying deep-learning model started" )
+
+        # initialize the progress bar
+        pbar = progress_bar( total = ax.meta.n_rows ) 
+
+        # define functions for multiprocessing step
+        def process_batch( pipe_receiver_batch, pipe_sender_result ) :
+            ''' # 2022-09-06 17:05:15 
+            '''
+            while True :
+                batch = pipe_receiver_batch.recv( )
+                if batch is None :
+                    break
+                # parse the received batch
+                int_num_of_previously_returned_entries, l_int_entry_current_batch = batch[ 'int_num_of_previously_returned_entries' ], batch[ 'l_int_entry_current_batch' ]
+
+                # retrieve data from the axis metadata
+                X = ax.meta[ name_col_x, l_int_entry_current_batch, : int_num_components_x ]
+                pipe_sender_result.send( ( l_int_entry_current_batch, X ) ) # send the result back to the main process
+        pbar = progress_bar( total = ax.meta.n_rows ) # initialize the progress bar
+        def post_process_batch( res ) :
+            """ # 2022-07-13 22:18:26 
+            """
+            # parse result 
+            l_int_entry_current_batch, X = res
+            int_num_retrieved_entries = len( l_int_entry_current_batch )
+
+            # predict using the deep-learning model
+            arr_y = dl_model.predict( X ) 
+
+            # post-process the result to retrieve the output values
+            if flag_embedder :
+                # %% EMBEDDER %%
+                # scale back the output to input values
+                arr_y_scaled = arr_y * ( model[ 'y_max' ] - model[ 'y_min' ] ) + model[ 'y_min' ]
+                l_res = arr_y_scaled
+                del arr_y_scaled
+            else :
+                # %% CLASSIFIER %%    
+                arr_y = dl_model.predict( X ) # predict using the model
+                l_unique_labels = model[ 'l_unique_labels' ]
+                arr_labels = np.zeros( len( arr_y ) , dtype = object ) # intialize an array to contain labels
+                for index, int_label in enumerate( arr_y.argmax( axis = 1 ) ) : # retrieve predicted label for each entry
+                    arr_labels[ index ] = l_unique_labels[ int_label ]
+                l_res = arr_labels
+                del arr_labels
+            del arr_y
+
+            # write the result to the axis metadata
+            ax.meta[ name_col_y, l_int_entry_current_batch ] = l_res
+
+            pbar.update( int_num_retrieved_entries ) # update the progress bar
+            del l_res
+        # transform values using iPCA using multiple processes
+        bk.Multiprocessing_Batch_Generator_and_Workers( 
+            ax.batch_generator( 
+                ax.filter, 
+                int_num_entries_for_batch = int_num_entries_in_a_batch, 
+                flag_mix_randomly = False
+            ), 
+            process_batch, 
+            post_process_batch = post_process_batch, 
+            int_num_threads = int_num_threads, 
+            int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2
+        ) 
+
+        # close the progress bar
+        pbar.close( ) 
+
+        # change back to the filter containing all target entries
+        ax.filter = ba_filter_backup
+        return 
     ''' for marker detection analysis '''
     def find_markers( self, name_layer : str = 'normalized_log1p_scaled', name_col_label : str = 'subsampling_label', index_name_col_label : int = -1, l_name_cluster : Union[ list, np.ndarray, tuple, set, None ] = None, name_col_auroc : str = 'marker_auroc', name_col_log2fc : str = 'marker_log2fc', name_col_pval : str = 'marker_pval', method_pval : str = 'wilcoxon', int_chunk_size_secondary = 10 ) :
         """ # 2022-08-21 13:37:02 
@@ -10599,7 +11252,7 @@ class RamData( ) :
         # destroy view if a view was not active
         if flag_view_was_not_active :
             self.bc.destroy_view( )
-    def get_marker_table( self, max_pval : float = 1e-10, min_auroc : float = 0.7, min_log2fc : float = 1, name_col_auroc : Union[ str, None ] = 'normalized_log1p_scaled_marker_auroc', name_col_log2fc : Union[ str, None ] = 'normalized_log1p_scaled_marker_log2fc', name_col_pval : Union[ str, None ] = 'normalized_log1p_scaled_marker_pval', int_num_chunks_in_a_batch : int = 10 ) :
+    def get_marker_table( self, max_pval : float = 1e-10, min_auroc : float = 0.7, min_log2fc : float = 1, name_col_auroc : Union[ str, None ] = None, name_col_log2fc : Union[ str, None ] = None, name_col_pval : Union[ str, None ] = None, int_num_chunks_in_a_batch : int = 10 ) :
         """ # 2022-08-22 21:59:46 
         retrieve marker table using the given thresholds
 
@@ -10683,6 +11336,7 @@ class RamData( ) :
         dict_mapping = dict( ( i, s ) for i, s in zip( arr_int_entry_ft, arr_str_entry_ft ) ) # retrieve a mapping of int > str repr. of features
         df_marker[ 'name_feature' ] = list( dict_mapping[ i ] for i in df_marker[ 'name_feature' ].values ) # retrieve string representations of the features of the marker table
         return df_marker
+
     ''' scarab-associated methods for analyzing RamData '''
     def _classify_feature_of_scarab_output_( self, int_min_num_occurrence_to_identify_valid_feature_category = 1000 ) :
         """ # 2022-05-30 12:39:01 
