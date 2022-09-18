@@ -48,10 +48,15 @@ from tensorflow.keras import layers
 # for debugging
 from pdb import set_trace as bp
 
-# # define logging levels
-logger = multiprocessing.log_to_stderr( )
-logger.setLevel( logging.INFO )
-Info = multiprocessing.get_logger( ).info
+# set up the logger
+# # define logging for multiprocessing dubugging
+# logger = multiprocessing.log_to_stderr( )
+# logger.setLevel( logging.INFO )
+# Info = multiprocessing.get_logger( ).info
+
+import logging
+
+logging.basicConfig( format='[SC-Elephant] %(asctime)s - %(message)s', level = logging.INFO )
 
 # for thread-safe start of processes
 mpsp = mp.get_context('spawn')
@@ -219,6 +224,9 @@ RamDataAxis object will be no longer modify filter using current RamDataLayer's 
 - RamData.get_model_path method was implemented. it uses recursive solution for retrieving (remote) path of the given model from components and masks
 - RamData.load_model method was re-implemented using RamData.get_model_path
 - RamData.prepare_dimension_reduction_from_raw was modified to support fast embedding of barcodes of the non-reference RamData components with the reference barcodes of the reference RamData component.
+
+# 2022-09-18 16:54:20 
+- an issue in the RamData.load_model resolved.
 
 ##### Future implementations #####
 
@@ -7797,7 +7805,7 @@ class RamData( ) :
         """
         return f"<{'' if not self._mode == 'r' else '(read-only) '}RamData object ({'' if self.bc.filter is None else f'{self.bc.meta.n_rows}/'}{self.metadata[ 'int_num_barcodes' ]} barcodes X {'' if self.ft.filter is None else f'{self.ft.meta.n_rows}/'}{self.metadata[ 'int_num_features' ]} features" + ( '' if self.layer is None else f", {self.layer.int_num_records} records in the currently active layer '{self.layer.name}'" ) + f") stored at {self._path_folder_ramdata}{'' if self._path_folder_ramdata_mask is None else f' with local mask available at {self._path_folder_ramdata_mask}'}\n\twith the following layers : {self.layers}\n\t\tcurrent layer is '{self.layer.name if self.layer is not None else None}'>" # show the number of records of the current layer if available.
     def _repr_html_( self, index_component = None ) :
-        """ # 2022-08-07 23:56:55 
+        """ # 2022-09-18 22:16:13 
         display RamData in an interactive environment
         
         'index_component' : an integer indices of the component RamData
@@ -7809,7 +7817,7 @@ class RamData( ) :
                 'number_of_entries' : self.bc.meta._n_rows_unfiltered,
                 'number_of_entries_after_applying_filter' : self.bc.meta.n_rows,
                 'metadata' : {
-                    'columns' : list( self.bc.meta.columns ),
+                    'columns' : sorted( self.bc.meta.columns ),
                     'settings' : {
                         'path_folder_zdf' : self.bc.meta._path_folder_zdf,
                         'path_folder_mask' : self.bc.meta._path_folder_mask,
@@ -7825,7 +7833,7 @@ class RamData( ) :
                 'number_of_entries' : self.ft.meta._n_rows_unfiltered,
                 'number_of_entries_after_applying_filter' : self.ft.meta.n_rows,
                 'metadata' : {
-                    'columns' : list( self.ft.meta.columns ),
+                    'columns' : sorted( self.ft.meta.columns ),
                     'settings' : {
                         'path_folder_zdf' : self.ft.meta._path_folder_zdf,
                         'path_folder_mask' : self.ft.meta._path_folder_mask,
@@ -7844,7 +7852,7 @@ class RamData( ) :
                     'int_num_cpus_for_fetching_data' : self.layer.int_num_cpus,
                 },
             },
-            'layers' : list( self.layers ),
+            'layers' : sorted( self.layers ),
             'models' : self.models,
             'settings' : {
                 'read_only' : self._mode == 'r',
@@ -9540,7 +9548,7 @@ class RamData( ) :
         type_model : Literal[ 'ipca', 'pumap', 'hdbscan', 'knn_classifier', 'knn_embedder', 'knngraph', 'knnindex' ], 
         index_component : Union[ int, None ] = None
     ) :
-        """ # 2022-09-18 00:44:04 
+        """ # 2022-09-18 16:53:53 
         load model from the current RamData
 
         name_model : str # the name of the model
@@ -9569,7 +9577,10 @@ class RamData( ) :
             check availability of models and download model file from the remote location where RamData is being hosted.
             """
             # define the paths of the model files
-            path_file_dest = f"{path_folder_models}{name_model_file}"
+            path_file_dest = f"{path_folder_models}{name_model_file}" # local path
+            if os.path.exists( path_file_dest ) : # check whether the destination file already exists
+                return 
+            
             path_file_src = self.get_model_path( name_model, type_model, index_component = index_component )
             if path_file_src is None : # if source file is not available
                 return False 
@@ -9721,8 +9732,8 @@ class RamData( ) :
         # save model
         if type_model in self._set_type_model_picklable : # handle picklable models 
             path_file_model = f"{path_folder_models}{name_model}.{type_model}.pickle"
-        elif type_model == 'pumap' :
-            path_prefix_model = f"{path_folder_models}{name_model}.pumap"
+        else :
+            path_prefix_model = f"{path_folder_models}{name_model}.{type_model}"
             path_file_model = path_prefix_model + '.tar.gz'
             # if an extracted folder exists, delete the folder
             if os.path.exists( path_prefix_model ) :
@@ -10755,19 +10766,29 @@ class RamData( ) :
 
         # retrieve anndata for embedding
         adata = ram[ :, [ { name_col_pca } ], [ ], [ ] ] # load all barcodes in the filter, no feature in the filter, load PCA data only, load no feature metadata
-
+        if self.verbose :
+            logging.info( '[RamData.run_scanpy_using_pca] anndata retrieved.' )
+        
         # build a neighborhood graph
         sc.pp.neighbors( adata, n_neighbors = int_neighbors_n_neighbors, n_pcs = int_neighbors_n_pcs, use_rep = name_col_pca )
+        if self.verbose :
+            logging.info( '[RamData.run_scanpy_using_pca] K-nearest neighbor graphs calculation completed.' )
         # perform analysis
         if 'umap' in set_method :
             sc.tl.umap( adata, ** dict_kw_umap ) # perform analysis using scanpy
             self.bc.meta[ f'X_umap{str_suffix}' ] = adata.obsm[ 'X_umap' ] # save result to RamData
+            if self.verbose :
+                logging.info( '[RamData.run_scanpy_using_pca] UMAP calculation completed, and resulting UMAP-embedding was saved to RamData.' )
         if 'leiden' in set_method :
             sc.tl.leiden( adata, ** dict_leiden ) # perform analysis using scanpy
             self.bc.meta[ f'leiden{str_suffix}' ] = adata.obs[ 'leiden' ].values.astype( int ) # save result to RamData
+            if self.verbose :
+                logging.info( '[RamData.run_scanpy_using_pca] leiden clustering completed, and resulting cluster membership information was saved to RamData.' )
         if 'tsne' in set_method :
             sc.tl.tsne( adata, use_rep = name_col_pca, ** dict_kw_tsne ) # perform analysis using scanpy
             self.bc.meta[ f'X_tsne{str_suffix}' ] = adata.obsm[ 'X_tsne' ] # save result to RamData
+            if self.verbose :
+                logging.info( '[RamData.run_scanpy_using_pca] tSNE embedding completed, and embedding was saved to RamData.' )
         return adata # return the resulting anndata
     ''' knn-index based embedding/classification '''
     def train_knn( self, name_model : str, name_col_x : str, name_col_filter_training : Union[ str, None ] = None, axis : Union[ int, str ] = 'barcodes', int_num_components_x : Union[ None, int ] = None, n_neighbors : int = 10, dict_kw_pynndescent : dict = { 'low_memory' : True, 'n_jobs' : None, 'compressed' : False } ) :
@@ -10971,9 +10992,9 @@ class RamData( ) :
         dict_kw_train_test_split = { 'test_size' : 0.2, 'random_state' : 42 },
         int_earlystopping_patience = 5,
         # deep-learning model and training methods
-        l_int_num_nodes = [ 100, 90, 85, 75, 50, 25 ],
-        float_rate_dropout = 0.03,
-        int_num_layers_for_each_dropout = 6,
+        l_int_num_nodes = [ 100, 90, 85, 75, 50, 25 ], # by default 6 hiddle layers will be used
+        float_rate_dropout = 0.03, # dropout ratio
+        int_num_layers_for_each_dropout = 6, # dropout layer will be added for every this number of layers
         batch_size = 400,
         epochs = 100,
     ) :
@@ -11000,21 +11021,21 @@ class RamData( ) :
 
         # exit if the input columns do not exist
         if name_col_x not in ax.meta :
-            Info( f"[Error] [RamData.train_dl] {name_col_x} column does not exist" )
+            logging.error( f"[Error] [RamData.train_dl] {name_col_x} column does not exist" )
             return
         if name_col_y not in ax.meta :
-            Info( f"[Error] [RamData.train_dl] {name_col_y} column does not exist" )
+            logging.error( f"[Error] [RamData.train_dl] {name_col_y} column does not exist" )
             return
 
         # check validity of operation
         if operation not in { 'classifier', 'embedder' } :
-            Info( f"[Error] [RamData.train_dl] '{operation}' operation is invalid" )
+            logging.error( f"[Error] [RamData.train_dl] '{operation}' operation is invalid" )
             return
 
         # check whether the model of the given name already exists
         type_model = f'deep_learning.keras.{operation}'
         if self.check_model( name_model, type_model ) : # if the model exists, return
-            Info( f"[Info] [RamData.train_dl] the model '{name_model}' for '{operation}' operation already exists, exiting" )
+            logging.info( f"[Info] [RamData.train_dl] the model '{name_model}' for '{operation}' operation already exists, exiting" )
             return
 
         """
@@ -11024,11 +11045,11 @@ class RamData( ) :
         if int_num_components_x is None :
             shape_secondary = self.bc.meta.get_shape( name_col_x )
             assert len( shape_secondary ) > 0 # more than single component should be available as an input data
-            X = ax.meta[ name_col_x, None ] # load all components
+            X = ax.meta[ name_col_x ] # load all components
         else :
             X = ax.meta[ name_col_x, None, : int_num_components_x ] # load top 'int_num_components_x' number of components
         # load y
-        y = ax.meta[ name_col_y, None ] 
+        y = ax.meta[ name_col_y ] 
 
         """
         train model for each operation
@@ -11106,7 +11127,7 @@ class RamData( ) :
 
         # report
         if self.verbose :
-            Info( f"[Info] [RamData.train_dl] deep learning {operation} training completed for {ax.meta.n_rows} number of entries of the axis '{'barcodes' if flag_axis_is_barcode else 'features'}' using the data from the column '{name_col_x}' as X and '{name_col_y}' as y" )
+            logging.info( f"[Info] [RamData.train_dl] deep learning {operation} training completed for {ax.meta.n_rows} number of entries of the axis '{'barcodes' if flag_axis_is_barcode else 'features'}' using the data from the column '{name_col_x}' as X and '{name_col_y}' as y" )
     def apply_dl( 
         self, 
         name_model : str, 
@@ -11139,13 +11160,13 @@ class RamData( ) :
         ''' load the model '''
         # check validity of operation
         if operation not in { 'classifier', 'embedder' } :
-            Info( f"[Error] [RamData.apply_dl] '{operation}' operation is invalid" )
+            logging.info( f"[Error] [RamData.apply_dl] '{operation}' operation is invalid" )
             return
 
         # check whether the model of the given name already exists
         type_model = f'deep_learning.keras.{operation}'
         if not self.check_model( name_model, type_model ) : # if the model does not exist, return
-            Info( f"[Error] [RamData.apply_dl] the model '{name_model}' for '{operation}' operation does not exist, exiting" )
+            logging.info( f"[Error] [RamData.apply_dl] the model '{name_model}' for '{operation}' operation does not exist, exiting" )
             return
         model = self.load_model( name_model, type_model )
         dl_model = model.pop( 'dl_model' )
@@ -11170,11 +11191,11 @@ class RamData( ) :
 
         # exit if the input columns do not exist
         if name_col_x not in ax.meta :
-            Info( f"[Error] [RamData.train_dl] {name_col_x} column does not exist" )
+            logging.error( f"[Error] [RamData.train_dl] {name_col_x} column does not exist" )
             return
         # if the output column does not exist, initialize the 'y' output column using the 'y' column used for training.
         if name_col_y not in ax.meta :
-            Info( f"[Info] [RamData.train_dl] '{name_col_y}' output column will be initialized with '{model[ 'name_col_y' ]}' column" )
+            logging.info( f"[Info] [RamData.train_dl] '{name_col_y}' output column will be initialized with '{model[ 'name_col_y' ]}' column" )
             ax.meta.initialize_column( name_col_y, name_col_template = model[ 'name_col_y' ] ) # initialize the output column using the settings from the y column used for training.
 
         # set filters for operation
@@ -11196,7 +11217,7 @@ class RamData( ) :
         assign labels or retrieve embeddings
         """
         if self.verbose :
-            Info( f"[Info] [RamData.apply_dl] applying deep-learning model started" )
+            logging.info( f"[Info] [RamData.apply_dl] applying deep-learning model started" )
 
         # initialize the progress bar
         pbar = progress_bar( total = ax.meta.n_rows ) 
@@ -11424,7 +11445,7 @@ class RamData( ) :
 
         if not ( flag_use_auroc or flag_use_log2fc or flag_use_pval ) : 
             if self.verbose :
-                Info( f"[RamData.get_marker_table] at least one metric should be used for filtering markers but none were given, exiting." )
+                logging.error( f"[RamData.get_marker_table] at least one metric should be used for filtering markers but none were given, exiting." )
             return
 
         # retrieve 'features' axis
@@ -11439,7 +11460,7 @@ class RamData( ) :
                 break
         if not flag_column_identified :
             if self.verbose :
-                Info( f"[RamData.get_marker_table] no column with cluster labels was identified, exiting." )
+                logging.error( f"[RamData.get_marker_table] no column with cluster labels was identified, exiting." )
             return
         # retrieve the number of cluster labels
         int_num_cluster_labels = len( l_unique_cluster_label )
