@@ -5160,6 +5160,31 @@ class ZarrDataFrame( ) :
             """
             shutil.rmtree( path_folder_lock )
         return za, __delete_locks
+    def rename_column( self, name_col_before : str, name_col_after : str ) :
+        """ # 2022-09-27 18:27:19 
+        rename column of the current ZarrDataFrame
+        """
+        # exit if currently read-only mode is active
+        if self._mode == 'r' :
+            return
+        if name_col_before in self.columns_excluding_components : # does not rename columns in the component RamData
+            # if the column name already exists, return
+            if name_col_after in self.columns_excluding_components : 
+                if self.verbose :
+                    logging.info( f"[ZarrDataFrame.rename_column] 'name_col_after' {name_col_after} already exists in the current ZDF, exiting" )
+                return
+            # if a mask is available, call method on the mask
+            if self._mask is not None : # if mask is available : 
+                self._mask.rename_column( name_col_before = name_col_before, name_col_after = name_col_after )
+                return
+            
+            # rename folder containing column zarr object
+            os.rename( f"{self._path_folder_zdf}{name_col_before}/", f"{self._path_folder_zdf}{name_col_after}/" )
+            
+            # remove previous column name and add new column name
+            self._dict_metadata[ 'columns' ].remove( name_col_before )
+            self._dict_metadata[ 'columns' ].add( name_col_after )
+            self._save_metadata_( ) # update metadata
 
 ''' a class for representing axis of RamData (barcodes/features) '''
 class IndexMappingDictionary( ) :
