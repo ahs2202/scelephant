@@ -64,7 +64,7 @@ mpsp = mp.get_context('spawn')
 # define version
 _version_ = '0.0.7'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-09-24 22:21:23'
+_last_modified_time_ = '2022-10-02 21:58:49'
 
 """ # 2022-07-21 10:35:42  realease note
 
@@ -238,7 +238,6 @@ finalized version of 0.0.7 released
 
 
 """
-
 
 ''' previosuly written for biobookshelf '''
 def CB_Parse_list_of_id_cell( l_id_cell, dropna = True ) :
@@ -6212,7 +6211,6 @@ class RamDataAxis( ) :
             else : # reset destination component
                 self._dict_index_mapping_from_combined_to_dest_component = None
                 self._int_index_component_destination = None
-    
                 
 ''' a class for RAMtx '''
 ''' a class for accessing Zarr-backed count matrix data (RAMtx, Random-Access matrix) '''
@@ -10144,7 +10142,7 @@ class RamData( ) :
         flag_ipca_whiten = False, 
         int_num_threads = 3, 
         flag_show_graph = True,
-        index_component_reference : Union[ None, int ] = None,
+        int_index_component_reference : Union[ None, int ] = None,
     ) :
         """ # 2022-09-20 11:51:47 
         Perform incremental PCA in a very memory-efficient manner.
@@ -10164,7 +10162,7 @@ class RamData( ) :
         'flag_show_graph' : show graph
         
         === when reference ramdata is used ===
-        index_component_reference : Union[ None, int ] = None # the index of the reference component RamData to use. if None is given, does not use any component as a reference component
+        int_index_component_reference : Union[ None, int ] = None # the index of the reference component RamData to use. if None is given, does not use any component as a reference component
         """
         """
         1) Prepare
