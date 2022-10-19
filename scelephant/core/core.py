@@ -62,9 +62,9 @@ logging.basicConfig( format = '[SC-Elephant] %(asctime)s - %(message)s', level =
 mpsp = mp.get_context('spawn')
 
 # define version
-_version_ = '0.0.7'
+_version_ = '0.0.8'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-10-02 21:58:49'
+_last_modified_time_ = '2022-10-20 01:23:55'
 
 """ # 2022-07-21 10:35:42  realease note
 
@@ -234,8 +234,11 @@ RamDataAxis object will be no longer modify filter using current RamDataLayer's 
 # 2022-09-24 22:20:38 
 finalized version of 0.0.7 released
 
-##### Future implementations #####
+# 2022-10-19 13:16:19 
+combined RamData will exclude RAMtx of the reference RamData for weight calculation / data retrieval
+    - RAMtx.survey_number_of_records_for_each_entry was updated
 
+##### Future implementations #####
 
 """
 
@@ -3738,8 +3741,6 @@ class ZarrServer( ) :
         """
         self._pipe_sender_input.send( None )
         self._p.join( ) # wait until the process join the main process
-    
-    
 ''' a class for Zarr-based DataFrame object '''
 class ZarrDataFrame( ) :
     """ # 2022-09-22 23:53:33 
@@ -5184,7 +5185,6 @@ class ZarrDataFrame( ) :
             self._dict_metadata[ 'columns' ].remove( name_col_before )
             self._dict_metadata[ 'columns' ].add( name_col_after )
             self._save_metadata_( ) # update metadata
-
 ''' a class for representing axis of RamData (barcodes/features) '''
 class IndexMappingDictionary( ) :
     """ # 2022-09-02 00:53:27 
@@ -6211,11 +6211,10 @@ class RamDataAxis( ) :
             else : # reset destination component
                 self._dict_index_mapping_from_combined_to_dest_component = None
                 self._int_index_component_destination = None
-                
 ''' a class for RAMtx '''
 ''' a class for accessing Zarr-backed count matrix data (RAMtx, Random-Access matrix) '''
 class RAMtx( ) :
-    """ # 2022-09-17 23:04:37 
+    """ # 2022-10-20 01:19:18 
     This class represent a random-access mtx format for memory-efficient exploration of extremely large single-cell transcriptomics/genomics data.
     This class use a count matrix data stored in a random read-access compatible format, called RAMtx, enabling exploration of a count matrix with hundreds of millions cells with hundreds of millions of features.
     Also, the RAMtx format is supports multi-processing, and provide convenient interface for parallel processing of single-cell data
@@ -6507,7 +6506,7 @@ class RAMtx( ) :
                 break
         return path_folder if flag_res_available else None # if result is not available, returns None. if result is available, return the folder where the result reside
     def survey_number_of_records_for_each_entry( self, axes = [ 'barcodes', 'features' ], int_num_chunks_in_a_batch_for_index_of_sparse_matrix = 100, int_num_chunks_in_a_batch_for_axis_for_querying_dense = 1, int_total_number_of_values_in_a_batch_for_dense_matrix = None, int_size_chunk = 1000, flag_ignore_dense = False, int_num_threads = 20 ) :
-        """ # 2022-09-01 00:12:18 
+        """ # 2022-10-20 01:19:10 
         survey the number of records for each entry in the existing axis
         'axes' : a list of axes to use for surveying the number of records for each entry
         
@@ -6523,6 +6522,9 @@ class RAMtx( ) :
         # handle combined mode
         if self.is_combined :
             # %% COMBINED %%
+            # drop the RAMtx object of the reference if combined and reference alignment modes are active
+            self.drop_reference( )
+            
             # (run the current function in individual ramdata)
             for rtx in self._l_rtx :
                 if rtx is None :
@@ -6862,6 +6864,17 @@ class RAMtx( ) :
             return iter( range( self.len_axis_for_querying ) )
         else : # if filter is active, yield indices of active elements only
             return iter( bk.BA.to_integer_indices( self.ba_filter_axis_for_querying ) )
+    def drop_reference( self ) :
+        """ # 2022-10-20 00:11:09 
+        for a combined RAMtx object, drop a RAMtx object from the reference RamData
+        """
+        if not hasattr( self, '_reference_dropped' ) :
+            if self.is_combined : # for combined RAMtx
+                ram = self._ramdata # retrieve associated RamData
+                if ram is not None : # if ramdata exists
+                    if ram.is_combined and ram.int_index_component_reference is not None :
+                        self._l_rtx[ ram.int_index_component_reference ] = None # set the rtx object of the reference to None (ignore the data of reference)
+            self._reference_dropped = True # set the attribute indicating the reference has been dropped
     def __getitem__( self, l_int_entry ) : 
         """ # 2022-09-20 18:13:41 
         Retrieve data of a given list of entries from RAMtx as lists of values and arrays (i.e. sparse matrix), each value and array contains data of a single 'int_entry' of the indexed axis
@@ -6874,6 +6887,9 @@ class RAMtx( ) :
         ''' prepare '''
         # if current RAMtx object is located remotely, re-load zarr objects to avoid fork-non-safe runtime error (http zarr objects appears to be not fork-safe)
         za_mtx_index, za_mtx = self.get_za( )
+        
+        # drop the RAMtx object of the reference 
+        self.drop_reference( )
         
         # retrieve settings
         int_total_number_of_values_in_a_batch_for_dense_matrix = self.int_total_number_of_values_in_a_batch_for_dense_matrix
@@ -7417,7 +7433,6 @@ class RAMtx( ) :
         # return the remaining int_entries as the last batch (if available)
         if len( ns[ 'l_int_entry_current_batch' ] ) > 0 :
             yield __compose_batch( ) # return a batch
-
 ''' a class for representing a layer of RamData '''
 class RamDataLayer( ) :
     """ # 2022-09-01 01:24:07 
@@ -7918,7 +7933,7 @@ class RamData( ) :
     @int_index_component_reference.setter
     def int_index_component_reference( self, val ) :
         """ # 2022-09-22 02:35:58 
-        set the ndex of the reference component if 'combined' mode is used.
+        validate and update the index of the reference component if 'combined' mode is used.
         """
         if self.is_combined :
             if not ( 0 <= val < self.int_num_components ) : # when invalid value was given, by default, use 0 as the reference ramdata
@@ -9485,8 +9500,10 @@ class RamData( ) :
             if name_col_filter_filtered_barcode in self.bc.meta : # if the filter is available, load the filter
                 self.bc.change_filter( name_col_filter_filtered_barcode )
             else : # if the filter is not available, filter barcodes based on the settings
-                self.bc.filter = ( self.bc.all( ) if self.bc.filter is None else self.bc.filter ) & BA.to_bitarray( self.bc.meta[ f'{name_layer_raw}_sum', : ] > min_counts ) & BA.to_bitarray( self.bc.meta[ f'{name_layer_raw}_num_nonzero_values', : ] > min_features )
+                self.bc.filter = ( self.bc.all( flag_return_valid_entries_in_the_currently_active_layer = False ) if self.bc.filter is None else self.bc.filter ) & BA.to_bitarray( self.bc.meta[ f'{name_layer_raw}_sum', : ] > min_counts ) & BA.to_bitarray( self.bc.meta[ f'{name_layer_raw}_num_nonzero_values', : ] > min_features ) # set 'flag_return_valid_entries_in_the_currently_active_layer' to False in order to avoid surveying the combined RamData layer
                 self.bc.save_filter( name_col_filter_filtered_barcode ) # save filter for later analysis
+            if self.verbose :
+                logging.info( f"[RamData.prepare_dimension_reduction_from_raw] filtering completed." )
 
         if flag_use_fast_mode :
             """ %% FAST MODE %% """
@@ -10920,9 +10937,8 @@ class RamData( ) :
         # return the counts of each unique label
         return dict_label_counter
     ''' subsampling method '''
-    def subsample( self, name_model = 'leiden', int_num_entries_to_use : int = 30000, int_num_entries_to_subsample : int = 100000, int_num_iterations_for_subsampling : int = 2, name_col_data : str = 'X_pca', int_num_components_data : int = 20, int_num_clus_expected : Union[ int, None ] = 20, name_col_label : str = 'subsampling_label', name_col_avg_dist : str = 'subsampling_avg_dist', axis : typing.Union[ int, str ] = 'barcodes', 
-                  name_col_filter : str = 'filter_pca', name_col_filter_subsampled : str = "filter_subsampled", resolution = 0.7, directed : bool = True, use_weights : bool = True, dict_kw_leiden_partition : dict = { 'n_iterations' : -1, 'seed' : 0 }, dict_kw_pynndescent_transformer : dict = { 'n_neighbors' : 10, 'metric' : 'euclidean', 'low_memory' : True }, n_neighbors : int = 20, dict_kw_pynndescent : dict = { 'low_memory' : True, 'n_jobs' : None, 'compressed' : False }, int_num_threads : int = 10, int_num_entries_in_a_batch : int = 10000 ) :
-        """ # 2022-08-10 04:15:38 
+    def subsample( self, name_model = 'leiden', int_num_entries_to_use : int = 30000, int_num_entries_to_subsample : int = 100000, int_num_iterations_for_subsampling : int = 2, name_col_data : str = 'X_pca', int_num_components_data : int = 20, int_num_clus_expected : Union[ int, None ] = 20, name_col_label : str = 'subsampling_label', name_col_avg_dist : str = 'subsampling_avg_dist', axis : typing.Union[ int, str ] = 'barcodes', name_col_filter : str = 'filter_pca', name_col_filter_subsampled : str = "filter_subsampled", resolution = 0.7, directed : bool = True, use_weights : bool = True, dict_kw_leiden_partition : dict = { 'n_iterations' : -1, 'seed' : 0 }, dict_kw_pynndescent_transformer : dict = { 'n_neighbors' : 10, 'metric' : 'euclidean', 'low_memory' : True }, n_neighbors : int = 20, dict_kw_pynndescent : dict = { 'low_memory' : True, 'n_jobs' : None, 'compressed' : False }, int_num_threads : int = 10, int_num_entries_in_a_batch : int = 10000 ) :
+        """ # 2022-10-02 23:53:54 
         subsample informative entries through iterative density-based subsampling combined with community detection algorithm
         
         arguments:
@@ -11064,7 +11080,7 @@ class RamData( ) :
             using the summarized metrics, prepare subsampling
             """
             # calculate the number of entries to subsample for each unique label
-            int_num_labels = len( dict_label_count ) # retrieve the number of labels
+            int_num_labels = max( dict_label_count ) + 1 # retrieve the number of labels
             
             # convert type of 'dict_label_count' to numpy ndarray # leiden labels are 0-based coordinate-based
             arr_label_count = np.zeros( int_num_labels )
@@ -11078,6 +11094,7 @@ class RamData( ) :
                 int_label_count = arr_label_count[ index_current_label ]
                 if int_label_count > int_label_count_current_threshold :
                     break
+                # reset 'int_label_count_current_threshold' using the remaining number of entries and labels
                 arr = arr_label_count[ arr_label_count <= int_label_count ]
                 int_label_count_current_threshold = int( ( int_num_entries_to_include - arr.sum( ) ) / ( int_num_labels - len( arr ) ) )
                 
@@ -11139,6 +11156,70 @@ class RamData( ) :
             
             # prepare next batch
             self.change_filter( name_col_filter_subsampled ) # change filter to currently subsampled entries for the next round
+    def subsample_for_each_clus( self, name_col_label : str, int_num_entries_to_subsample : int = 100000, index_col_of_name_col_label : Union[ int, None ] = -1, name_col_filter : str = 'filter_pca' ) :
+        """ # 2022-10-18 19:28:37 
+        
+        perform simple subsampling by selecting a fixed number of cells for each cluster
+        
+        int_num_entries_to_subsample : int = 100000 # the number of entries to subsample
+        name_col_label : str # the name of column of the 'barcode' axis containing cluster labels
+        index_col_of_name_col_label : Union[ int, None ] = -1 # index of the column containing cluster labels
+        name_col_filter : str = 'filter_pca' # the name of the column of the 'barcode' axis containing barcode filters
+        """
+        # retrieve axis
+        ax = self.bc
+
+        if name_col_label not in ax.meta :
+            if self.verbose :
+                logging.info( f"[Error] [RamData.subsample_for_each_clus] name_col_label '{name_col_label}' does not exist, exiting" )
+            return
+        
+        # set filters for operation
+        ax.change_or_save_filter( name_col_filter )
+        
+        # retrieve labels
+        arr_label = ax.meta[ name_col_label ] if len( ax.meta.get_zarr( name_col_label ).shape ) == 1 else ax.meta[ name_col_label, None, index_col_of_name_col_label ] # check whether the dimension of the column containing labels is 1D or 2D
+        
+        s_count_label = LIST_COUNT( arr_label, duplicate_filter = False )
+        s_count_label.sort_values( inplace = True ) # sort by cluster size
+
+        """
+        retrieve the number of entries to subsample for each cluster
+        """
+        dict_name_clus_to_num_entries_to_be_subsampled = dict( )
+        int_num_entries_to_subsample_remaining = int_num_entries_to_subsample
+        int_num_clus_remaining = len( s_count_label )
+        for name_clus, size_clus in zip( s_count_label.index.values, s_count_label.values ) : # iterate clusters (from smallest cluster to largest cluster)
+            # retrieve the number of entries to be subsampled for each cluster
+            int_max_num_entries_for_each_clus = math.floor( int_num_entries_to_subsample_remaining / int_num_clus_remaining );
+            int_num_entries_to_be_subsampled_for_a_clus = size_clus if size_clus <= int_max_num_entries_for_each_clus else int_max_num_entries_for_each_clus
+
+            # retrieve the number of subsampled entries for each cluster
+            dict_name_clus_to_num_entries_to_be_subsampled[ name_clus ] = int_num_entries_to_be_subsampled_for_a_clus
+
+            # update tne number of entries and clusters
+            int_num_entries_to_subsample_remaining -= int_num_entries_to_be_subsampled_for_a_clus
+            int_num_clus_remaining -= 1
+
+        # retrieve the number of entries for each cluster
+        dict_name_clus_to_num_entries_remaining = s_count_label.to_dict( )
+        dict_name_clus_to_num_entries_to_be_subsampled_remaining = dict_name_clus_to_num_entries_to_be_subsampled
+
+        # retrieve an axis
+        ax = ram_ref.bc
+
+        # initialize a new bitarray that will contain subsampled entries
+        ba_subsampled = bitarray( ax.int_num_entries )
+        ba_subsampled.setall( 0 )
+        # iterate over label and int_entry
+        for label, int_entry in zip( arr_label, bk.BA.find( ram_ref.bc.filter ) ) :
+            if np.random.random( ) < dict_name_clus_to_num_entries_to_be_subsampled_remaining[ label ] / dict_name_clus_to_num_entries_remaining[ label ] : # determine whether to subsample an entry
+                ba_subsampled[ int_entry ] = 1 # select the entry
+                dict_name_clus_to_num_entries_to_be_subsampled_remaining[ label ] -= 1 # consume 'dict_name_clus_to_num_entries_to_be_subsampled_remaining'
+            dict_name_clus_to_num_entries_remaining[ label ] -= 1 # consume 'dict_name_clus_to_num_entries_remaining'
+        
+        # apply subsampling
+        ax.filter = ba_subsampled
     ''' scanpy api wrappers '''
     def run_scanpy_using_pca( 
         self, 
