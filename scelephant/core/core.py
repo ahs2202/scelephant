@@ -3803,7 +3803,7 @@ class ZarrDataFrame( ) :
             rows of ZDF-2
             ...
             
-        * 'interleaved' : rows of each ZarrDataFrame can be mapped to those of each other.
+        * 'interleaved' : rows of each ZarrDataFrame can be mapped to those of each other.ns[ 'l_buffer' ]
     
     'l_zdf' : a list of ZarrDataFrame objects that will be combined
     'index_zdf_data_source_when_interleaved' : the index of the zdf to retrieve data when combining mode is interleaved (rows shared between ZDFs)
@@ -5058,13 +5058,26 @@ class ZarrDataFrame( ) :
         path_folder_zdf = os.path.abspath( path_folder_zdf ) + '/' # retrieve abspath of the output object
         assert self._path_folder_zdf != path_folder_zdf # the output folder should not be same as the folder of the current ZarrDataFrame
 
-        zdf = ZarrDataFrame( path_folder_zdf, flag_retrieve_categorical_data_as_integers = self._flag_retrieve_categorical_data_as_integers, flag_load_data_after_adding_new_column = self._flag_load_data_after_adding_new_column ) # open a new zdf using the same setting as the current ZarrDataFrame
+        zdf = ZarrDataFrame( 
+            path_folder_zdf, 
+            int_max_num_entries_per_batch = self.int_max_num_entries_per_batch,
+            int_num_rows = self.n_rows,
+            int_num_rows_in_a_chunk = self.metadata[ 'int_num_rows_in_a_chunk' ],
+            flag_enforce_name_col_with_only_valid_characters = self.metadata[ 'flag_enforce_name_col_with_only_valid_characters' ],
+            flag_store_string_as_categorical = self.metadata[ 'flag_store_string_as_categorical' ],
+            flag_retrieve_categorical_data_as_integers = self._flag_retrieve_categorical_data_as_integers,
+            flag_load_data_after_adding_new_column = self._flag_load_data_after_adding_new_column,
+            flag_use_mask_for_caching = self.flag_use_mask_for_caching,
+            verbose = self.verbose,
+            flag_use_lazy_loading = self._flag_use_lazy_loading,
+        ) # open a new zdf using the same setting as the current ZarrDataFrame
         
         # handle empty 'l_name_col'
         if len( l_name_col ) == 0 :
             l_name_col = self.columns # if no column name is given, copy all columns in the current ZarrDataFrame to the new ZarrDataFrame
         
         for name_col in self.columns.intersection( l_name_col ) : # copy column by column to the output ZarrDataFrame object
+            print( name_col )
             zdf.initialize_column( name_col, zdf_template = self, name_col_template = name_col ) # initialize the column using the column of the current zdf object 
             zdf[ name_col ] = self[ name_col ] # copy data (with filter applied)
     def load_as_dict( self, * l_name_col, float_min_proportion_of_active_rows_for_using_array_as_dict = 0.1 ) :
@@ -5976,7 +5989,7 @@ class RamDataAxis( ) :
             ns[ 'l_buffer' ].append( i )
             if len( ns[ 'l_buffer' ] ) >= int_size_buffer : # flush the buffer if it is full
                 flush_buffer( )
-        if len( ns[ 'l_buffer' ] ) >= 0 : # empty the buffer
+        if len( ns[ 'l_buffer' ] ) > 0 : # empty the buffer
             flush_buffer( )
         newfile_chunked_data.close( ) # close file
         
@@ -5987,7 +6000,7 @@ class RamDataAxis( ) :
             df_index[ [ 'index_chunk', 'index_byte_start', 'index_byte_end' ] ].T.to_csv( file, sep = '\t', index = True, header = False )
             file.seek( 0 )
             with open( f'{path_folder}{self._name_axis}s.str.index.tsv.gz.base64.txt', 'w' ) as newfile :
-                newfile.write( _base64_encode( _gzip_bytes( file.read( ) ) ) )
+                newfile.write( _base64_encode( _gzip_bytes( file.read( ) ) ) )                
     def __repr__( self ) :
         """ # 2022-07-20 23:12:47 
         """
@@ -9088,7 +9101,7 @@ class RamData( ) :
             self.layers_excluding_components.add( name_layer_new ) # add layer directly to the current ramdata
             self._save_metadata_( )
     def subset( self, path_folder_ramdata_output, l_name_layer = [ ], int_num_threads = None, ** kwargs ) :
-        ''' # 2022-07-05 23:20:02 
+        ''' # 2022-10-28 13:22:42 
         Under Construction!
         this function will create a new RamData object on disk by creating a subset of the current RamData according to the current filters
 
@@ -9115,21 +9128,22 @@ class RamData( ) :
         set_name_layer = self.layers.intersection( l_name_layer )
         
         ''' filter each layer '''
-        self.load_dict_change( ) # load 'dict_change' for coordinate conversion according to the given filter
-        for name_layer in set_name_layer : # for each valid name_layer
-            self.apply( name_layer, name_layer_new = None, func = 'ident', path_folder_ramdata_output = path_folder_ramdata_output, int_num_threads = int_num_threads, ** kwargs ) # flag_dtype_output = None : use the same dtype as the input RAMtx object
-        self.unload_dict_change( ) # unload 'dict_change' after the conversion process
+        # initialize and destroy the view after subsetting
+        with self as view : # load 'dict_change' for coordinate conversion according to the given filters, creating the view of the RamData
+            for name_layer in set_name_layer : # for each valid name_layer
+                view.apply( name_layer, name_layer_new = None, func = 'ident', path_folder_ramdata_output = path_folder_ramdata_output, int_num_threads = int_num_threads, ** kwargs ) # flag_dtype_output = None : use the same dtype as the input RAMtx object
         
         # compose metadata
         root = zarr.group( path_folder_ramdata_output )
         root.attrs[ 'dict_metadata' ] = { 
+            'path_folder_mtx_10x_input' : None,
             'str_completed_time' : TIME_GET_timestamp( True ),
-            'int_num_features' : self.ft.meta.n_rows, # record the number of features/barcodes after filtering
+            'int_num_features' : self.ft.meta.n_rows,
             'int_num_barcodes' : self.bc.meta.n_rows,
-            'int_num_of_records_in_a_chunk_zarr_matrix' : self.metadata[ 'int_num_of_records_in_a_chunk_zarr_matrix' ],
-            'int_num_of_entries_in_a_chunk_zarr_matrix_index' : self.metadata[ 'int_num_of_entries_in_a_chunk_zarr_matrix_index' ],
-            'layers' : list( set_name_layer ),
+            'layers' : [ ],
+            'models' : dict( ),
             'version' : _version_,
+            'identifier' : UUID( ),
         }
     def normalize( self, name_layer = 'raw', name_layer_new = 'normalized', name_col_total_count = 'raw_sum', int_total_count_target = 10000, mode_instructions = [ [ 'sparse_for_querying_features', 'sparse_for_querying_features' ], [ 'sparse_for_querying_barcodes', 'sparse_for_querying_barcodes' ] ], int_num_threads = None, ** kwargs ) :
         ''' # 2022-07-06 23:58:15 
