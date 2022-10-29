@@ -237,6 +237,10 @@ finalized version of 0.0.7 released
 # 2022-10-19 13:16:19 
 combined RamData will exclude RAMtx of the reference RamData for weight calculation / data retrieval
     - RAMtx.survey_number_of_records_for_each_entry was updated
+    
+# 2022-10-29 18:08:59 
+RamData.subset draft implementation completed
+RamData.apply was updated so that file I/O operations on sparse matrix will be off-loaded to a seperate process for asynchronous operations. (much faster since main process will not be blocked from distributing works in order to post-process sparse matrix outputs)
 
 ##### Future implementations #####
 
@@ -5779,7 +5783,7 @@ class RamDataAxis( ) :
             name_col_sink = None, 
             flag_mode_write = False, # read-mode, without modification of original string representations
             path_column_sink = path_folder_str_zarr,
-            path_column_source = f"{self._path_folder}{self._name_axis}.str.zarr", # retrieve sink column path
+            path_column_source = f"{self._path_folder}{self._name_axis}.str.zarr", # retrieve column path
             l_path_column_source = list( f"{ax._path_folder}{ax._name_axis}.str.zarr" if zarr_exists( f"{ax._path_folder}{ax._name_axis}.str.zarr" ) else None for ax in self._l_ax ) if self.is_combined else None, 
             name_col_availability = '__str__availability__',
             flag_retrieve_from_all_interleaved_components = True, # retrieve string representations from all component
@@ -5849,6 +5853,12 @@ class RamDataAxis( ) :
             # retrieve the number of available columns containing string representations
             self._num_available_columns_string_representation = zarr.open( f"{self._path_folder}{self._name_axis}.str.zarr", 'r' ).shape[ 1 ]
         return self._num_available_columns_string_representation
+    @property
+    def flag_str_repr_loaded( self ) :
+        """ # 2022-10-29 20:31:56 
+        return a flag indicating whether the string representations were loaded
+        """
+        return self.map_str is None 
     @property
     def map_str( self ) :
         """ # 2022-06-25 09:31:32 
@@ -5934,12 +5944,15 @@ class RamDataAxis( ) :
                 ba_filter_of_selected_entries[ i ] = True
         return ba_filter_of_selected_entries
     def save( self, path_folder ) :
-        """ # 2022-07-05 00:52:39 
+        """ # 2022-10-29 00:19:56 
         save data contained in the Axis object (and metadata saved as ZarrDataFrame) to the new path.
         if a filter is active, filtered data will be saved.
         
         'path_folder' : the path of the output Axis object
         """
+        # retrieve attributes
+        name_axis = self._name_axis
+        
         # check validity of the path
         path_folder = os.path.abspath( path_folder ) + '/' # retrieve abspath of the output object
         assert self._path_folder != path_folder
@@ -5947,42 +5960,55 @@ class RamDataAxis( ) :
         # create output folder
         os.makedirs( path_folder, exist_ok = True )
         
+        '''
+        # save metadata
+        '''
         # save number and categorical data
         self.meta.save( f"{path_folder}{self._name_axis}.num_and_cat.zdf" ) # save all columns
         
+        '''
         # save string data
+        '''
         # initialize
-        za = zarr.open( f"{self._path_folder}{self._name_axis}.str.zarr", mode = 'r', synchronizer = zarr.ThreadSynchronizer( ) ) # open a zarr object containing the string representation of the entries
-        za_new = zarr.open( f"{path_folder}{self._name_axis}.str.zarr", mode = 'w', shape = ( self.meta.n_rows, za.shape[ 1 ] ), chunks = za.chunks, dtype = str, synchronizer = zarr.ThreadSynchronizer( ) ) # writing a new zarr object
-        # open Base64-encoded data
-        newfile_chunked_data = open( f'{path_folder}{self._name_axis}s.str.tsv.gz.base64.concatenated.txt', 'w' ) # base64-encodec concatenated data files
-        l_index_chunked_data = [ ] # a list that will contains indices of concatenated chunks 
+        za = zarr.open( f"{self._path_folder}{name_axis}.str.zarr", mode = 'r', synchronizer = zarr.ThreadSynchronizer( ) ) # open a zarr object containing the string representation of the entries
+        za_new = zarr.open( f"{path_folder}{name_axis}.str.zarr", mode = 'w', shape = ( self.meta.n_rows, za.shape[ 1 ] ), chunks = za.chunks, dtype = str, synchronizer = zarr.ThreadSynchronizer( ) ) # writing a new zarr object
         
         int_size_buffer = za.chunks[ 0 ] # use the chunk size as the size of the buffer
         ns = dict( ) # namespace that can be safely modified across the scopes of the functions
         ns[ 'int_num_entries_written' ] = 0 # initialize the last position of written entries (after filter applied)
         ns[ 'int_num_bytes_written' ] = 0 # initialize the last position of written entries (after filter applied)
         ns[ 'l_buffer' ] = [ ] # initialize the buffer
+        ns[ 'flag_axis_initialized' ] = False # initialize the flag to False 
+        ns[ 'index_chunk' ] = 0 # initialize the index of the chunk
         
         def flush_buffer( ) :
             ''' # 2022-07-04 23:34:40 
-            transfer string representations of entries to output Zarr object and the base64-encoded chunked data
+            transfer string representations of entries to output str chunk object
             '''
+            # initialize str.chunks object
+            if not ns[ 'flag_axis_initialized' ] : # if the axis has not been initialized
+                # create a folder to save a chunked string representations
+                path_folder_str_chunks = f'{path_folder}{name_axis}.str.chunks/'
+                os.makedirs( path_folder_str_chunks, exist_ok = True ) # create the output folder
+                za_str_chunks = zarr.group( path_folder_str_chunks )
+                ns[ 'path_folder_str_chunks' ] = path_folder_str_chunks
+                za_str_chunks.attrs[ 'dict_metadata' ] = { 'int_num_entries' : len( self ), 'int_num_of_entries_in_a_chunk' : self.int_num_entries_in_a_chunk } # write essential metadata for str.chunks
+                ns[ 'flag_axis_initialized' ] = True # set the flag to True
+            
             # retrieve data of the entries in the buffer, and empty the buffer
             n = len( ns[ 'l_buffer' ] ) # retrieve number of entries in the buffer
             data = za.get_orthogonal_selection( ns[ 'l_buffer' ] ) # retrieve data from the Zarr object
             ns[ 'l_buffer' ] = [ ] # empty the buffer
             
+            # save str.chunks
+            for index_col, arr_val in enumerate( data.T ) :
+                with open( f"{ns[ 'path_folder_str_chunks' ]}{ns[ 'index_chunk' ]}.{index_col}", 'wt' ) as newfile : # similar organization to zarr
+                    newfile.write( _base64_encode( _gzip_bytes( ( '\n'.join( arr_val ) + '\n' ).encode( ) ) ) )
+            ns[ 'index_chunk' ] += 1 # update 'index_chunk'
+            
             # write Zarr object
             za_new[ ns[ 'int_num_entries_written' ] : ns[ 'int_num_entries_written' ] + n, : ] = data # transfer data to the new Zarr object
             ns[ 'int_num_entries_written' ] += n # update the number of entries written
-            
-            # write a chunk for a file containing concatenated chunks (for javascript access)
-            str_content = ' ' + _base64_encode( _gzip_bytes( ( '\n'.join( '\t'.join( row ) for row in data.T ) + '\n' ).encode( ) ) ) # retrieved base64-encoded, padded string
-            int_num_bytes = len( str_content ) # retrieve number of bytes of the current 
-            newfile_chunked_data.write( str_content )
-            l_index_chunked_data.append( [ ns[ 'int_num_bytes_written' ], ns[ 'int_num_bytes_written' ] + int_num_bytes ] )
-            ns[ 'int_num_bytes_written' ] += int_num_bytes # update the number of bytes written for the concatenated chunks
             
         # process entries using a buffer
         for i in range( len( self ) ) if self.filter is None else bk.BA.find( self.filter, val = 1 ) : # iteratre through active integer representations of the entries
@@ -5990,17 +6016,7 @@ class RamDataAxis( ) :
             if len( ns[ 'l_buffer' ] ) >= int_size_buffer : # flush the buffer if it is full
                 flush_buffer( )
         if len( ns[ 'l_buffer' ] ) > 0 : # empty the buffer
-            flush_buffer( )
-        newfile_chunked_data.close( ) # close file
-        
-        # write index of the file containing concatenated chunks
-        df_index = pd.DataFrame( l_index_chunked_data, columns = [ 'index_byte_start', 'index_byte_end' ] )
-        df_index[ 'index_chunk' ] = np.arange( len( df_index ) ) # retrieve 'index_chunk'
-        with io.BytesIO( ) as file :
-            df_index[ [ 'index_chunk', 'index_byte_start', 'index_byte_end' ] ].T.to_csv( file, sep = '\t', index = True, header = False )
-            file.seek( 0 )
-            with open( f'{path_folder}{self._name_axis}s.str.index.tsv.gz.base64.txt', 'w' ) as newfile :
-                newfile.write( _base64_encode( _gzip_bytes( file.read( ) ) ) )                
+            flush_buffer( )                
     def __repr__( self ) :
         """ # 2022-07-20 23:12:47 
         """
@@ -6224,6 +6240,48 @@ class RamDataAxis( ) :
             else : # reset destination component
                 self._dict_index_mapping_from_combined_to_dest_component = None
                 self._int_index_component_destination = None
+    def update( self, df ) :
+        """ # 2022-10-29 18:13:15 
+        update metadata using the given dataframe, whose indices is either the string or integer representations of the entries
+        """
+        # check whether the input is valid datatype 
+        if not isinstance( df, pd.DataFrame ) :
+            return
+        if len( df ) == 0 : # exit if an empty dataframe has been given
+            return
+        if len( df.columns.values ) == 0 : # exit if no columns exist in the dataframe
+            return
+        # retrieve a flag indicating whether the string representations were used 
+        flag_str_repr_was_used = isinstance( df.index.values[ 0 ], str )
+        flag_str_repr_was_loaded = self.flag_str_repr_loaded # retrieve a flag indicating whether the string representations were loaded at the time when the function was called
+        
+        # map string representations to the integer representations of the entries
+        # %% STRING REPR. %%
+        if flag_str_repr_was_used : 
+            # load string representations
+            if not flag_str_repr_was_loaded :
+                self.load_str( )
+            
+            # map string representations to the integer representations of the entries
+            l_int_entry = [ ]
+            l_mask_mapped_to_int_entry = [ ]
+            for e in df.index.values :
+                if e in self.map_str :
+                    l_int_entry.append( self.map_str[ e ] )
+                    l_mask_mapped_to_int_entry.append( True )
+                else :
+                    l_mask_mapped_to_int_entry.append( False )
+            # exclude entries whose string representations cannot be mapped to the string representations loaded in the current axis object
+            if np.sum( l_mask_mapped_to_int_entry ) < len( df ) :
+                df = df[ l_mask_mapped_to_int_entry ]
+            df.index = l_int_entry # convert index entries fro string representations to integer representations of the entries
+            
+        # update the metadata
+        self.meta.update( df, flag_use_index_as_integer_indices = True )
+
+        # unload string representations
+        if flag_str_repr_was_used and not flag_str_repr_was_loaded :
+            self.unload_str( )
 ''' a class for RAMtx '''
 ''' a class for accessing Zarr-backed count matrix data (RAMtx, Random-Access matrix) '''
 class RAMtx( ) :
@@ -7357,7 +7415,8 @@ class RAMtx( ) :
             # once 'weight_calculation' batch is full, process the 'weight_calculation' batch
             if len( ns[ 'l_int_entry_for_weight_calculation_batch' ] ) == int_num_entries_for_each_weight_calculation_batch :
                 __update_total_num_records( ) # update total number of records
-        __update_total_num_records( )
+        if len( ns[ 'l_int_entry_for_weight_calculation_batch' ] ) > 0 : # if there is remaining entries to be processed
+            __update_total_num_records( )
         return int( ns[ 'int_num_records' ] ) # return the total number of records
     def batch_generator( self, ba = None, int_num_entries_for_each_weight_calculation_batch = 1000, int_total_weight_for_each_batch = 10000000, int_chunk_size_for_checking_boundary = None, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = False ) :
         ''' # 2022-08-05 23:37:03 
@@ -7438,11 +7497,12 @@ class RAMtx( ) :
         for int_entry in bk.BA.find( ba ) : # iterate through active entries of the given bitarray
             ns[ 'l_int_entry_for_weight_calculation_batch' ].append( int_entry ) # collect int_entry for the current 'weight_calculation_batch'
             # once 'weight_calculation' batch is full, process the 'weight_calculation' batch
-            if len( ns[ 'l_int_entry_for_weight_calculation_batch' ] ) == int_num_entries_for_each_weight_calculation_batch :
+            if len( ns[ 'l_int_entry_for_weight_calculation_batch' ] ) == int_num_entries_for_each_weight_calculation_batch : # if batch is full
                 for e in find_batch( ) : # generate batch from the 'weight_calculation' batch
                     yield e
-        for e in find_batch( ) : # generate batch from the last 'weight_calculation_batch'
-            yield e
+        if len( ns[ 'l_int_entry_for_weight_calculation_batch' ] ) > 0 : # process the remaining entries
+            for e in find_batch( ) : # generate batch from the last 'weight_calculation_batch'
+                yield e
         # return the remaining int_entries as the last batch (if available)
         if len( ns[ 'l_int_entry_current_batch' ] ) > 0 :
             yield __compose_batch( ) # return a batch
@@ -7746,7 +7806,7 @@ class RamDataLayer( ) :
                 shutil.rmtree( f'{self._path_folder_ramdata_layer_mask}{mode}/' )
 ''' class for storing RamData '''
 class RamData( ) :
-    """ # 2022-08-21 00:43:30 
+    """ # 2022-10-29 18:08:47 
     This class provides frameworks for single-cell transcriptomic/genomic data analysis, utilizing RAMtx data structures, which is backed by Zarr persistant arrays.
     Extreme lazy loading strategies used by this class allows efficient parallelization of analysis of single cell data with minimal memory footprint, loading only essential data required for analysis. 
     
@@ -8613,7 +8673,7 @@ class RamData( ) :
         bk.Multiprocessing_Batch_Generator_and_Workers( rtx.batch_generator( ax.filter, int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, int_total_weight_for_each_batch = self.int_total_weight_for_each_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 )
         pbar.close( ) # close the progress bar
     def apply( self, name_layer, name_layer_new, func = None, mode_instructions = 'sparse_for_querying_features', path_folder_ramdata_output = None, dtype_of_row_and_col_indices = np.int32, dtype_of_value = np.float64, int_num_threads = None, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = True, int_num_of_records_in_a_chunk_zarr_matrix = 20000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, chunks_dense = ( 2000, 1000 ), dtype_dense_mtx = np.float64, dtype_sparse_mtx = np.float64, dtype_sparse_mtx_index = np.float64 ) :
-        ''' # 2022-09-07 22:00:00 
+        ''' # 2022-10-29 18:08:41 
         this function apply a function and/or filters to the records of the given data, and create a new data object with 'name_layer_new' as its name.
         
         example usage: calculate normalized count data, perform log1p transformation, cell filtering, etc.                             
@@ -8714,6 +8774,7 @@ class RamData( ) :
         flag_update_a_layer = name_layer_new == name_layer and path_folder_ramdata_output == self._path_folder_ramdata_modifiable # a flag indicating whether a layer of the current ramdata is updated (input ramdata == output ramdata and input layer name == output layer name).
         # retrieve paths
         path_folder_layer_new = f"{path_folder_ramdata_output}{name_layer_new}/" # compose the output directory of the output ramdata layer
+        print( path_folder_layer_new, 'from', self._path_folder_ramdata_modifiable )
         
         # parse 'func' or set default functions, retrieving 'func_bc' and 'func_ft'.
         if hasattr( func, '__call__' ) : # if a single function has been given, use the function for 'func_bc' and 'func_ft'
@@ -8748,7 +8809,7 @@ class RamData( ) :
         zarr_start_multiprocessing_write( )
         
         def RAMtx_Apply( self, rtx, func, flag_dense_ramtx_output, flag_sparse_ramtx_output, int_num_threads ) :
-            ''' # 2022-08-01 10:39:38 
+            ''' # 2022-10-29 18:08:36 
             inputs 
             =========
 
@@ -8783,16 +8844,11 @@ class RamData( ) :
                 za_mtx_sparse = zarr.open( path_folder_ramtx_sparse_mtx, mode = 'w', shape = ( rtx._int_num_records, 2 ), chunks = ( int_num_of_records_in_a_chunk_zarr_matrix, 2 ), dtype = dtype_sparse_mtx, synchronizer = zarr.ThreadSynchronizer( ) ) # use the same chunk size of the current RAMtx
                 za_mtx_sparse_index = zarr.open( f'{path_folder_ramtx_sparse}matrix.index.zarr', mode = 'w', shape = ( rtx.len_axis_for_querying, 2 ), chunks = ( int_num_of_entries_in_a_chunk_zarr_matrix_index, 2 ), dtype = dtype_sparse_mtx_index, synchronizer = zarr.ThreadSynchronizer( ) ) # use the same dtype and chunk size of the current RAMtx
                 
-                ns[ 'int_num_chunks_written_to_ramtx' ] = 0 # initialize the number of chunks written to ramtx object
                 int_num_records_in_a_chunk_of_mtx_sparse = za_mtx_sparse.chunks[ 0 ] # retrieve the number of records in a chunk of output zarr matrix
                 
                 ns[ 'index_batch_waiting_to_be_written_sparse' ] = 0 # index of the batch currently waiting to be written. 
                 ns[ 'l_res_sparse' ] = [ ]
                 
-                # keep track the number of rows in the output sparse matrix in order to resize the matrix once the output has been written
-                ns[ 'int_len_matrix' ] = 1 # default length
-                
-
             """ convert matrix values and save it to the output RAMtx object """
             # define functions for multiprocessing step
             def process_batch( pipe_receiver_batch, pipe_sender_result ) :
@@ -8884,6 +8940,60 @@ class RamData( ) :
                     rtx_fork_safe.destroy_zarr_server( )
             # initialize the progress bar
             pbar = progress_bar( total = rtx.get_total_num_records( int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ) )
+            """ %% SPARSE %% """
+            if flag_sparse_ramtx_output :
+                ''' create a worker process for off-laoding works (mostly file I/O) asynchronously so that main process can delegate works to the working processes without being blocked during file I/O. '''
+                def post_processing_sparse_matrix_output( pipe_input, pipe_output ) :
+                    ''' # 2022-10-29 13:03:23 
+                    post-process sparse matrix output
+                    '''
+                    # initialize
+                    int_num_chunks_written_to_ramtx = 0 # initialize the number of chunks written to ramtx object # the number of chunks already present in the output RAMtx zarr matrix object
+                    int_len_matrix = 1 # default length # keep track the number of rows in the output sparse matrix in order to resize the matrix once the output has been written
+                    while True :
+                        ''' receive inputs '''
+                        ins = pipe_input.recv( )
+                        if ins is None : # if None is received, exit
+                            break
+                        index_batch, int_num_processed_records, int_num_records_written, path_folder_zarr_output, path_file_index_output = ins # parse inputs
+                            
+                        ''' post-process sparse matrix output '''
+                        # prepare
+                        int_num_chunks_written_for_a_batch = int( np.ceil( int_num_records_written / int_num_records_in_a_chunk_of_mtx_sparse ) ) # retrieve the number of chunks that were written for a batch
+                        
+                        # check size of Zarr matrix object, and increase the size if needed.
+                        int_min_num_rows_required = ( int_num_chunks_written_to_ramtx + int_num_chunks_written_for_a_batch ) * int_num_records_in_a_chunk_of_mtx_sparse # calculate the minimal number of rows required in the RAMtx Zarr matrix object
+                        if za_mtx_sparse.shape[ 0 ] < int_min_num_rows_required : # check whether the size of Zarr matrix is smaller than the minimum requirement
+                            za_mtx_sparse.resize( int_min_num_rows_required, 2 ) # resize the Zarr matrix so that data can be safely added to the matrix
+
+                        # copy Zarr chunks to the sparse RAMtx Zarr matrix object
+                        os.chdir( path_folder_zarr_output ) # to reduce the length of file path, change directory to the output folder before retrieving file paths of the chunks
+                        for e in glob.glob( '*.0' ) : # to reduce the size of file paths returned by glob, use relative path to retrieve the list of chunk files of the Zarr matrix of the current batch
+                            index_chunk = int( e.split( '.0', 1 )[ 0 ] ) # retrieve the integer index of the chunk
+                            os.rename( e, path_folder_ramtx_sparse_mtx + str( index_chunk + int_num_chunks_written_to_ramtx ) + '.0' ) # simply rename the chunk to transfer stored values
+
+                        # retrieve index data of the current batch
+                        arr_index = pd.read_csv( path_file_index_output, header = None, sep = '\t' ).values.astype( int ) # convert to integer dtype
+                        arr_index[ :, 1 : ] += int_num_chunks_written_to_ramtx * int_num_records_in_a_chunk_of_mtx_sparse # match the chunk boundary. if there are empty rows in the chunks currently written to ramtx, these empty rows will be considered as rows containing records, so that Zarr matrix written for a batch can be easily transferred by simply renaming the chunk files
+                        za_mtx_sparse_index.set_orthogonal_selection( arr_index[ :, 0 ], arr_index[ :, 1 : ] ) # update the index of the entries of the current batch
+                        int_len_matrix = arr_index[ -1, -1 ] # update the number of rows in the output sparse matrix
+
+                        # update the number of chunks written to RAMtx Zarr matrix object
+                        int_num_chunks_written_to_ramtx += int_num_chunks_written_for_a_batch
+
+                        # delete temporary files and folders
+                        shutil.rmtree( path_folder_zarr_output )
+                        os.remove( path_file_index_output )
+                    ''' send output and indicate the post-processing has been completed '''
+                    pipe_output.send( int_len_matrix )
+                    return # exit
+                # create pipes for communications
+                pipe_sender_input_sparse_matrix_post_processing, pipe_receiver_input_sparse_matrix_post_processing = mp.Pipe( )
+                pipe_sender_output_sparse_matrix_post_processing, pipe_receiver_output_sparse_matrix_post_processing = mp.Pipe( )
+                # create and start a worker process for post-processing of the sparse matrix
+                p_sparse_matrix_post_processing = mp.Process( target = post_processing_sparse_matrix_output, args = ( pipe_receiver_input_sparse_matrix_post_processing, pipe_sender_output_sparse_matrix_post_processing ) )
+                p_sparse_matrix_post_processing.start( ) # start the process
+                
             def post_process_batch( res ) :
                 """ # 2022-09-16 14:10:22 
                 """
@@ -8903,52 +9013,25 @@ class RamData( ) :
                     
                     ''' process results produced from batches in the order the batches were generated (in an ascending order of 'int_entry') '''
                     while ns[ 'l_res_sparse' ][ ns[ 'index_batch_waiting_to_be_written_sparse' ] ] != 0 : # if the batch referenced by ns[ 'index_batch_waiting_to_be_written_sparse' ] has been completed
-                        index_batch, int_num_processed_records, int_num_records_written, path_folder_zarr_output, path_file_index_output = ns[ 'l_res_sparse' ][ ns[ 'index_batch_waiting_to_be_written_sparse' ] ] # parse result
+                        res_batch_for_post_processing = ns[ 'l_res_sparse' ][ ns[ 'index_batch_waiting_to_be_written_sparse' ] ] # retrieve 'res_batch' for post_processing
+                        index_batch, int_num_processed_records, int_num_records_written, path_folder_zarr_output, path_file_index_output = res_batch_for_post_processing # parse result
                         # if zero number of records were written, update the progress bar and continue to the next batch
                         if int_num_records_written == 0 :
                             ns[ 'l_res_sparse' ][ ns[ 'index_batch_waiting_to_be_written_sparse' ] ] = None # remove the result from the list of batch outputs
                             ns[ 'index_batch_waiting_to_be_written_sparse' ] += 1 # start waiting for the next batch to be completed
                             pbar.update( int_num_processed_records ) # update the progress bar
                             continue
-                            
-                        # prepare
-                        int_num_chunks_written_for_a_batch = int( np.ceil( int_num_records_written / int_num_records_in_a_chunk_of_mtx_sparse ) ) # retrieve the number of chunks that were written for a batch
-                        int_num_chunks_written_to_ramtx = ns[ 'int_num_chunks_written_to_ramtx' ] # retrieve the number of chunks already present in the output RAMtx zarr matrix object
                         
-                        # check size of Zarr matrix object, and increase the size if needed.
-                        int_min_num_rows_required = ( int_num_chunks_written_to_ramtx + int_num_chunks_written_for_a_batch ) * int_num_records_in_a_chunk_of_mtx_sparse # calculate the minimal number of rows required in the RAMtx Zarr matrix object
-                        if za_mtx_sparse.shape[ 0 ] < int_min_num_rows_required : # check whether the size of Zarr matrix is smaller than the minimum requirement
-                            za_mtx_sparse.resize( int_min_num_rows_required, 2 ) # resize the Zarr matrix so that data can be safely added to the matrix
-
-                        # copy Zarr chunks to the sparse RAMtx Zarr matrix object
-                        os.chdir( path_folder_zarr_output ) # to reduce the length of file path, change directory to the output folder before retrieving file paths of the chunks
-                        for e in glob.glob( '*.0' ) : # to reduce the size of file paths returned by glob, use relative path to retrieve the list of chunk files of the Zarr matrix of the current batch
-                            index_chunk = int( e.split( '.0', 1 )[ 0 ] ) # retrieve the integer index of the chunk
-                            os.rename( e, path_folder_ramtx_sparse_mtx + str( index_chunk + int_num_chunks_written_to_ramtx ) + '.0' ) # simply rename the chunk to transfer stored values
-
-                        # retrieve index data of the current batch
-                        arr_index = pd.read_csv( path_file_index_output, header = None, sep = '\t' ).values.astype( int ) # convert to integer dtype
-                        arr_index[ :, 1 : ] += int_num_chunks_written_to_ramtx * int_num_records_in_a_chunk_of_mtx_sparse # match the chunk boundary. if there are empty rows in the chunks currently written to ramtx, these empty rows will be considered as rows containing records, so that Zarr matrix written for a batch can be easily transferred by simply renaming the chunk files
-                        za_mtx_sparse_index.set_orthogonal_selection( arr_index[ :, 0 ], arr_index[ :, 1 : ] ) # update the index of the entries of the current batch
-                        ns[ 'int_len_matrix' ] = arr_index[ -1, -1 ] # update the number of rows in the output sparse matrix
-
-                        # update the number of chunks written to RAMtx Zarr matrix object
-                        ns[ 'int_num_chunks_written_to_ramtx' ] += int_num_chunks_written_for_a_batch
-
-                        # delete temporary files and folders
-                        shutil.rmtree( path_folder_zarr_output )
-                        os.remove( path_file_index_output )
+                        # send input to the worker for asynchronous post-processing of sparse-matrix
+                        pipe_sender_input_sparse_matrix_post_processing.send( res_batch_for_post_processing ) 
                         
                         ns[ 'l_res_sparse' ][ ns[ 'index_batch_waiting_to_be_written_sparse' ] ] = None # remove the result from the list of batch outputs
                         ns[ 'index_batch_waiting_to_be_written_sparse' ] += 1 # start waiting for the next batch to be completed
                         pbar.update( int_num_processed_records ) # update the progress bar
-                os.chdir( path_folder_layer_new ) # change path to layer before deleting temp folder
+                os.chdir( path_folder_layer_new ) # change path to layer before deleting temp folder (to avoid deleting the working directory)
             # transform the values of the RAMtx using multiple processes
             bk.Multiprocessing_Batch_Generator_and_Workers( rtx.batch_generator( ax.filter, int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, int_total_weight_for_each_batch = self.int_total_weight_for_each_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) # create batch considering chunk boundaries # return batch index to allow combining sparse matrix in an ascending order.
             pbar.close( ) # close the progress bar
-            
-            # remove temp folder
-            shutil.rmtree( path_folder_temp )
             
             ''' export ramtx settings '''
             """ %% DENSE %% """
@@ -8976,9 +9059,17 @@ class RamData( ) :
                     'int_num_records' : ns[ 'int_num_records_written_to_ramtx' ],
                     'version' : _version_,
                 }
-                if za_mtx_sparse.shape[ 0 ] > ns[ 'int_len_matrix' ] :
-                    za_mtx_sparse.resize( ns[ 'int_len_matrix' ], 2 ) # resize the Zarr matrix to according to the actual number of rows in the matrix
-            return 
+                # retrieve result from the worker process
+                pipe_sender_input_sparse_matrix_post_processing.send( None ) # indicate all work has been completed
+                int_len_matrix = pipe_receiver_output_sparse_matrix_post_processing.recv( ) # receive the length of the matrix
+                p_sparse_matrix_post_processing.join( ) # dismiss worker
+                # resize the za_mtx_sparse matrix if its length is larger than 'int_len_matrix'
+                if za_mtx_sparse.shape[ 0 ] > int_len_matrix :
+                    za_mtx_sparse.resize( int_len_matrix, 2 ) # resize the Zarr matrix to according to the actual number of rows in the matrix
+                    
+            # remove temp folder once all operations have been completed
+            shutil.rmtree( path_folder_temp )
+            return # exit
         
         # initialize the list arguments for running multiple processes
         l_args = [ ]
@@ -9000,9 +9091,8 @@ class RamData( ) :
             mode_instructions = [ mode_instructions ]
         # { 'dense', 'dense_for_querying_barcodes', 'dense_for_querying_features', 'sparse_for_querying_barcodes', 'sparse_for_querying_features' }
         set_modes_sink_valid = { 'dense', 'sparse_for_querying_barcodes', 'sparse_for_querying_features' }
-        
         set_modes_sink = set( self.layer.modes ) if flag_update_a_layer else set( ) # retrieve the ramtx modes in the output (sink) layer (assumes a data sink layer (that is not data source layer) does not contain any ramtx objects). # to avoid overwriting
-        if name_layer_new in self.layers : # if the output layer exists 
+        if flag_new_layer_added_to_the_current_ramdata and name_layer_new in self.layers : # if 'flag_new_layer_added_to_the_current_ramdata' is True and the output layer exists 
             self.layer = name_layer_new # load output layer
             set_modes_sink.update( self.layer.modes ) # update available modes in the output layer
             self.layer = name_layer # re-load input layer
@@ -9012,7 +9102,7 @@ class RamData( ) :
             """
             # if the 'ramtx_mode_sink' has not been set, 'ramtx_mode_source' will be used as the mode of the ramtx sink, too.
             if len( an_instruction ) == 1 :
-                an_instruction = [ an_instruction, an_instruction ]
+                an_instruction = an_instruction * 2
             ramtx_mode_source, l_ramtx_mode_sink = an_instruction # parse an instruction
             # if 'l_ramtx_mode_sink' is a single 'ramtx_mode_sink', wrap the entry in a list
             if isinstance( l_ramtx_mode_sink, str ) :
@@ -9100,7 +9190,7 @@ class RamData( ) :
         if flag_new_layer_added_to_the_current_ramdata and not flag_update_a_layer :
             self.layers_excluding_components.add( name_layer_new ) # add layer directly to the current ramdata
             self._save_metadata_( )
-    def subset( self, path_folder_ramdata_output, l_name_layer = [ ], int_num_threads = None, ** kwargs ) :
+    def subset( self, path_folder_ramdata_output, l_name_layer : list = [ ], dict_mode_instructions : dict = dict( ), int_num_threads = None, ** kwargs ) :
         ''' # 2022-10-28 13:22:42 
         Under Construction!
         this function will create a new RamData object on disk by creating a subset of the current RamData according to the current filters
@@ -9111,6 +9201,7 @@ class RamData( ) :
         'path_folder_ramdata_output' : The directory of the RamData object that will contain a subset of the barcodes/features of the current RamData.
         'l_name_layer' : the list of name_layers to subset and transfer to the new RamData object
         'int_num_threads' : the number of CPUs to use. by default, the number of CPUs set by the RamData attribute 'int_num_cpus' will be used.
+        'dict_mode_instructions' : a dictionary with key = name_layer, value = 'mode_instructions' arguments for 'RamData.apply' method
         '''
         ''' handle inputs '''
         # check invalid input
@@ -9131,7 +9222,15 @@ class RamData( ) :
         # initialize and destroy the view after subsetting
         with self as view : # load 'dict_change' for coordinate conversion according to the given filters, creating the view of the RamData
             for name_layer in set_name_layer : # for each valid name_layer
-                view.apply( name_layer, name_layer_new = None, func = 'ident', path_folder_ramdata_output = path_folder_ramdata_output, int_num_threads = int_num_threads, ** kwargs ) # flag_dtype_output = None : use the same dtype as the input RAMtx object
+                view.apply( 
+                    name_layer, 
+                    name_layer_new = None, 
+                    func = 'ident', 
+                    mode_instructions = dict_mode_instructions[ name_layer ], # use mode_instructions of the given layer
+                    path_folder_ramdata_output = path_folder_ramdata_output, 
+                    int_num_threads = int_num_threads, 
+                    ** kwargs
+                ) # flag_dtype_output = None : use the same dtype as the input RAMtx object
         
         # compose metadata
         root = zarr.group( path_folder_ramdata_output )
