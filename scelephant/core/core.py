@@ -64,7 +64,7 @@ mpsp = mp.get_context('spawn')
 # define version
 _version_ = '0.0.8'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-10-20 01:23:55'
+_last_modified_time_ = '2022-10-29 23:58:54'
 
 """ # 2022-07-21 10:35:42  realease note
 
@@ -242,6 +242,9 @@ combined RamData will exclude RAMtx of the reference RamData for weight calculat
 RamData.subset draft implementation completed
 RamData.apply was updated so that file I/O operations on sparse matrix will be off-loaded to a seperate process for asynchronous operations. (much faster since main process will not be blocked from distributing works in order to post-process sparse matrix outputs)
 
+# 2022-10-29 23:57:53 
+RamDataAxis.update, RamDataAxis.get_df methods were implemented, and ZarrDataFrame.update and ZarrDataFrame.get_df methods were re-implemented.
+
 ##### Future implementations #####
 
 """
@@ -269,8 +272,8 @@ def CB_Match_Batch( l_id_cell_1, l_id_cell_2, flag_calculate_proportion_using_l_
     ''' # 2022-03-28 23:10:43 
     Find matching batches between two given lists of id_cells by finding the batches sharing the largest number of cell barcodes
     
-    'l_id_cell_1' : first list of id_cells 
-    'l_id_cell_2' : second list of id_cells
+    'l_id_cell_1' : first list of id_cells (e.g. unannotated barcodes)
+    'l_id_cell_2' : second list of id_cells (e.g. annotated barcodes)
     'flag_calculate_proportion_using_l_id_cell_2' : if True, finding matching batches using the shared proportion calculated using the cell barcodes from 'l_id_cell_2'. if False, proportion of the matching barcodes will be calculated using the cell barcodes from 'l_id_cell_1'
     
     return:
@@ -3950,7 +3953,6 @@ class ZarrDataFrame( ) :
             
         # initialize attribute storing columns as dictionaries
         self.dict = dict( )
-        
     def __len__( self ) :
         """ # 2022-09-22 23:45:53 
         return the number of rows (after applying filter if a filter has been set)
@@ -5023,14 +5025,30 @@ class ZarrDataFrame( ) :
                 continue
             del self[ name_col ] # delete element from the current object
     def get_df( self, * l_name_col ) :
-        """ # 2022-08-05 13:54:36 
+        """ # 2022-10-29 22:49:12 
         get dataframe of a given list of columns, and empty the cache
         """
-        set_name_col = set( e for e in l_name_col if isinstance( e, str ) and e in self ) # convert 'l_name_col' to set # use only hashable strings
-        self.unload( * list( name_col for name_col in self if name_col not in set_name_col ) ) # drop the columns that do not belonging to 'l_name_col'
-        self.load( * set_name_col ) # load the given list of columns
-        df = self.df # retrieve dataframe
-        self.unload( ) # empty the cache
+        # exit if no rows are available after applying the filter
+        if self.n_rows == 0 :
+            return
+        
+        l_name_col = list( e for e in l_name_col if isinstance( e, str ) and e in self ) # validate 'l_name_col' # use only hashable strings
+        
+        if len( l_name_col ) == 0 : # if no columns have been given, exit
+            return
+        
+        # initialize dataframe using the index (integer representations of all entries or entries of the active entries of the filter only)
+        df = pd.DataFrame( index = np.arange( self._n_rows_unfiltered, dtype = int ) if self.filter is None else bk.BA.to_integer_indices( self.filter ) )
+        
+        # retrieve data
+        for name_col in l_name_col : # for each column
+            # retrieve values for the column
+            arr = self[ name_col ]
+            if self.get_column_metadata( name_col )[ 'flag_categorical' ] : # if the column contains the categorical data, convert to categorical datatype
+                arr = pd.arrays.Categorical( arr ) # convert to the array with categorical data type
+            # set values to the dataframe
+            df[ name_col ] = arr
+        
         return df
     def get_shape( self, name_col ) :
         """ # 2022-08-07 16:01:12 
@@ -5753,6 +5771,12 @@ class RamDataAxis( ) :
             # return the filter of the combined axis
             return ba_filter_combined
     @property
+    def columns( self ) :
+        """ # 2022-10-29 23:20:43 
+        a shortcut for self.meta.columns
+        """
+        return self.meta.columns
+    @property
     def ba_active_entries( self ) :
         """ # 2022-07-16 17:38:04 
         
@@ -5858,7 +5882,7 @@ class RamDataAxis( ) :
         """ # 2022-10-29 20:31:56 
         return a flag indicating whether the string representations were loaded
         """
-        return self.map_str is None 
+        return self.map_str is not None 
     @property
     def map_str( self ) :
         """ # 2022-06-25 09:31:32 
@@ -6282,6 +6306,20 @@ class RamDataAxis( ) :
         # unload string representations
         if flag_str_repr_was_used and not flag_str_repr_was_loaded :
             self.unload_str( )
+    def get_df( self, * l_name_col ) :
+        """ # 2022-10-29 22:47:00 
+        retrieve metadata of a given list of columns as a dataframe
+        """
+        # retrieve dataframe from the metadata zdf
+        df = self.meta.get_df( * l_name_col )
+        if df is None : # when no data could be retrieved, exit
+            return
+        
+        # retrieve string representations (if string repr. have been already loaded)
+        if self.flag_str_repr_loaded : # if string repr. have been already loaded
+            dict_map_int = self.map_int # retrieve mapping
+            df.index = list( dict_map_int[ e ] if e in dict_map_int else e for e in df.index.values ) # map integer representations to string representations
+        return df
 ''' a class for RAMtx '''
 ''' a class for accessing Zarr-backed count matrix data (RAMtx, Random-Access matrix) '''
 class RAMtx( ) :
