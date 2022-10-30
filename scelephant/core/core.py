@@ -245,6 +245,9 @@ RamData.apply was updated so that file I/O operations on sparse matrix will be o
 # 2022-10-29 23:57:53 
 RamDataAxis.update, RamDataAxis.get_df methods were implemented, and ZarrDataFrame.update and ZarrDataFrame.get_df methods were re-implemented.
 
+# 2022-10-30 18:05:30 
+ZarrDataFrame.__setitem__ method updated for processing categorical data
+
 ##### Future implementations #####
 
 """
@@ -3750,7 +3753,7 @@ class ZarrServer( ) :
         self._p.join( ) # wait until the process join the main process
 ''' a class for Zarr-based DataFrame object '''
 class ZarrDataFrame( ) :
-    """ # 2022-09-22 23:53:33 
+    """ # 2022-10-30 18:03:42 
     storage-based persistant DataFrame backed by Zarr persistent arrays.
     each column can be separately loaded, updated, and unloaded.
     a filter can be set, which allows updating and reading ZarrDataFrame as if it only contains the rows indicated by the given filter.
@@ -4615,7 +4618,7 @@ class ZarrDataFrame( ) :
                         values[ t_coord ] = l_value_unique[ val ] if val >= 0 else np.nan # convert integer representations to its original string values # -1 (negative integers) encodes np.nan
                     return values
     def __setitem__( self, args, values ) :
-        ''' # 2022-08-27 10:21:01 
+        ''' # 2022-10-30 18:03:28 
         save/update a column at indexed positions.
         when a filter is active, only active entries will be saved/updated automatically.
         boolean mask/integer arrays/slice indexing is supported. However, indexing will be applied to the original column with unfiltered rows (i.e., when indexing is active, filter will be ignored)
@@ -4745,7 +4748,7 @@ class ZarrDataFrame( ) :
                         val = next( val.__iter__() ) # get the first element of the current array
                     dtype = type( val )
 
-                    # check whether the array contains strings with np.nan values
+                    # check whether the array contains strings with np.nan values (make sure array starting with np.nan is not a string array containing np.nan values)
                     if dtype is float and val is np.nan :
                         for t_coord, val in np.ndenumerate( values ) : # np.ndenumerate can handle nexted lists
                             if type( val ) is str :
@@ -4784,7 +4787,15 @@ class ZarrDataFrame( ) :
             dict_col_metadata[ 'flag_categorical' ] = True # set metadata for categorical datatype
             
             ''' retrieve unique values for categorical data '''
-            set_value_unique = set( [ values ] ) if flag_broadcasting_active else set( e[ 1 ] for e in np.ndenumerate( values ) ) # handle broadcasting # retrieve a set of unique values in the input array
+            if flag_broadcasting_active :
+                set_value_unique = set( [ values ] )
+            else :
+                set_value_unique = set( )
+                mask_nan = pd.isnull( values ) # check np.nan values in the array
+                if np.sum( mask_nan ) > 0 : # if the array contains np.nan value, add np.nan to the 'set_value_unique' 
+                    set_value_unique.add( np.nan )
+                # update non-NaN values
+                set_value_unique.update( set( e[ 1 ] for e in np.ndenumerate( values[ ~ mask_nan ] ) ) ) # handle broadcasting # retrieve a set of unique values in the input array # update values
             
             # handle when np.nan value exist 
             if np.nan in set_value_unique : # when np.nan value was detected
@@ -5099,7 +5110,8 @@ class ZarrDataFrame( ) :
             l_name_col = self.columns # if no column name is given, copy all columns in the current ZarrDataFrame to the new ZarrDataFrame
         
         for name_col in self.columns.intersection( l_name_col ) : # copy column by column to the output ZarrDataFrame object
-            print( name_col )
+            if self.verbose :
+                print( f"saving '{name_col}' column ..." )
             zdf.initialize_column( name_col, zdf_template = self, name_col_template = name_col ) # initialize the column using the column of the current zdf object 
             zdf[ name_col ] = self[ name_col ] # copy data (with filter applied)
     def load_as_dict( self, * l_name_col, float_min_proportion_of_active_rows_for_using_array_as_dict = 0.1 ) :
@@ -6289,12 +6301,14 @@ class RamDataAxis( ) :
             # map string representations to the integer representations of the entries
             l_int_entry = [ ]
             l_mask_mapped_to_int_entry = [ ]
+            dict_map_str = self.map_str # retrieve mapping
             for e in df.index.values :
-                if e in self.map_str :
-                    l_int_entry.append( self.map_str[ e ] )
+                if e in dict_map_str :
+                    l_int_entry.append( dict_map_str[ e ] )
                     l_mask_mapped_to_int_entry.append( True )
                 else :
                     l_mask_mapped_to_int_entry.append( False )
+                    
             # exclude entries whose string representations cannot be mapped to the string representations loaded in the current axis object
             if np.sum( l_mask_mapped_to_int_entry ) < len( df ) :
                 df = df[ l_mask_mapped_to_int_entry ]
@@ -7577,18 +7591,15 @@ class RamDataLayer( ) :
         self._dtype_of_values = dtype_of_values
         self._dtype_of_feature_and_barcode_indices = dtype_of_feature_and_barcode_indices
         
-        # compose metadata for the combined layer
-        # %% COMBINED %%
-        if self.is_combined :
-            ''' write metadata '''
-            if not zarr_exists( self._path_folder_ramdata_layer ) :
-                self._root = zarr.open( self._path_folder_ramdata_layer, 'w' )
-                # compose metadata
-                self._dict_metadata = { 
-                    'set_modes' : [ ], # no available modes
-                    'version' : _version_,
-                }
-                self._root.attrs[ 'dict_metadata' ] = self._dict_metadata # write the metadata
+        ''' write metadata if RamDataLayer is newly initialized '''
+        if not zarr_exists( self._path_folder_ramdata_layer ) :
+            self._root = zarr.open( self._path_folder_ramdata_layer, 'w' )
+            # compose metadata
+            self._dict_metadata = { 
+                'set_modes' : [ ], # no available modes
+                'version' : _version_,
+            }
+            self._root.attrs[ 'dict_metadata' ] = self._dict_metadata # write the metadata
 
         # read metadata
         self._root = zarr.open( self._path_folder_ramdata_layer, 'a' )
@@ -8710,7 +8721,7 @@ class RamData( ) :
         # summarize the RAMtx using multiple processes
         bk.Multiprocessing_Batch_Generator_and_Workers( rtx.batch_generator( ax.filter, int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, int_total_weight_for_each_batch = self.int_total_weight_for_each_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 )
         pbar.close( ) # close the progress bar
-    def apply( self, name_layer, name_layer_new, func = None, mode_instructions = 'sparse_for_querying_features', path_folder_ramdata_output = None, dtype_of_row_and_col_indices = np.int32, dtype_of_value = np.float64, int_num_threads = None, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = True, int_num_of_records_in_a_chunk_zarr_matrix = 20000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, chunks_dense = ( 2000, 1000 ), dtype_dense_mtx = np.float64, dtype_sparse_mtx = np.float64, dtype_sparse_mtx_index = np.float64 ) :
+    def apply( self, name_layer, name_layer_new, func = None, mode_instructions = 'sparse_for_querying_features', path_folder_ramdata_output = None, dtype_of_row_and_col_indices = np.int32, dtype_of_value = np.float64, int_num_threads = None, flag_survey_weights = True, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = True, int_num_of_records_in_a_chunk_zarr_matrix = 20000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, chunks_dense = ( 2000, 1000 ), dtype_dense_mtx = np.float64, dtype_sparse_mtx = np.float64, dtype_sparse_mtx_index = np.float64 ) :
         ''' # 2022-10-29 18:08:41 
         this function apply a function and/or filters to the records of the given data, and create a new data object with 'name_layer_new' as its name.
         
@@ -8777,6 +8788,7 @@ class RamData( ) :
                 in summary, (1) up to three operations will be performed, to construct three ramtx modes of the resulting layer, (2) the instructions at the front has higher priority, and (3) querying axis of dense can be specified or skipped (in those cases, default will be used)
         
         'int_num_threads' : the number of CPUs to use. by default, the number of CPUs set by the RamData attribute 'int_num_cpus' will be used.
+        'flag_survey_weights' : survey the weights of the output RAMtx objects
         'dtype_of_row_and_col_indices', 'dtype_of_value' : the dtype of the output matrix
         int_num_of_records_in_a_chunk_zarr_matrix = 20000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, chunks_dense = ( 2000, 1000 ) : determines the chunk size of the output ramtx objects
         dtype_dense_mtx = np.float64, dtype_sparse_mtx = np.float64, dtype_sparse_mtx_index = np.float64 : determines the output dtype
@@ -8812,7 +8824,9 @@ class RamData( ) :
         flag_update_a_layer = name_layer_new == name_layer and path_folder_ramdata_output == self._path_folder_ramdata_modifiable # a flag indicating whether a layer of the current ramdata is updated (input ramdata == output ramdata and input layer name == output layer name).
         # retrieve paths
         path_folder_layer_new = f"{path_folder_ramdata_output}{name_layer_new}/" # compose the output directory of the output ramdata layer
-        print( path_folder_layer_new, 'from', self._path_folder_ramdata_modifiable )
+        
+        # open (and initialize) the new (output) layer
+        layer_new = RamDataLayer( path_folder_ramdata_output, name_layer_new, ramdata = None, dtype_of_feature_and_barcode_indices = self._dtype_of_feature_and_barcode_indices, dtype_of_values = self._dtype_of_values, int_num_cpus = self._int_num_cpus_for_fetching_data, verbose = self.verbose, mode = self._mode, path_folder_ramdata_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only )
         
         # parse 'func' or set default functions, retrieving 'func_bc' and 'func_ft'.
         if hasattr( func, '__call__' ) : # if a single function has been given, use the function for 'func_bc' and 'func_ft'
@@ -9130,10 +9144,7 @@ class RamData( ) :
         # { 'dense', 'dense_for_querying_barcodes', 'dense_for_querying_features', 'sparse_for_querying_barcodes', 'sparse_for_querying_features' }
         set_modes_sink_valid = { 'dense', 'sparse_for_querying_barcodes', 'sparse_for_querying_features' }
         set_modes_sink = set( self.layer.modes ) if flag_update_a_layer else set( ) # retrieve the ramtx modes in the output (sink) layer (assumes a data sink layer (that is not data source layer) does not contain any ramtx objects). # to avoid overwriting
-        if flag_new_layer_added_to_the_current_ramdata and name_layer_new in self.layers : # if 'flag_new_layer_added_to_the_current_ramdata' is True and the output layer exists 
-            self.layer = name_layer_new # load output layer
-            set_modes_sink.update( self.layer.modes ) # update available modes in the output layer
-            self.layer = name_layer # re-load input layer
+        set_modes_sink.update( layer_new.modes ) # update available modes in the output layer
         for an_instruction in mode_instructions : # first instructions takes priority
             """
             pre-process each instruction
@@ -9206,32 +9217,38 @@ class RamData( ) :
         """
         update the metadata
         """
-        if self.verbose :
-            logging.info( f'[RamData.apply] [Info] apply operation {name_layer} > {name_layer_new} has been completed' )
-            
-        # update metadata of the layer added to the current RamData
-        if flag_new_layer_added_to_the_current_ramdata :
-            if flag_update_a_layer : # update metadata of the current layer
-                self.layer._dict_metadata[ 'set_modes' ].update( list( set_modes_sink ) + ( [ 'dense_for_querying_barcodes', 'dense_for_querying_features' ] if 'dense' in set_modes_sink else [ ] ) )
-                self.layer._save_metadata_( ) # update metadata
-                self.layer._load_ramtx_objects( ) # load written ramtx objects
-            else : # update metadata of new layer
-                # write layer metadata
-                lay = zarr.group( path_folder_layer_new )
-                lay.attrs[ 'dict_metadata' ] = { 
-                    'set_modes' : list( set_modes_sink ) + ( [ 'dense_for_querying_barcodes', 'dense_for_querying_features' ] if 'dense' in set_modes_sink else [ ] ), # dense ramtx can be operated for querying either barcodes/features
-                    'version' : _version_,
-                }
+        # update metadata of the output layer 
+        layer_new._dict_metadata[ 'set_modes' ].update( list( set_modes_sink ) + ( [ 'dense_for_querying_barcodes', 'dense_for_querying_features' ] if 'dense' in set_modes_sink else [ ] ) )
+        layer_new._save_metadata_( ) # update metadata
+        
+        # survey weights
+        if flag_survey_weights :
+            layer_new._load_ramtx_objects( ) # load ramtx objects for the output layer
+            for mode in layer_new.modes : # for each available RAMtx object
+                layer_new[ mode ].survey_number_of_records_for_each_entry( ) # survey weights for the current RAMtx object
+        if flag_update_a_layer : # if the current layer has been updated, reload the RAMtx objects
+            # reload the layer
+            self.layer = None
+            self.layer = name_layer
             
         # update metadata of current RamData
         # update 'layers' if the layer has been saved in the current RamData object (or the mask of the current RamData object)
         if flag_new_layer_added_to_the_current_ramdata and not flag_update_a_layer :
             self.layers_excluding_components.add( name_layer_new ) # add layer directly to the current ramdata
             self._save_metadata_( )
-    def subset( self, path_folder_ramdata_output, l_name_layer : list = [ ], dict_mode_instructions : dict = dict( ), int_num_threads = None, ** kwargs ) :
-        ''' # 2022-10-28 13:22:42 
-        Under Construction!
-        this function will create a new RamData object on disk by creating a subset of the current RamData according to the current filters
+        
+        # update the metadata
+        if self.verbose :
+            logging.info( f'[RamData.apply] [Info] apply operation {name_layer} > {name_layer_new} has been completed' )
+    def subset( self, path_folder_ramdata_output, l_name_layer : list = [ ], dict_mode_instructions : dict = dict( ), int_num_threads = None, flag_survey_weights = False, ** kwargs ) :
+        ''' # 2022-10-30 23:37:31 
+        this function will create a new RamData object on disk by creating a subset of the current RamData according to the current filters. the following components will be subsetted.
+            - Axis 
+                 - Metadata
+                 - String representations
+            - Layer
+        
+        currently, models will not be subsetted, and should be created anew from the resulting RamData.
 
         =========
         inputs 
@@ -9240,6 +9257,7 @@ class RamData( ) :
         'l_name_layer' : the list of name_layers to subset and transfer to the new RamData object
         'int_num_threads' : the number of CPUs to use. by default, the number of CPUs set by the RamData attribute 'int_num_cpus' will be used.
         'dict_mode_instructions' : a dictionary with key = name_layer, value = 'mode_instructions' arguments for 'RamData.apply' method
+        'flag_survey_weights' : survey the weights of the output RAMtx objects of the output layers
         '''
         ''' handle inputs '''
         # check invalid input
@@ -9267,6 +9285,7 @@ class RamData( ) :
                     mode_instructions = dict_mode_instructions[ name_layer ], # use mode_instructions of the given layer
                     path_folder_ramdata_output = path_folder_ramdata_output, 
                     int_num_threads = int_num_threads, 
+                    flag_survey_weights = flag_survey_weights,
                     ** kwargs
                 ) # flag_dtype_output = None : use the same dtype as the input RAMtx object
         
@@ -9277,7 +9296,7 @@ class RamData( ) :
             'str_completed_time' : TIME_GET_timestamp( True ),
             'int_num_features' : self.ft.meta.n_rows,
             'int_num_barcodes' : self.bc.meta.n_rows,
-            'layers' : [ ],
+            'layers' : list( set_name_layer ),
             'models' : dict( ),
             'version' : _version_,
             'identifier' : UUID( ),
