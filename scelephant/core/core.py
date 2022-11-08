@@ -64,7 +64,7 @@ mpsp = mp.get_context('spawn')
 # define version
 _version_ = '0.0.8'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-10-29 23:58:54'
+_last_modified_time_ = '2022-11-08 19:35:45'
 
 """ # 2022-07-21 10:35:42  realease note
 
@@ -247,6 +247,9 @@ RamDataAxis.update, RamDataAxis.get_df methods were implemented, and ZarrDataFra
 
 # 2022-10-30 18:05:30 
 ZarrDataFrame.__setitem__ method updated for processing categorical data
+
+# 2022-11-08 19:34:38 
+RamData.apply_knn embedding algorithm was improved so that outliers are detected using the distance from the closest point.
 
 ##### Future implementations #####
 
@@ -5045,11 +5048,11 @@ class ZarrDataFrame( ) :
         
         l_name_col = list( e for e in l_name_col if isinstance( e, str ) and e in self ) # validate 'l_name_col' # use only hashable strings
         
-        if len( l_name_col ) == 0 : # if no columns have been given, exit
-            return
-        
         # initialize dataframe using the index (integer representations of all entries or entries of the active entries of the filter only)
         df = pd.DataFrame( index = np.arange( self._n_rows_unfiltered, dtype = int ) if self.filter is None else bk.BA.to_integer_indices( self.filter ) )
+        
+        if len( l_name_col ) == 0 : # if no columns have been given, return en empty dataframe containing only the index
+            return df
         
         # retrieve data
         for name_col in l_name_col : # for each column
@@ -5980,9 +5983,10 @@ class RamDataAxis( ) :
                 ba_filter_of_selected_entries[ i ] = True
         return ba_filter_of_selected_entries
     def save( self, path_folder ) :
-        """ # 2022-10-29 00:19:56 
+        """ # 2022-11-01 14:10:40 
         save data contained in the Axis object (and metadata saved as ZarrDataFrame) to the new path.
         if a filter is active, filtered data will be saved.
+        the number of entries in a chunk will be 'int_num_entries_in_a_chunk' attribute of the RamData
         
         'path_folder' : the path of the output Axis object
         """
@@ -6009,7 +6013,7 @@ class RamDataAxis( ) :
         za = zarr.open( f"{self._path_folder}{name_axis}.str.zarr", mode = 'r', synchronizer = zarr.ThreadSynchronizer( ) ) # open a zarr object containing the string representation of the entries
         za_new = zarr.open( f"{path_folder}{name_axis}.str.zarr", mode = 'w', shape = ( self.meta.n_rows, za.shape[ 1 ] ), chunks = za.chunks, dtype = str, synchronizer = zarr.ThreadSynchronizer( ) ) # writing a new zarr object
         
-        int_size_buffer = za.chunks[ 0 ] # use the chunk size as the size of the buffer
+        int_size_buffer = self.int_num_entries_in_a_chunk # use the chunk size as the size of the buffer
         ns = dict( ) # namespace that can be safely modified across the scopes of the functions
         ns[ 'int_num_entries_written' ] = 0 # initialize the last position of written entries (after filter applied)
         ns[ 'int_num_bytes_written' ] = 0 # initialize the last position of written entries (after filter applied)
@@ -11496,7 +11500,7 @@ class RamData( ) :
         if self.verbose :
             logging.info( f"[Info] [RamData.train_knn] knn index building completed for {ax.meta.n_rows} number of entries of the axis '{'barcodes' if flag_axis_is_barcode else 'features'}' using the data from the column '{name_col_x}'" )
     def apply_knn( self, name_model : str, name_col_y_input : str, name_col_y_output : Union[ str, None ] = None, name_col_x : Union[ str, None ] = None, name_col_filter_target : Union[ str, None ] = None, operation : Literal[ 'classifier', 'embedder' ] = 'embedder', float_std_ratio_for_outlier_detection : float = 0.1, axis : Union[ int, str ] = 'barcodes', int_num_entries_in_a_batch : int = 10000, int_num_threads : int = 10, int_index_component_reference : Union[ None, int ] = None ) :
-        """ # 2022-09-24 11:46:00 
+        """ # 2022-11-08 17:18:31 
         
         use knn index built from subsampled entries to classify (predict labels) or embed (predict embeddings) barcodes.
         
@@ -11614,6 +11618,7 @@ class RamData( ) :
         # calculate standard deviation of y values in order to identify outliers
         y_knnindex_std = y_knnindex.std( axis = 0 )
         y_std_threshold = float_std_ratio_for_outlier_detection * y_knnindex_std
+        y_dist_threshold = math.sqrt( ( y_std_threshold ** 2 ).sum( ) ) # calculate the distance threshold for detecting outliers (using euclidean distance)
         
         # retrieve a flag indicating that the operation is embedding
         flag_embedder = operation == 'embedder' 
@@ -11652,7 +11657,7 @@ class RamData( ) :
                             y_knnindex_of_an_entry = y_knnindex[ neighbors_of_an_entry ] # retrieve y-values of an entry
                             if sum( y_knnindex_of_an_entry.std( axis = 0 ) > y_std_threshold ) : # detect whether outliers are included in the neighbors (since knnindex is linear, but most embeddings are non-linear, knn-distance based method can identify very distant points in the embedding, and averaging these points should be avoided)
                                 # when very distant points are identified as 'neighbors', use the embedding of the closest point, in order to avoid weighted averaging of embeddings of distant points
-                                mask_not_outlier = ( np.abs( y_knnindex_of_an_entry - y_knnindex_of_an_entry[ 0 ] ) < y_std_threshold ).sum( axis = 1 ) > 0
+                                mask_not_outlier = np.sqrt( ( ( y_knnindex_of_an_entry - y_knnindex_of_an_entry[ 0 ] ) ** 2 ).sum( axis = 1 ) ) < y_dist_threshold # retrieve points that are in the radius of the threshold distance from the closest point
                                 weights = weights[ mask_not_outlier ]
                                 y_knnindex_of_an_entry = y_knnindex_of_an_entry[ mask_not_outlier ]
                             res = ( y_knnindex_of_an_entry.T * weights ).sum( axis = 1 ) / weights.sum( ) # calculate weighted average of the y values for embedding mode
