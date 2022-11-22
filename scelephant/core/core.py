@@ -64,7 +64,7 @@ mpsp = mp.get_context('spawn')
 # define version
 _version_ = '0.0.8'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-11-08 19:35:45'
+_last_modified_time_ = '2022-11-17 13:54:15'
 
 """ # 2022-07-21 10:35:42  realease note
 
@@ -250,6 +250,12 @@ ZarrDataFrame.__setitem__ method updated for processing categorical data
 
 # 2022-11-08 19:34:38 
 RamData.apply_knn embedding algorithm was improved so that outliers are detected using the distance from the closest point.
+
+# 2022-11-17 13:53:56 
+an error in RamData.apply_knn resolved
+
+# 2022-11-22 23:45:40 
+a critical error in RamData.scale was resolved (values were not capped for RAMtx for querying barcodes)
 
 ##### Future implementations #####
 
@@ -443,6 +449,28 @@ def Write_10X( df_mtx, df_feature, path_folder_output_mtx_10x ) :
     if os.path.exists( path_file_mtx_output ) :
         os.remove( path_file_mtx_output )
     OS_Run( [ 'gzip', f"{path_folder_output_mtx_10x}matrix.mtx" ] ) # gzip the mtx file
+def MTX_Write_10X_from_AnnData( adata, path_folder_mtx_output ) :
+    """ # 2022-11-09 02:10:42 
+    write AnnData count matrix as a 10X matrix object 
+    """
+    # compose df_var
+    df_feature = adata.var
+    df_feature.index.name = 'feature'
+    df_feature.reset_index( drop = False, inplace = True )
+    df_feature.rename( columns = { 'feature_types' : 'feature_type', 'gene_ids' : 'id_feature' }, inplace = True )
+    
+    # compose df_mtx
+    arr_barcode, arr_id_feature, arr_read_count = scipy.sparse.find( adata.X )
+    df_mtx = pd.DataFrame( { 'barcode' : arr_barcode, 'id_feature' : arr_id_feature, 'read_count' : arr_read_count } )
+    
+    arr_barcodes = adata.obs.index.values
+    df_mtx[ 'barcode' ] = list( arr_barcodes[ e ] for e in df_mtx.barcode.values )
+
+    arr_feature = df_feature.id_feature.values
+    df_mtx[ 'id_feature' ] = list( arr_feature[ e ] for e in df_mtx.id_feature.values )
+    
+    # output mtx 
+    Write_10X( df_mtx, df_feature, path_folder_mtx_output )
 def __function_for_adjusting_thresholds_for_filtering_empty_droplets__( path_folder_mtx_10x_output, min_counts, min_features, min_cells ) :
     ''' # 2022-02-23 14:26:07 
     This function is intended for the use in 'MTX_10X_Filter' function for filtering cells from the 10X dataset (before chromium X, 10,000 cells per channel)
@@ -3756,7 +3784,7 @@ class ZarrServer( ) :
         self._p.join( ) # wait until the process join the main process
 ''' a class for Zarr-based DataFrame object '''
 class ZarrDataFrame( ) :
-    """ # 2022-10-30 18:03:42 
+    """ # 2022-11-14 23:49:26 
     storage-based persistant DataFrame backed by Zarr persistent arrays.
     each column can be separately loaded, updated, and unloaded.
     a filter can be set, which allows updating and reading ZarrDataFrame as if it only contains the rows indicated by the given filter.
@@ -3771,6 +3799,11 @@ class ZarrDataFrame( ) :
     # 2022-07-20 22:29:41 : masking functionality was added for the analysis of remote, read-only ZarrDataFrame
     # 2022-08-02 02:17:32 : will enable the use of multi-dimensional data as the 'column'. the primary axis of the data should be same as the length of ZarrDataFrame (the number of rows when no filter is active). By default, the chunking will be only available along the primary axis.
     # 2022-09-09 14:54:28 : will implement lazy-loading of combined and masked ZarrDataFrame, in order to improve performance when source ZarrDataFrame is hosted remotely.
+    # 2022-11-14 23:49:50 : for usability, descriptions and associated metadata (for example, a list of contributors and data sources) will be included in the ZarrDataFrame metatadata
+    
+    dict_metadata_description : the dictionary containing metadata of the column with the following schema:
+            'description' : a brief description of the column
+            'authors' : a list of authors and contributors for the column
     
     === arguments ===
     'path_folder_zdf' : a folder to store persistant zarr dataframe.
@@ -3859,7 +3892,7 @@ class ZarrDataFrame( ) :
         verbose : bool = True,
         flag_use_lazy_loading : bool = True
     ) :
-        """ # 2022-07-20 10:50:23 
+        """ # 2022-11-14 23:49:20 
         """
         # handle path
         if '://' not in path_folder_zdf : # does not retrieve abspath if the given path is remote path
@@ -3907,7 +3940,7 @@ class ZarrDataFrame( ) :
             os.makedirs( path_folder_zdf, exist_ok = True )
             
             self._root = zarr.open( path_folder_zdf, mode = 'a' )
-            self._dict_metadata = { 'version' : _version_, 'columns' : set( ), 'int_num_rows_in_a_chunk' : int_num_rows_in_a_chunk, 'flag_enforce_name_col_with_only_valid_characters' : flag_enforce_name_col_with_only_valid_characters, 'flag_store_string_as_categorical' : flag_store_string_as_categorical, 'is_interleaved' : self.is_interleaved, 'is_combined' : self.is_combined } # to reduce the number of I/O operations from lookup, a metadata dictionary will be used to retrieve/update all the metadata
+            self._dict_metadata = { 'version' : _version_, 'columns' : dict( ), 'int_num_rows_in_a_chunk' : int_num_rows_in_a_chunk, 'flag_enforce_name_col_with_only_valid_characters' : flag_enforce_name_col_with_only_valid_characters, 'flag_store_string_as_categorical' : flag_store_string_as_categorical, 'is_interleaved' : self.is_interleaved, 'is_combined' : self.is_combined } # to reduce the number of I/O operations from lookup, a metadata dictionary will be used to retrieve/update all the metadata
             # if 'int_num_rows' has been given, add it to the metadata
             if int_num_rows is not None :
                 self._dict_metadata[ 'int_num_rows' ] = int_num_rows
@@ -3918,9 +3951,11 @@ class ZarrDataFrame( ) :
                 
             # retrieve metadata
             self._dict_metadata = self._root.attrs[ 'dict_metadata' ] 
-            # convert 'columns' list to set
+            # handle old version of the zarrdataframe columns
             if 'columns' in self._dict_metadata :
-                self._dict_metadata[ 'columns' ] = set( self._dict_metadata[ 'columns' ] )
+                if isinstance( self._dict_metadata[ 'columns' ], list ) :
+                    self._dict_metadata[ 'columns' ] = dict( ( col, None ) for col in self._dict_metadata[ 'columns' ] )
+                    self._save_metadata_( ) # save metadata
         
         # if a mask is given, open the mask zdf
         self._mask = None # initialize 'mask'
@@ -4384,8 +4419,8 @@ class ZarrDataFrame( ) :
 #         if self.verbose :
 #             logging.info( f'[ZarrDataFrame] a column for quering integer indices was written' )
         return self[ '__index__', queries ] # return integer indices of the queries
-    def initialize_column( self, name_col, dtype = np.float64, shape_not_primary_axis = ( ), chunks = ( ), categorical_values = None, fill_value = 0, zdf_template = None, name_col_template : Union[ str, None ] = None, path_col_template : Union[ str, None ] = None ) : 
-        """ # 2022-08-22 16:30:48 
+    def initialize_column( self, name_col, dtype = np.float64, shape_not_primary_axis = ( ), chunks = ( ), categorical_values = None, fill_value = 0, dict_metadata_description : dict = dict( ), zdf_template = None, name_col_template : Union[ str, None ] = None, path_col_template : Union[ str, None ] = None ) : 
+        """ # 2022-11-15 00:14:23 
         initialize columns with a given shape and given dtype
         'dtype' : initialize the column with this 'dtype'
         'shape_not_primary_axis' : initialize the column with this shape excluding the dimension of the primary axis. if an empty tuple or None is given, a 1D array will be initialized. 
@@ -4396,6 +4431,10 @@ class ZarrDataFrame( ) :
         'chunks' : chunk size of the zarr object. length of the chunk along the primary axis can be skipped, which will be replaced by 'int_num_rows_in_a_chunk' of the current ZarrDataFrame attribute
         'categorical_values' : if 'categorical_values' has been given, set the column as a column containing categorical data
         'fill_value' : fill value of zarr object
+        dict_metadata_description : dict = dict( ) # the dictionary containing metadata of the column with the following schema:
+                    'description' : a brief description of the column
+                    'authors' : a list of authors and contributors for the column
+                   
         'zdf_template' : zdf object from which to search 'name_col_template' column. by default, 
         'name_col_template' : the name of the column to use as a template. if given, 'path_col_template' will be ignored, and use the column as a template to initialize the current column. the column will be searched in the following order: main zdf object --> mask zdf object --> component zdf objects, in the order specified in the list.
         'path_col_template' : the (remote) path to the column to be used as a template. if given, the metadata available in the path will be used to initialize the current column
@@ -4417,14 +4456,16 @@ class ZarrDataFrame( ) :
         if name_col_template is not None and name_col_template in zdf_template : # use 'name_col_template' as a template if valid name_col has been given
             path_col_template = zdf_template._get_column_path( name_col_template ) # retrieve path of the template column from the template zdf               
         if path_col_template is not None and zarr_exists( path_col_template ) : # use 'path_col_template' as a template, retrieve settings
+            # automatically set arguments based on the template column
             za = zarr.open( path_col_template ) # open zarr object
             dtype = za.dtype
             shape_not_primary_axis = za.shape[ 1 : ]
             chunks = za.chunks
             fill_value = za.fill_value
             # retrieve column metadata
-            dict_metadata = za.attrs[ 'dict_col_metadata' ]
-            categorical_values = dict_metadata[ 'l_value_unique' ] if 'flag_categorical' in dict_metadata and dict_metadata[ 'flag_categorical' ] else None # retrieve categorical values
+            dict_col_metadata = za.attrs[ 'dict_col_metadata' ]
+            dict_metadata_description = dict_col_metadata[ 'dict_metadata_description' ] if 'dict_metadata_description' in dict_col_metadata else None # retrieve 'dict_metadata_description' # handle old version of 'dict_col_metadata'
+            categorical_values = dict_col_metadata[ 'l_value_unique' ] if 'flag_categorical' in dict_col_metadata and dict_col_metadata[ 'flag_categorical' ] else None # retrieve categorical values
             
         if name_col not in self.columns_excluding_components : # if the column does not exists in the current ZarrDataFrame (excluding component zdf objects )
             # check whether the given name_col contains invalid characters(s)
@@ -4433,7 +4474,7 @@ class ZarrDataFrame( ) :
                     raise TypeError( f"the character '{char_invalid}' cannot be used in 'name_col'. Also, the 'name_col' cannot contains the following characters: {self._str_invalid_char}" )
             
             # compose metadata
-            dict_col_metadata = { 'flag_categorical' : False } # set a default value for 'flag_categorical' metadata attribute
+            dict_col_metadata = { 'flag_categorical' : False, 'dict_metadata_description' : dict_metadata_description } # set a default value for 'flag_categorical' metadata attribute # also, add 'dict_metadata_description'
             dict_col_metadata[ 'flag_filtered' ] = self.filter is not None # mark the column containing filtered data
             
             # initialize a column containing categorical data
@@ -4474,7 +4515,7 @@ class ZarrDataFrame( ) :
             za.attrs[ 'dict_col_metadata' ] = dict_col_metadata
 
             # add column to zdf (and update the associated metadata)
-            self._add_column( name_col )
+            self._add_column( name_col, dict_metadata_description ) 
     def __getitem__( self, args ) :
         ''' # 2022-08-26 14:23:38 
         retrieve data of a column.
@@ -4621,7 +4662,7 @@ class ZarrDataFrame( ) :
                         values[ t_coord ] = l_value_unique[ val ] if val >= 0 else np.nan # convert integer representations to its original string values # -1 (negative integers) encodes np.nan
                     return values
     def __setitem__( self, args, values ) :
-        ''' # 2022-10-30 18:03:28 
+        ''' # 2022-11-16 13:36:04 
         save/update a column at indexed positions.
         when a filter is active, only active entries will be saved/updated automatically.
         boolean mask/integer arrays/slice indexing is supported. However, indexing will be applied to the original column with unfiltered rows (i.e., when indexing is active, filter will be ignored)
@@ -4720,6 +4761,7 @@ class ZarrDataFrame( ) :
         flag_col_already_exists = zarr_exists( path_folder_col ) # retrieve a flag indicating that the column already exists
         
         ''' retrieve/infer shape/dtype '''
+        flag_update_dict_col_metadata = False # a flag indicating whether the column metadata should be updated
         if flag_col_already_exists :
             ''' read settings from the existing columns '''
             za = zarr.open( path_folder_col, 'a' ) # open Zarr object
@@ -4730,7 +4772,8 @@ class ZarrDataFrame( ) :
         else :
             dtype = None # define default dtype
             ''' create a metadata of the new column '''
-            dict_col_metadata = { 'flag_categorical' : False } # set a default value for 'flag_categorical' metadata attribute
+            flag_update_dict_col_metadata = True # indicate that the column metadata should be updated
+            dict_col_metadata = { 'flag_categorical' : False, 'dict_metadata_description' : None } # set a default value for 'flag_categorical' metadata attribute and 'dict_metadata_description' attribute
             dict_col_metadata[ 'flag_filtered' ] = self.filter is not None # mark the column containing filtered data
             
             # infer the data type of input values
@@ -4786,8 +4829,10 @@ class ZarrDataFrame( ) :
         if dtype is str and self._dict_metadata[ 'flag_store_string_as_categorical' ] : # storing categorical data   
             # default fill_value for categorical data is -1 (representing np.nan values)
             fill_value = -1
-            # compose metadata of the column
-            dict_col_metadata[ 'flag_categorical' ] = True # set metadata for categorical datatype
+            # update metadata of the column
+            if not dict_col_metadata[ 'flag_categorical' ] :
+                flag_update_dict_col_metadata = True # indicate that the column metadata should be updated
+                dict_col_metadata[ 'flag_categorical' ] = True # set metadata for categorical datatype
             
             ''' retrieve unique values for categorical data '''
             if flag_broadcasting_active :
@@ -4802,17 +4847,24 @@ class ZarrDataFrame( ) :
             
             # handle when np.nan value exist 
             if np.nan in set_value_unique : # when np.nan value was detected
-                if 'flag_contains_nan' not in dict_col_metadata : # update metadata
+                if 'flag_contains_nan' not in dict_col_metadata or not dict_col_metadata[ 'flag_contains_nan' ] : # update metadata
+                    flag_update_dict_col_metadata = True # indicate that the column metadata should be updated
                     dict_col_metadata[ 'flag_contains_nan' ] = True # mark that the column contains np.nan values
                 set_value_unique.remove( np.nan ) # removes np.nan from the category
             
+            # compose a list of unique categorical values and save it as a column metadata
             if 'l_value_unique' not in dict_col_metadata :
+                flag_update_dict_col_metadata = True # indicate that the column metadata should be updated
                 l_value_unique = list( set_value_unique ) # retrieve a list of unique values # can contain mixed types (int, float, str)
                 dict_col_metadata[ 'l_value_unique' ] = list( str( e ) for e in l_value_unique ) # update metadata # convert entries to string (so that all values with mixed types can be interpreted as strings)
-            else :
-                set_value_unique_previously_set = set( dict_col_metadata[ 'l_value_unique' ] )
-                l_value_unique = dict_col_metadata[ 'l_value_unique' ] + list( val for val in list( set_value_unique ) if val not in set_value_unique_previously_set ) # extend 'l_value_unique'
-                dict_col_metadata[ 'l_value_unique' ] = l_value_unique # update metadata
+            else : # update existing categories
+                l_value_unique = dict_col_metadata[ 'l_value_unique' ] # retrieve 'l_value_unique'
+                set_value_unique_previously_set = set( l_value_unique )
+                l_value_unique_newly_added = list( val for val in list( set_value_unique ) if val not in set_value_unique_previously_set ) # retrieve list of new categories
+                if len( l_value_unique_newly_added ) > 0 :
+                    flag_update_dict_col_metadata = True # indicate that the column metadata should be updated
+                    l_value_unique = dict_col_metadata[ 'l_value_unique' ] + l_value_unique_newly_added # extend 'l_value_unique'
+                    dict_col_metadata[ 'l_value_unique' ] = l_value_unique # update metadata
             
             # retrieve appropriate datatype for encoding unique categorical values
             int_min_number_of_bits = int( np.ceil( math.log2( len( l_value_unique ) ) ) ) + 1 # since signed int will be used, an additional bit is required to encode the data
@@ -4863,12 +4915,13 @@ class ZarrDataFrame( ) :
             # use orthogonal selection as a default
             za.set_orthogonal_selection( tuple( [ coords ] + list( coords_rest ) ), values ) if flag_indexing_in_non_primary_axis else za.set_orthogonal_selection( coords, values )
             
-        # save column metadata
-        za.attrs[ 'dict_col_metadata' ] = dict_col_metadata
+        # save/update column metadata
+        if flag_update_dict_col_metadata :
+            za.attrs[ 'dict_col_metadata' ] = dict_col_metadata
         
-        # update zdf metadata
+        # update metadata of the current zdf object
         if name_col not in self._dict_metadata[ 'columns' ] :
-            self._dict_metadata[ 'columns' ].add( name_col )
+            self._dict_metadata[ 'columns' ][ name_col ] = dict_col_metadata[ 'dict_metadata_description' ] # add 'dict_metadata_description'
             self._save_metadata_( )
         
         # if indexing was used to partially update the data, remove the cache, because it can cause inconsistency
@@ -4898,7 +4951,7 @@ class ZarrDataFrame( ) :
             # remove column from the memory
             self.unload( name_col ) 
             # remove the column from metadata
-            self._dict_metadata[ 'columns' ].remove( name_col )
+            self._dict_metadata[ 'columns' ].pop( name_col )
             self._save_metadata_( ) # update metadata
             # delete the column from the disk ZarrDataFrame object
             shutil.rmtree( f"{self._path_folder_zdf}{name_col}/" ) #             OS_Run( [ 'rm', '-rf', f"{self._path_folder_zdf}{name_col}/" ] )
@@ -4912,10 +4965,10 @@ class ZarrDataFrame( ) :
         return available column names (including mask and components) as a set
         '''
         # retrieve columns
-        columns = self._dict_metadata[ 'columns' ]
+        columns = set( self._dict_metadata[ 'columns' ] )
         # add columns of mask
         if self._mask is not None : # if mask is available :
-            columns = columns.union( self._mask._dict_metadata[ 'columns' ] ) # return the column names of the current ZDF and the mask ZDF
+            columns = columns.union( set( self._mask._dict_metadata[ 'columns' ] ) ) # return the column names of the current ZDF and the mask ZDF
         # add columns from zdf components
         if self.is_combined :
             if self.is_interleaved :
@@ -4933,10 +4986,10 @@ class ZarrDataFrame( ) :
         return available column names (including mask but excluding components) as a set
         '''
         # retrieve columns
-        columns = self._dict_metadata[ 'columns' ]
+        columns = set( self._dict_metadata[ 'columns' ] )
         # add columns of mask
         if self._mask is not None : # if mask is available :
-            columns = columns.union( self._mask._dict_metadata[ 'columns' ] ) # return the column names of the current ZDF and the mask ZDF
+            columns = columns.union( set( self._mask._dict_metadata[ 'columns' ] ) ) # return the column names of the current ZDF and the mask ZDF
         return columns
     def __contains__( self, name_col ) :
         """ # 2022-08-25 17:33:22 
@@ -4944,11 +4997,11 @@ class ZarrDataFrame( ) :
         """
         return name_col in self.columns
     def __iter__( self ) :
-        """ # 2022-07-20 22:57:19 
+        """ # 2022-11-15 00:55:57 
         iterate name of columns in the current ZarrDataFrame
         """
         if self._mask is not None : # if mask is available :
-            return iter( self.columns.union( self._mask.columns ) ) # iterate over the column names of the current ZDF and the mask ZDF
+            return iter( set( self.columns ).union( set( self._mask.columns ) ) ) # iterate over the column names of the current ZDF and the mask ZDF
         else :
             return iter( self.columns )
     @property
@@ -4963,23 +5016,21 @@ class ZarrDataFrame( ) :
         else :
             df = pd.DataFrame( index = arr_index ) # build an empty dataframe using the integer indices
         return df
-    def _add_column( self, name_col ) :
-        """ # 2022-08-06 13:28:42 
+    def _add_column( self, name_col : str, dict_metadata_description : Union[ str, None ] = None ) :
+        """ # 2022-11-15 00:14:14 
         a semi-private method for adding column label to the metadata of the current ZarrDataFrame (not added to the metadata of the mask)
+        
+        dict_metadata_description : Union[ str, None ] = None # 'dict_metadata_description' of the column. if None, no description metadata will be recorded
         """
         if name_col not in self :
-            self._dict_metadata[ 'columns' ].add( name_col )
+            self._dict_metadata[ 'columns' ][ name_col ] = dict_metadata_description
             self._save_metadata_( )
     def _save_metadata_( self ) :
-        ''' # 2022-07-20 10:31:39 
+        ''' # 2022-11-15 00:14:34 
         save metadata of the current ZarrDataFrame
         '''
         if not self._flag_is_read_only : # save metadata only when it is not in the read-only mode
-            # convert 'columns' to list before saving attributes
-            temp = self._dict_metadata[ 'columns' ]
-            self._dict_metadata[ 'columns' ] = list( temp )
             self._root.attrs[ 'dict_metadata' ] = self._dict_metadata # update metadata
-            self._dict_metadata[ 'columns' ] = temp # revert 'columns' to set
     def get_categories( self, name_col ) :
         """ # 2022-06-21 00:57:37 
         for columns with categorical data, return categories. if the column contains non-categorical data, return an empty list
@@ -5039,13 +5090,9 @@ class ZarrDataFrame( ) :
                 continue
             del self[ name_col ] # delete element from the current object
     def get_df( self, * l_name_col ) :
-        """ # 2022-10-29 22:49:12 
+        """ # 2022-11-15 02:41:53 
         get dataframe of a given list of columns, and empty the cache
-        """
-        # exit if no rows are available after applying the filter
-        if self.n_rows == 0 :
-            return
-        
+        """       
         l_name_col = list( e for e in l_name_col if isinstance( e, str ) and e in self ) # validate 'l_name_col' # use only hashable strings
         
         # initialize dataframe using the index (integer representations of all entries or entries of the active entries of the filter only)
@@ -5083,7 +5130,7 @@ class ZarrDataFrame( ) :
         za = zarr.open( path_folder_zarr, mode = 'r' ) 
         return za.shape[ 1 : ] # return the shape including the dimension of the primary axis
     def save( self, path_folder_zdf, * l_name_col ) :
-        """ # 2022-07-04 21:09:34 
+        """ # 2022-11-15 00:19:09 
         save data contained in the ZarrDataFrame object to the new path.
         if a filter is active, filtered ZarrDataFrame will be saved.
         
@@ -5110,9 +5157,9 @@ class ZarrDataFrame( ) :
         
         # handle empty 'l_name_col'
         if len( l_name_col ) == 0 :
-            l_name_col = self.columns # if no column name is given, copy all columns in the current ZarrDataFrame to the new ZarrDataFrame
+            l_name_col = list( self.columns ) # if no column name is given, copy all columns in the current ZarrDataFrame to the new ZarrDataFrame
         
-        for name_col in self.columns.intersection( l_name_col ) : # copy column by column to the output ZarrDataFrame object
+        for name_col in set( self.columns ).intersection( l_name_col ) : # copy column by column to the output ZarrDataFrame object
             if self.verbose :
                 print( f"saving '{name_col}' column ..." )
             zdf.initialize_column( name_col, zdf_template = self, name_col_template = name_col ) # initialize the column using the column of the current zdf object 
@@ -5124,7 +5171,7 @@ class ZarrDataFrame( ) :
         'float_min_proportion_of_active_rows_for_using_array_as_dict' : A threshold for the transition from dictionary to array for the conversion of coordinates. empirically, dictionary of the same length takes about ~10 times more memory than the array. 
                                                                         By default, when the number of active entries in an exis > 10% (or above any proportion that can set by 'float_min_proportion_of_active_rows_for_using_array_as_dict'), an array representing all rows will be used for the conversion of coordinates.
         """
-        set_name_col = self.columns.intersection( l_name_col ) # retrieve a set of valid column names
+        set_name_col = set( self.columns ).intersection( l_name_col ) # retrieve a set of valid column names
         if len( set_name_col ) == 0 : # exit if there is no valid column names
             return
         
@@ -5211,7 +5258,7 @@ class ZarrDataFrame( ) :
             shutil.rmtree( path_folder_lock )
         return za, __delete_locks
     def rename_column( self, name_col_before : str, name_col_after : str ) :
-        """ # 2022-09-27 18:27:19 
+        """ # 2022-11-15 00:19:15 
         rename column of the current ZarrDataFrame
         """
         # exit if currently read-only mode is active
@@ -5232,8 +5279,8 @@ class ZarrDataFrame( ) :
             os.rename( f"{self._path_folder_zdf}{name_col_before}/", f"{self._path_folder_zdf}{name_col_after}/" )
             
             # remove previous column name and add new column name
-            self._dict_metadata[ 'columns' ].remove( name_col_before )
-            self._dict_metadata[ 'columns' ].add( name_col_after )
+            dict_metadata_description = self._dict_metadata[ 'columns' ].pop( name_col_before ) # remove the column and retrieve the desscription metadata
+            self._dict_metadata[ 'columns' ][ name_col_after ] = dict_metadata_description # add description metadata to the ZarrDataFrame metadata
             self._save_metadata_( ) # update metadata
 ''' a class for representing axis of RamData (barcodes/features) '''
 class IndexMappingDictionary( ) :
@@ -7859,7 +7906,7 @@ class RamDataLayer( ) :
                 shutil.rmtree( f'{self._path_folder_ramdata_layer_mask}{mode}/' )
 ''' class for storing RamData '''
 class RamData( ) :
-    """ # 2022-10-29 18:08:47 
+    """ # 2022-11-22 23:45:32 
     This class provides frameworks for single-cell transcriptomic/genomic data analysis, utilizing RAMtx data structures, which is backed by Zarr persistant arrays.
     Extreme lazy loading strategies used by this class allows efficient parallelization of analysis of single cell data with minimal memory footprint, loading only essential data required for analysis. 
     
@@ -9357,15 +9404,15 @@ class RamData( ) :
     
         if not flag_name_col_total_count_already_loaded : # unload count data of barcodes from memory if the count data was not loaded before calling this method
             del self.bc.meta.dict[ name_col_total_count ]
-    def scale( self, name_layer = 'normalized_log1p', name_layer_new = 'normalized_log1p_scaled', name_col_variance = 'normalized_log1p_variance', max_value = 10, mode_instructions = [ [ 'sparse_for_querying_features', 'sparse_for_querying_features' ], [ 'sparse_for_querying_barcodes', 'sparse_for_querying_barcodes' ] ], int_num_threads = None, ** kwargs ) :
-        """ # 2022-09-16 21:21:11 
+    def scale( self, name_layer = 'normalized_log1p', name_layer_new = 'normalized_log1p_scaled', name_col_variance : Union[ str, None ] = 'normalized_log1p_variance', max_value : Union[ float, None ] = 10, mode_instructions = [ [ 'sparse_for_querying_features', 'sparse_for_querying_features' ], [ 'sparse_for_querying_barcodes', 'sparse_for_querying_barcodes' ] ], int_num_threads = None, ** kwargs ) :
+        """ # 2022-11-22 23:45:19 
         current implementation only allows output values to be not zero-centered. the zero-value will remain zero, while Z-scores of the non-zero values will be increased by Z-score of zero values, enabling processing of sparse count data
 
         'name_layer' : the name of the data source layer
         'name_layer_new' : the name of the data sink layer (new layer)
         'name_col_variance' : name of feature metadata containing variance informatin
-        'name_col_mean' : name of feature metadata containing mean informatin
-        'max_value' : clip values larger than 'max_value' to 'max_value'
+        name_col_variance : Union[ str, None ] # name of feature metadata containing variance information. if None is given, does not divide input values by standard deviation of the feature
+        max_value : Union[ float, None ] # clip values larger than 'max_value' to 'max_value'. if None is given, does not cap at max value
         'mode_instructions' : please refer to the RamData.apply method
         'int_num_threads' : the number of CPUs to use. by default, the number of CPUs set by the RamData attribute 'int_num_cpus' will be used.
         
@@ -9378,37 +9425,62 @@ class RamData( ) :
                 logging.info( f"[RamData.scale] 'name_col_variance' '{name_col_total_count}' does not exist in the 'barcodes' metadata, exiting" )
             return
 
-        # load feature data
-        # retrieve flag indicating whether the data has been already loaded 
-        flag_name_col_variance_already_loaded = name_col_variance in self.ft.meta.dict 
-        if not flag_name_col_variance_already_loaded : # load data in memory
-            self.ft.meta.load_as_dict( name_col_variance )
-        # retrieve data as a dictionary
-        dict_variance = self.ft.meta.dict[ name_col_variance ]
+        # retrieve flags
+        flag_cap_value = max_value is not None
+        flag_divide_by_sd = name_col_variance is not None and name_col_variance in self.ft.columns # the 'name_col_variance' column name should be present in the metadata zdf.
+        
+        # load variance data
+        if flag_divide_by_sd :
+            """
+            %% load variance data %%
+            """
+            # load feature data
+            # retrieve flag indicating whether the data has been already loaded 
+            flag_name_col_variance_already_loaded = name_col_variance in self.ft.meta.dict 
+            if not flag_name_col_variance_already_loaded : # load data in memory
+                self.ft.meta.load_as_dict( name_col_variance )
+            # retrieve data as a dictionary
+            dict_variance = self.ft.meta.dict[ name_col_variance ]
 
         # load layer
         self.layer = name_layer
-
+        
         # define functions for scaling
         def func_feature_indexed( self, int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value ) :
             """ # 2022-07-27 14:32:21 
             """
-            float_std = dict_variance[ int_entry_of_axis_for_querying ] ** 0.5 # retrieve standard deviation from the variance
-            if float_std == 0 : # handle when standard deviation is zero (all the data values should be zero)
-                return int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value # return expression data as-is 
-            arr_value /= float_std # scale count data using the standard deviation (in-place)
-            arr_value[ arr_value > max_value ] = max_value # cap exceptionally large values (in-place)
+            if flag_divide_by_sd :
+                """
+                %% divide by standard deviation (SD) %%
+                """
+                float_std = dict_variance[ int_entry_of_axis_for_querying ] ** 0.5 # retrieve standard deviation from the variance
+                if float_std != 0 : # skip division when standard deviation is equal to or below zero (all the data values should be zero)
+                    arr_value /= float_std # scale count data using the standard deviation (in-place)
+            """
+            %% cap exceptionally large values %%
+            """
+            if flag_cap_value :
+                arr_value[ arr_value > max_value ] = max_value
             return int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value # return scaled data
 
         def func_barcode_indexed( self, int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value ) : # normalize count data of a single barcode containing (likely) multiple features
             """ # 2022-07-27 16:32:21 
             """
             # perform scaling in-place to reduce memory consumption
-            for i, e in enumerate( arr_int_entries_of_axis_not_for_querying.astype( int ) ) : # iterate through barcodes
-                float_var = dict_variance[ e ] # retrieve variance
-                if float_var != 0 : # if standard deviation is not available, use the data as-is
-                    arr_value[ i ] = arr_value[ i ] / float_var ** 0.5 # retrieve standard deviation of the current feature from the variance # perform scaling of data for each feature 
-            return int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value
+            if flag_divide_by_sd :
+                """
+                %% divide by standard deviation (SD) %%
+                """
+                for i, e in enumerate( arr_int_entries_of_axis_not_for_querying.astype( int ) ) : # iterate through barcodes
+                    float_var = dict_variance[ e ] # retrieve variance
+                    if float_var != 0 : # if standard deviation is not available, use the data as-is
+                        arr_value[ i ] = arr_value[ i ] / float_var ** 0.5 # retrieve standard deviation of the current feature from the variance # perform scaling of data for each feature 
+            """
+            %% cap exceptionally large values %%
+            """
+            if flag_cap_value :
+                arr_value[ arr_value > max_value ] = max_value 
+            return int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value # return scaled data
 
         ''' process the RAMtx matrices '''
         self.apply( name_layer, name_layer_new, func = ( func_barcode_indexed, func_feature_indexed ), int_num_threads = int_num_threads, mode_instructions = mode_instructions, ** kwargs ) # flag_dtype_output = None : use the same dtype as the input RAMtx object
@@ -9820,9 +9892,10 @@ class RamData( ) :
         flag_subsample : bool = True, 
         dict_kw_subsample : dict = dict( ), 
         flag_skip_pca : bool = False, 
-        str_embedding_method : typing.Literal[ 'pumap', 'scanpy-umap', 'scanpy-tsne', 'knn_embedder', 'knngraph' ] = 'pumap'
+        str_embedding_method : typing.Literal[ 'pumap', 'scanpy-umap', 'scanpy-tsne', 'knn_embedder', 'knngraph' ] = 'pumap',
+        dict_kw_for_run_scanpy_using_pca = { 'int_neighbors_n_neighbors' : 10, 'int_neighbors_n_pcs' : 30, 'set_method' : { 'leiden', 'umap' }, 'dict_kw_umap' : dict( ),'dict_leiden' : { 'resolution' : 1 },'dict_kw_tsne' : dict( ) }
     ) :
-        """ # 2022-09-14 11:48:38 
+        """ # 2022-11-16 17:53:57 
         perform dimension rediction and clustering 
 
         'name_layer_pca' : the name of the layer to retrieve expression data for building PCA values
@@ -9861,68 +9934,80 @@ class RamData( ) :
                 int_n_components_in_a_chunk = 20, 
                 int_num_threads = 5
             )
-
-        if flag_subsample : # perform subsampling for clustering and embedding
-            self.subsample( 
-                int_num_entries_to_use = int_num_barcodes_for_a_batch, 
-                int_num_entries_to_subsample = int_num_barcodes_in_pumap_batch, 
-                name_col_data = f'X_pca{str_suffix}', 
-                name_col_label = f'subsampling_label{str_suffix}', 
-                name_col_avg_dist = f'subsampling_avg_dist{str_suffix}', 
-                axis = 'barcodes', 
-                name_col_filter = name_filter_barcodes,
-                name_col_filter_subsampled = f"filter_subsampled{str_suffix}", 
-                int_num_entries_in_a_batch = int_num_barcodes_for_a_batch,
-                ** dict_kw_subsample
-            )
-
-            self.bc.change_filter( f'filter_subsampled{str_suffix}' )
-            self.train_umap( 
+            
+        """ # 2022-11-16 17:43:05 
+        Under constructions
+        """
+        if 'scanpy-' in str_embedding_method :
+            self.run_scanpy_using_pca( 
                 name_col_pca = f'X_pca{str_suffix}', 
-                int_num_components_pca = int_num_components, 
-                int_num_components_umap = 2, 
-                name_col_filter = f'filter_subsampled{str_suffix}', 
+                int_num_pca_components = int_num_components, 
+                str_suffix = str_suffix, 
+                ** dict_kw_for_run_scanpy_using_pca
+            )
+        else :
+            # legacy embedding methods using pumap
+            if flag_subsample : # perform subsampling for clustering and embedding
+                self.subsample( 
+                    int_num_entries_to_use = int_num_barcodes_for_a_batch, 
+                    int_num_entries_to_subsample = int_num_barcodes_in_pumap_batch, 
+                    name_col_data = f'X_pca{str_suffix}', 
+                    name_col_label = f'subsampling_label{str_suffix}', 
+                    name_col_avg_dist = f'subsampling_avg_dist{str_suffix}', 
+                    axis = 'barcodes', 
+                    name_col_filter = name_filter_barcodes,
+                    name_col_filter_subsampled = f"filter_subsampled{str_suffix}", 
+                    int_num_entries_in_a_batch = int_num_barcodes_for_a_batch,
+                    ** dict_kw_subsample
+                )
+
+                self.bc.change_filter( f'filter_subsampled{str_suffix}' )
+                self.train_umap( 
+                    name_col_pca = f'X_pca{str_suffix}', 
+                    int_num_components_pca = int_num_components, 
+                    int_num_components_umap = 2, 
+                    name_col_filter = f'filter_subsampled{str_suffix}', 
+                    name_pumap_model = f'pumap{str_suffix}'
+                )
+
+                # 2nd training
+                self.bc.change_filter( name_filter_barcodes )
+                self.bc.filter = self.bc.subsample( min( 1, int_num_barcodes_in_pumap_batch / self.bc.filter.count( ) ) )
+                self.bc.save_filter( f'filter_subsampled_randomly{str_suffix}' )
+                self.train_umap( 
+                    name_col_pca = f'X_pca{str_suffix}', 
+                    int_num_components_pca = int_num_components, 
+                    int_num_components_umap = 2, 
+                    name_col_filter = f'filter_subsampled_randomly{str_suffix}', 
+                    name_pumap_model = f'pumap{str_suffix}'
+                )
+            else : # use all barcodes for clustering
+                self.leiden(
+                    f'leiden{str_suffix}',
+                    name_col_data = f'X_pca{str_suffix}',
+                    int_num_components_data = int_num_components,
+                    name_col_label = f'leiden{str_suffix}',
+                    resolution = 0.2,
+                    name_col_filter = name_filter_barcodes,
+                )
+
+                self.bc.change_filter( name_filter_barcodes )
+                self.train_umap( 
+                    name_col_pca = f'X_pca{str_suffix}', 
+                    int_num_components_pca = int_num_components, 
+                    int_num_components_umap = 2, 
+                    name_col_filter = name_filter_barcodes,
+                    name_pumap_model = f'pumap{str_suffix}'
+                )
+
+            # apply umap
+            self.apply_umap( 
+                name_col_pca = f'X_pca{str_suffix}', 
+                name_col_umap = f'X_umap{str_suffix}', 
+                int_num_barcodes_in_pumap_batch = int_num_barcodes_for_a_batch, 
+                name_col_filter = name_filter_barcodes,
                 name_pumap_model = f'pumap{str_suffix}'
             )
-
-            # 2nd training
-            self.bc.change_filter( name_filter_barcodes )
-            self.bc.filter = self.bc.subsample( min( 1, int_num_barcodes_in_pumap_batch / self.bc.filter.count( ) ) )
-            self.bc.save_filter( f'filter_subsampled_randomly{str_suffix}' )
-            self.train_umap( 
-                name_col_pca = f'X_pca{str_suffix}', 
-                int_num_components_pca = int_num_components, 
-                int_num_components_umap = 2, 
-                name_col_filter = f'filter_subsampled_randomly{str_suffix}', 
-                name_pumap_model = f'pumap{str_suffix}'
-            )
-        else : # use all barcodes for clustering
-            self.leiden(
-                f'leiden{str_suffix}',
-                name_col_data = f'X_pca{str_suffix}',
-                int_num_components_data = int_num_components,
-                name_col_label = f'leiden{str_suffix}',
-                resolution = 0.2,
-                name_col_filter = name_filter_barcodes,
-            )
-
-            self.bc.change_filter( name_filter_barcodes )
-            self.train_umap( 
-                name_col_pca = f'X_pca{str_suffix}', 
-                int_num_components_pca = int_num_components, 
-                int_num_components_umap = 2, 
-                name_col_filter = name_filter_barcodes,
-                name_pumap_model = f'pumap{str_suffix}'
-            )
-
-        # apply umap
-        self.apply_umap( 
-            name_col_pca = f'X_pca{str_suffix}', 
-            name_col_umap = f'X_umap{str_suffix}', 
-            int_num_barcodes_in_pumap_batch = int_num_barcodes_for_a_batch, 
-            name_col_filter = name_filter_barcodes,
-            name_pumap_model = f'pumap{str_suffix}'
-        )
     ''' utility functions for filter '''
     def change_filter( self, name_col_filter = None, name_col_filter_bc = None, name_col_filter_ft = None ) -> None :
         """ # 2022-07-16 17:27:58 
@@ -10450,7 +10535,7 @@ class RamData( ) :
             if self.verbose : # report
                 logging.info( f'fit completed for {int_num_of_previously_returned_entries + 1}-{int_num_of_previously_returned_entries + int_num_retrieved_entries} barcodes' )
         # fit iPCA using multiple processes
-        bk.Multiprocessing_Batch_Generator_and_Workers( ax.batch_generator( int_num_entries_for_batch = int_num_barcodes_in_ipca_batch ), process_batch, post_process_batch = post_process_batch, int_num_threads = max( min( int_num_threads, 3 ), 2 ), int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) # number of threads for multi-processing is 2 ~ 5 # generate batch with fixed number of barcodes
+        bk.Multiprocessing_Batch_Generator_and_Workers( ax.batch_generator( int_num_entries_for_batch = int_num_barcodes_in_ipca_batch ), process_batch, post_process_batch = post_process_batch, int_num_threads = max( min( int_num_threads, 5 ), 2 ), int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) # number of threads for multi-processing is 2 ~ 5 # generate batch with fixed number of barcodes
         pbar.close( ) # close the progress bar
         
         # report
@@ -11330,8 +11415,8 @@ class RamData( ) :
             
             # prepare next batch
             self.change_filter( name_col_filter_subsampled ) # change filter to currently subsampled entries for the next round
-    def subsample_for_each_clus( self, name_col_label : str, int_num_entries_to_subsample : int = 100000, index_col_of_name_col_label : Union[ int, None ] = -1, name_col_filter : str = 'filter_pca' ) :
-        """ # 2022-10-18 19:28:37 
+    def subsample_for_each_clus( self, name_col_label : str, int_num_entries_to_subsample : int = 100000, index_col_of_name_col_label : Union[ int, None ] = -1, name_col_filter : str = 'filter_pca', name_col_filter_subsampled : Union[ str, None ] = None ) :
+        """ # 2022-11-15 02:13:41 
         
         perform simple subsampling by selecting a fixed number of cells for each cluster
         
@@ -11339,6 +11424,7 @@ class RamData( ) :
         name_col_label : str # the name of column of the 'barcode' axis containing cluster labels
         index_col_of_name_col_label : Union[ int, None ] = -1 # index of the column containing cluster labels
         name_col_filter : str = 'filter_pca' # the name of the column of the 'barcode' axis containing barcode filters
+        name_col_filter_subsampled : Union[ str, None ] = None # the name of the column of the 'barcode' axis containing subsampled barcode filters
         """
         # retrieve axis
         ax = self.bc
@@ -11379,14 +11465,11 @@ class RamData( ) :
         dict_name_clus_to_num_entries_remaining = s_count_label.to_dict( )
         dict_name_clus_to_num_entries_to_be_subsampled_remaining = dict_name_clus_to_num_entries_to_be_subsampled
 
-        # retrieve an axis
-        ax = ram_ref.bc
-
         # initialize a new bitarray that will contain subsampled entries
         ba_subsampled = bitarray( ax.int_num_entries )
         ba_subsampled.setall( 0 )
         # iterate over label and int_entry
-        for label, int_entry in zip( arr_label, bk.BA.find( ram_ref.bc.filter ) ) :
+        for label, int_entry in zip( arr_label, bk.BA.find( ax.filter ) ) :
             if np.random.random( ) < dict_name_clus_to_num_entries_to_be_subsampled_remaining[ label ] / dict_name_clus_to_num_entries_remaining[ label ] : # determine whether to subsample an entry
                 ba_subsampled[ int_entry ] = 1 # select the entry
                 dict_name_clus_to_num_entries_to_be_subsampled_remaining[ label ] -= 1 # consume 'dict_name_clus_to_num_entries_to_be_subsampled_remaining'
@@ -11394,6 +11477,10 @@ class RamData( ) :
         
         # apply subsampling
         ax.filter = ba_subsampled
+        
+        # if valid 'name_col_filter_subsampled' has been given, save the filter containing subsampled barcodes as the column of the name 'name_col_filter_subsampled'
+        if name_col_filter_subsampled is not None :
+            ax.save_filter( name_col_filter_subsampled )
     ''' scanpy api wrappers '''
     def run_scanpy_using_pca( 
         self, 
@@ -11500,7 +11587,7 @@ class RamData( ) :
         if self.verbose :
             logging.info( f"[Info] [RamData.train_knn] knn index building completed for {ax.meta.n_rows} number of entries of the axis '{'barcodes' if flag_axis_is_barcode else 'features'}' using the data from the column '{name_col_x}'" )
     def apply_knn( self, name_model : str, name_col_y_input : str, name_col_y_output : Union[ str, None ] = None, name_col_x : Union[ str, None ] = None, name_col_filter_target : Union[ str, None ] = None, operation : Literal[ 'classifier', 'embedder' ] = 'embedder', float_std_ratio_for_outlier_detection : float = 0.1, axis : Union[ int, str ] = 'barcodes', int_num_entries_in_a_batch : int = 10000, int_num_threads : int = 10, int_index_component_reference : Union[ None, int ] = None ) :
-        """ # 2022-11-08 17:18:31 
+        """ # 2022-11-17 13:53:45 
         
         use knn index built from subsampled entries to classify (predict labels) or embed (predict embeddings) barcodes.
         
@@ -11615,13 +11702,16 @@ class RamData( ) :
         
         # retrieve y values for the entries used for building knnindex
         y_knnindex = ax.meta[ name_col_y_input, ba_filter_knnindex ]
-        # calculate standard deviation of y values in order to identify outliers
-        y_knnindex_std = y_knnindex.std( axis = 0 )
-        y_std_threshold = float_std_ratio_for_outlier_detection * y_knnindex_std
-        y_dist_threshold = math.sqrt( ( y_std_threshold ** 2 ).sum( ) ) # calculate the distance threshold for detecting outliers (using euclidean distance)
         
         # retrieve a flag indicating that the operation is embedding
         flag_embedder = operation == 'embedder' 
+
+        # prepare
+        if flag_embedder : # %% EMBEDDER %%
+            # calculate standard deviation of y values in order to identify outliers
+            y_knnindex_std = y_knnindex.std( axis = 0 )
+            y_std_threshold = float_std_ratio_for_outlier_detection * y_knnindex_std
+            y_dist_threshold = math.sqrt( ( y_std_threshold ** 2 ).sum( ) ) # calculate the distance threshold for detecting outliers (using euclidean distance)
         """
         assign labels or retrieve embeddings
         """
