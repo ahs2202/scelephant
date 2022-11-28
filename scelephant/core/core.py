@@ -64,7 +64,7 @@ mpsp = mp.get_context('spawn')
 # define version
 _version_ = '0.0.8'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-11-17 13:54:15'
+_last_modified_time_ = '2022-11-28 23:45:18'
 
 """ # 2022-07-21 10:35:42  realease note
 
@@ -257,7 +257,13 @@ an error in RamData.apply_knn resolved
 # 2022-11-22 23:45:40 
 a critical error in RamData.scale was resolved (values were not capped for RAMtx for querying barcodes)
 
+# 2022-11-24 04:45:52 
+an issue in RamData.summarize was detected, where the last record has exceptionally large values when summarizing dense matrix.
+It was due to reading the description line of the input matrix (# rows, # cols, # records) and writing it to the dense matrix.
+'create_zarr_from_mtx' method was corrected.
+
 ##### Future implementations #####
+
 
 """
 
@@ -449,28 +455,70 @@ def Write_10X( df_mtx, df_feature, path_folder_output_mtx_10x ) :
     if os.path.exists( path_file_mtx_output ) :
         os.remove( path_file_mtx_output )
     OS_Run( [ 'gzip', f"{path_folder_output_mtx_10x}matrix.mtx" ] ) # gzip the mtx file
-def MTX_Write_10X_from_AnnData( adata, path_folder_mtx_output ) :
-    """ # 2022-11-09 02:10:42 
+# def MTX_Write_10X_from_AnnData( adata, path_folder_mtx_output, dict_var_rename : dict = { 'feature_types' : 'feature_type', 'gene_ids' : 'id_feature' } ) :
+#     """ # 2022-11-24 03:09:51 
+#     write AnnData count matrix as a 10X matrix object 
+    
+#     'dict_var_rename' : a dictionary for renaming columns of adata.var columns
+#     """
+#     # compose df_var
+#     df_feature = adata.var
+#     df_feature.index.name = 'feature'
+#     df_feature.reset_index( drop = False, inplace = True )
+#     df_feature.rename( columns = dict_var_rename, inplace = True )
+    
+#     # compose df_mtx
+#     arr_barcode, arr_id_feature, arr_read_count = scipy.sparse.find( adata.X )
+#     df_mtx = pd.DataFrame( { 'barcode' : arr_barcode, 'id_feature' : arr_id_feature, 'read_count' : arr_read_count } )
+    
+#     arr_barcodes = adata.obs.index.values
+#     df_mtx[ 'barcode' ] = list( arr_barcodes[ e ] for e in df_mtx.barcode.values )
+
+#     arr_feature = df_feature.id_feature.values
+#     df_mtx[ 'id_feature' ] = list( arr_feature[ e ] for e in df_mtx.id_feature.values )
+    
+#     # output mtx 
+#     Write_10X( df_mtx, df_feature, path_folder_mtx_output )
+def AnnData_Convert_to_10X_MTX( adata, path_folder_mtx_output, dict_var_rename : dict = { 'feature_types' : 'feature_type', 'gene_ids' : 'id_feature' }, dtype_value = np.int64 ) :
+    """ # 2022-11-24 16:47:33 
     write AnnData count matrix as a 10X matrix object 
+    
+    'dict_var_rename' : a dictionary for renaming columns of adata.var columns
     """
     # compose df_var
     df_feature = adata.var
-    df_feature.index.name = 'feature'
-    df_feature.reset_index( drop = False, inplace = True )
-    df_feature.rename( columns = { 'feature_types' : 'feature_type', 'gene_ids' : 'id_feature' }, inplace = True )
+    df_feature.rename( columns = dict_var_rename, inplace = True )
     
     # compose df_mtx
-    arr_barcode, arr_id_feature, arr_read_count = scipy.sparse.find( adata.X )
-    df_mtx = pd.DataFrame( { 'barcode' : arr_barcode, 'id_feature' : arr_id_feature, 'read_count' : arr_read_count } )
+    arr_int_barcode, arr_int_id_feature, arr_read_count = scipy.sparse.find( adata.X )
+    # convert dtype of the values
+    if dtype_value is not None :
+        arr_read_count = arr_read_count.astype( dtype_value )
     
-    arr_barcodes = adata.obs.index.values
-    df_mtx[ 'barcode' ] = list( arr_barcodes[ e ] for e in df_mtx.barcode.values )
+    # create an output folder
+    os.makedirs( path_folder_mtx_output, exist_ok = True )
 
-    arr_feature = df_feature.id_feature.values
-    df_mtx[ 'id_feature' ] = list( arr_feature[ e ] for e in df_mtx.id_feature.values )
-    
-    # output mtx 
-    Write_10X( df_mtx, df_feature, path_folder_mtx_output )
+    ''' save barcode file '''
+    # retrieve list of barcodes
+    arr_barcode = adata.obs.index.values
+    pd.DataFrame( arr_barcode ).to_csv( f"{path_folder_mtx_output}barcodes.tsv.gz", sep = '\t', index = False, header = False ) 
+
+    ''' save feature file '''
+    # compose a feature dataframe
+    df_feature[ [ 'id_feature', 'feature', 'feature_type' ] ].to_csv( f"{path_folder_mtx_output}features.tsv.gz", sep = '\t', index = False, header = False ) # save as a file
+    # retrieve list of features
+    arr_id_feature = df_feature.id_feature.values
+
+    ''' save matrix file '''
+    # save count matrix as a gzipped matrix market format
+    col, row, data = scipy.sparse.find( adata.X ) # ( arr_int_barcode, arr_int_id_feature, arr_read_count ) = ( col, row, data )
+    sm = scipy.sparse.coo_matrix( ( data, ( row, col ) ), shape = ( len( arr_id_feature ), len( arr_barcode ) ) )
+    scipy.io.mmwrite( f"{path_folder_mtx_output}matrix", sm )
+    # remove previous output file to overwrite the file
+    path_file_mtx_output = f"{path_folder_mtx_output}matrix.mtx.gz"
+    if os.path.exists( path_file_mtx_output ) :
+        os.remove( path_file_mtx_output )
+    OS_Run( [ 'gzip', f"{path_folder_mtx_output}matrix.mtx" ] ) # gzip the mtx file
 def __function_for_adjusting_thresholds_for_filtering_empty_droplets__( path_folder_mtx_10x_output, min_counts, min_features, min_cells ) :
     ''' # 2022-02-23 14:26:07 
     This function is intended for the use in 'MTX_10X_Filter' function for filtering cells from the 10X dataset (before chromium X, 10,000 cells per channel)
@@ -2812,7 +2860,7 @@ def concurrent_merge_sort_using_pipe_mtx( path_file_output = None, l_path_file =
 
 # for sorting mtx and creating RamData
 def create_and_sort_chunk( path_file_gzip, path_prefix_chunk, func_encoding, func_decoding, pipe_sender, func_detect_header = None, int_num_records_in_a_chunk = 10000000, int_num_threads_for_sorting_and_writing = 5, int_buffer_size = 300 ) :
-    """ # 2022-07-28 11:07:36 
+    """ # 2022-11-28 23:43:38 
     split an input gzip file into smaller chunks and sort individual chunks.
     returns a list of processes that will perform the operation.
     
@@ -2821,7 +2869,7 @@ def create_and_sort_chunk( path_file_gzip, path_prefix_chunk, func_encoding, fun
     'func_encoding' : a function for transforming a decorated record into a line in a gzip file.
     'func_decoding' : a function for transforming a line in a gzip file into a decorated record. the lines will be sorted according to the first element of the returned records. the first element (key) should be float/integers (numbers)
     'pipe_sender' : a pipe that will be used to return the list of file path of the created chunks. when all chunks are created, None will be given.
-    'func_detect_header' : a function for detecting header lines in a gzip file. the opened gzip file will be given ('rw' mode) to the function and the funciton should consume all header lines. optionally, the function can return a line that are the start of the record if the algorithm required to read non-header line to detect the end of header.
+    'func_detect_header' : a function for detecting header lines in a gzip file. the opened gzip file will be given ('rw' mode) to the function and the funciton should consume all header lines. optionally, the function can return a line that are the start of the record if the algorithm required to read non-header line to detect the end of header. (i.e. if header line was not present, the consumed line should be returned)
     'int_num_records_in_a_chunk' : the number of maximum records in a chunk
     'int_num_threads_for_sorting_and_writing' : number of workers for sorting and writing operations. the number of worker for reading the input gzip file will be 1.
     'int_buffer_size' : the number of entries for each batch that will be given to 'pipe_sender'. increasing this number will reduce the overhead associated with interprocess-communication through pipe, but will require more memory usage
@@ -2906,7 +2954,7 @@ def create_and_sort_chunk( path_file_gzip, path_prefix_chunk, func_encoding, fun
             
             # detect header from the start of the file
             if func_detect_header is not None and hasattr( func_detect_header, '__call__' ) : # if a valid function for detecting header has been given
-                line = func_detect_header( file ) # consume header lines
+                line = func_detect_header( file ) # consume header lines. if header line was not present, the consumed line will be returned
                 if line is None : # if exactly header lines are consumed and no actual records were consumed from the file, read the first record
                     line = file.readline( )
             # iterate lines of the rest of the gzip file    
@@ -2988,7 +3036,7 @@ def sort_mtx( path_file_gzip, path_file_gzip_sorted = None, int_num_records_in_a
                     break
                 line = file.readline( ) # read the next line
             return None
-        else : # if no header was detected, return a consumed line
+        else : # if no header was detected, return a consumed line so that it can be processed by downstream application
             return line
     def __decode_mtx( line ) :
         """ # 2022-07-27 00:28:42 
@@ -3087,7 +3135,7 @@ def sort_mtx( path_file_gzip, path_file_gzip_sorted = None, int_num_records_in_a
     # delete temp folder
     shutil.rmtree( path_folder_temp )
 def create_zarr_from_mtx( path_file_input_mtx, path_folder_zarr, int_buffer_size = 1000, int_num_workers_for_writing_ramtx = 10, chunks_dense = ( 1000, 1000 ), dtype_mtx = np.float64 ) :
-    """ # 2022-07-30 03:52:08 
+    """ # 2022-11-28 23:39:38 
     create dense ramtx (dense zarr object) from matrix sorted by barcodes.
     
     'path_file_input_mtx' : input mtx gzip file
@@ -3106,7 +3154,7 @@ def create_zarr_from_mtx( path_file_input_mtx, path_folder_zarr, int_buffer_size
 
     """ assumes input mtx is sorted by id_barcode (sorted by columns of the matrix market formatted matrix) """
     def __gunzip( path_file_input_mtx, pipe_sender ) :
-        ''' # 2022-07-29 23:25:36 
+        ''' # 2022-11-28 23:39:34 
         create a stream of lines from a gzipped mtx file
         '''
         with gzip.open( path_file_input_mtx, 'rt' ) as file :
@@ -3117,6 +3165,7 @@ def create_zarr_from_mtx( path_file_input_mtx, path_folder_zarr, int_buffer_size
                 # consume comment lines
                 while line[ 0 ] == '%' : 
                     line = file.readline( ) # read the next line
+                line = file.readline( ) # discard the description line (the number of barcodes/features/records) and read the next line
 
                 # use the buffer to reduce the overhead of interprocess communications
                 l_buffer = [ ] # initialize the buffer
@@ -9405,7 +9454,7 @@ class RamData( ) :
         if not flag_name_col_total_count_already_loaded : # unload count data of barcodes from memory if the count data was not loaded before calling this method
             del self.bc.meta.dict[ name_col_total_count ]
     def scale( self, name_layer = 'normalized_log1p', name_layer_new = 'normalized_log1p_scaled', name_col_variance : Union[ str, None ] = 'normalized_log1p_variance', max_value : Union[ float, None ] = 10, mode_instructions = [ [ 'sparse_for_querying_features', 'sparse_for_querying_features' ], [ 'sparse_for_querying_barcodes', 'sparse_for_querying_barcodes' ] ], int_num_threads = None, ** kwargs ) :
-        """ # 2022-11-22 23:45:19 
+        """ # 2022-11-24 01:35:09 
         current implementation only allows output values to be not zero-centered. the zero-value will remain zero, while Z-scores of the non-zero values will be increased by Z-score of zero values, enabling processing of sparse count data
 
         'name_layer' : the name of the data source layer
@@ -9418,13 +9467,6 @@ class RamData( ) :
         
         ** kwargs : arguments for 'RamData.apply' method
         """
-        # check validity of inputs
-        # column names should be available in the metadata
-        if name_col_variance not in self.ft.meta : # 'name_col_variance' column should be available in the metadata
-            if self.verbose :
-                logging.info( f"[RamData.scale] 'name_col_variance' '{name_col_total_count}' does not exist in the 'barcodes' metadata, exiting" )
-            return
-
         # retrieve flags
         flag_cap_value = max_value is not None
         flag_divide_by_sd = name_col_variance is not None and name_col_variance in self.ft.columns # the 'name_col_variance' column name should be present in the metadata zdf.
@@ -9434,6 +9476,13 @@ class RamData( ) :
             """
             %% load variance data %%
             """
+            # check validity of inputs
+            # column names should be available in the metadata
+            if name_col_variance not in self.ft.meta : # 'name_col_variance' column should be available in the metadata
+                if self.verbose :
+                    logging.info( f"[RamData.scale] 'name_col_variance' '{name_col_total_count}' does not exist in the 'barcodes' metadata, exiting" )
+                return
+            
             # load feature data
             # retrieve flag indicating whether the data has been already loaded 
             flag_name_col_variance_already_loaded = name_col_variance in self.ft.meta.dict 
@@ -9485,11 +9534,10 @@ class RamData( ) :
         ''' process the RAMtx matrices '''
         self.apply( name_layer, name_layer_new, func = ( func_barcode_indexed, func_feature_indexed ), int_num_threads = int_num_threads, mode_instructions = mode_instructions, ** kwargs ) # flag_dtype_output = None : use the same dtype as the input RAMtx object
 
-        # unload count data of barcodes from memory if the count data was not loaded before calling this method
-    #     if not flag_name_col_mean_already_loaded : 
-    #         del self.ft.meta.dict[ name_col_mean ]
-        if not flag_name_col_variance_already_loaded : 
-            del self.ft.meta.dict[ name_col_variance ]
+        # unload variance data
+        if flag_divide_by_sd :
+            if not flag_name_col_variance_already_loaded : 
+                del self.ft.meta.dict[ name_col_variance ]
     def identify_highly_variable_features( self, name_layer : str = 'normalized_log1p', int_num_highly_variable_features : int = 2000, float_min_mean : float = 0.01, float_min_variance : float = 0.01, str_suffix_summarized_metrics : str = '', name_col_filter : str = 'filter_normalized_log1p_highly_variable', flag_load_filter : bool = True, flag_show_graph : bool = True ) :
         """ # 2022-09-07 23:21:11 
         identify highly variable features
@@ -9753,6 +9801,9 @@ class RamData( ) :
 
         if flag_use_fast_mode :
             """ %% FAST MODE %% """
+            """
+            %% HVG detection %%
+            """
             # retrieve total raw count data for normalization
             self.bc.meta.load_as_dict( name_col_total_count )
             dict_count = self.bc.meta.dict[ name_col_total_count ] # retrieve total counts for each barcode as a dictionary
@@ -9801,6 +9852,13 @@ class RamData( ) :
                 name_col_filter = name_col_filter_highly_variable,
                 ** dict_kw_hv
             )
+            
+            """
+            %% scaling %%
+            """
+            # retrieve flags
+            flag_cap_value = max_value is not None
+            flag_divide_by_sd = name_col_variance is not None and name_col_variance in self.ft.columns # the 'name_col_variance' column name should be present in the metadata zdf.
 
             # retrieve variance
             self.ft.meta.load_as_dict( name_col_variance )
@@ -10535,7 +10593,7 @@ class RamData( ) :
             if self.verbose : # report
                 logging.info( f'fit completed for {int_num_of_previously_returned_entries + 1}-{int_num_of_previously_returned_entries + int_num_retrieved_entries} barcodes' )
         # fit iPCA using multiple processes
-        bk.Multiprocessing_Batch_Generator_and_Workers( ax.batch_generator( int_num_entries_for_batch = int_num_barcodes_in_ipca_batch ), process_batch, post_process_batch = post_process_batch, int_num_threads = max( min( int_num_threads, 5 ), 2 ), int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) # number of threads for multi-processing is 2 ~ 5 # generate batch with fixed number of barcodes
+        bk.Multiprocessing_Batch_Generator_and_Workers( ax.batch_generator( int_num_entries_for_batch = int_num_barcodes_in_ipca_batch ), process_batch, post_process_batch = post_process_batch, int_num_threads = max( int_num_threads, 2 ), int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) # number of threads for multi-processing is 2 ~ 5 # generate batch with fixed number of barcodes
         pbar.close( ) # close the progress bar
         
         # report
