@@ -12,7 +12,7 @@ with open(os.path.join(HERE, "README.md")) as fid:
 
 setup(
     name='scelephant',
-    version='0.0.8',
+    version='0.0.9',
     author="Hyunsu An",
     author_email="ahs2202@gm.gist.ac.kr",
     description="SCelephant (Single-Cell Extremely Large Data Analysis Platform)",
@@ -23,24 +23,23 @@ setup(
     packages=find_packages( ),
     include_package_data=True,
     install_requires=[
-        'biobookshelf>=0.1.40',
-        'zarr>=2.12.0',
+        # 'biobookshelf>=0.1.40',
+        'zarr>=2.13.3',
+        'fsspec>=2022.11.0',
         'numcodecs>=0.9.1',
-        'hdbscan>=0.8.28',
-        'pgzip>=0.3.1',
+        'bitarray>=2.4.1',
+        'scanpy>=1.9.1',
+        'tqdm>=4.64.0',
+        
         'numba>=0.55.2',
         'pynndescent>=0.5.7',
+        'scipy>=1.7.3',
+        
+        'hdbscan>=0.8.28',
         'leidenalg>=0.8.10',
-        'bitarray>=2.4.1',
-        'tqdm>=4.64.0',
         'igraph>=0.9.11',
+        
 #         'pyopa>=0.8.2',
 #         'numpy>=1.22.4',
-
     ],
-#    entry_points={
-#        "console_scripts": [
-#            "scarab=scarab.__main__:scarab",
-#        ]
-#    },
 )

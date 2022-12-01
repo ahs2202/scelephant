@@ -1,70 +1,56 @@
-# core
-# from memory_profiler import profile # for testing
+# from biobookshelf.main import *
+# from biobookshelf import *
+# import biobookshelf as bk
 
-import typing # import typing
+# %% CORE %% 
+# import internal modules
+from . import BA
+from . import biobookshelf as bk
+
 from typing import Union, List, Literal
-from biobookshelf.main import *
-from biobookshelf import *
-import biobookshelf as bk
-pd.options.mode.chained_assignment = None  # default='warn' # to disable worining
+import os
+import pandas as pd
+import numpy as np
+import multiprocessing as mp
 import math
-import zarr # SCElephant is currently implemented using Zarr
+import logging
+from copy import deepcopy
+import pickle
+import time
+import glob 
+import gzip # to handle gzip file
+import shutil # for copying file
+import base64 # for converting binary to text data (web application)
+import json # to read and write JSON file
+import matplotlib.pyplot as plt
+import scipy.sparse
+
+pd.options.mode.chained_assignment = None  # default='warn' # to disable worining
+
+# SCElephant is currently implemented using Zarr
+import zarr 
 import numcodecs
-import anndata
-import scanpy
+from bitarray import bitarray ## binary arrays
+
 import shelve # for persistent database (key-value based database)
-import sklearn as skl
 
 import tarfile # tar.gz
-import requests # download from url 
-import shutil
 
 from numba import jit # for speed up
 
 from tqdm import tqdm as progress_bar # for progress bar
 
-# dimension reduction / clustering
-import umap.parametric_umap as pumap # parametric UMAP
-import hdbscan # for clustering
-import leidenalg
+# # for handling s3 objects
+# import s3fs
 
-# for fast gzip compression/decompression
-import pgzip # - deprecated
 
-# might not be used
-import scipy.spatial.distance as dist # for distance metrics calculation
-import sklearn.cluster as skc # K-means
-
-# for fast approximate kNN search
-import pynndescent 
-
-# for leiden clustering
-import igraph as ig
-
-# for deep-learning based embedder and classifier
-import tensorflow as tf
-from tensorflow.keras import layers
-
-# for debugging
-from pdb import set_trace as bp
-
-# set up the logger
-# # define logging for multiprocessing dubugging
-# logger = multiprocessing.log_to_stderr( )
-# logger.setLevel( logging.INFO )
-# Info = multiprocessing.get_logger( ).info
-
-import logging
-
+# set logging format
 logging.basicConfig( format = '[SC-Elephant] %(asctime)s - %(message)s', level = logging.INFO )
 
-# for thread-safe start of processes
-mpsp = mp.get_context('spawn')
-
 # define version
-_version_ = '0.0.8'
+_version_ = '0.0.9'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-11-28 23:45:18'
+_last_modified_time_ = '2022-12-02 00:14:13 '
 
 """ # 2022-07-21 10:35:42  realease note
 
@@ -187,7 +173,7 @@ RAMtx, RamDataLayer, RamData now supports combined mode.
 RamData.load_model now can search and download models from component RamData
 
 # 2022-09-06 20:21:27 
-multiprocessing and load-balancing algorithm was improved (biobookshelf.Multiprocessing_Batch_Generator_and_Workers)
+multiprocessing and load-balancing algorithm was improved (biobookshelf.bk.Multiprocessing_Batch_Generator_and_Workers)
 
 # 2022-09-07 21:13:29 
 a multiprocessing support for HTTP-stored RamData objects was implemented by hosting zarr objects in spawned processes, making them thread-safe by isolating zarr objects from each other.
@@ -262,8 +248,13 @@ an issue in RamData.summarize was detected, where the last record has exceptiona
 It was due to reading the description line of the input matrix (# rows, # cols, # records) and writing it to the dense matrix.
 'create_zarr_from_mtx' method was corrected.
 
-##### Future implementations #####
+# 2022-12-02 00:14:34 
+dependency on biobookshelf was dropped by migrating necessary functions to scelephant core/biobookshelf.py
+also, heavy packages (tensorflow, pynndescent, etc.) will not be loaded by default
 
+##### Future implementations #####
+# 2022-12-01 20:48:47 
+support for s3 object will be added - for collaboration of very large single-cell data privately
 
 """
 
@@ -320,7 +311,7 @@ def CB_Match_Batch( l_id_cell_1, l_id_cell_2, flag_calculate_proportion_using_l_
     df_id_cell_2.reset_index( inplace = True, drop = False )
     df_id_cell_1.rename( columns = { 'id_sample_from_id_cell' : 'id_sample_from_id_cell_1' }, inplace = True )
     df_id_cell_2.rename( columns = { 'id_sample_from_id_cell' : 'id_sample_from_id_cell_2' }, inplace = True )
-    df_id_cell_1[ 'id_sample_from_id_cell_2' ] = df_id_cell_1.id_sample_from_id_cell_1.apply( MAP.Map( df_sample_matched.set_index( 'id_sample_1' ).id_sample_2.to_dict( ) ).a2b )
+    df_id_cell_1[ 'id_sample_from_id_cell_2' ] = df_id_cell_1.id_sample_from_id_cell_1.apply( bk.Map( df_sample_matched.set_index( 'id_sample_1' ).id_sample_2.to_dict( ) ).a2b )
     df_id_cell_1.dropna( subset = [ 'id_sample_from_id_cell_2' ], inplace = True ) # ignore cells without matching id_sample from the '2' batch
     df_id_cell_1.set_index( [ 'CB', 'id_sample_from_id_cell_2' ], inplace = True )
     df_id_cell_matched = df_id_cell_1.join( df_id_cell_2[ ~ pd.isnull( df_id_cell_2.id_sample_from_id_cell_2 ) ].set_index( [ 'CB', 'id_sample_from_id_cell_2' ] ), lsuffix = '_1', rsuffix = '_2' ) # match id_cells from two given list of id_cells
@@ -414,8 +405,8 @@ def Read_10X( path_folder_mtx_10x, verbose = False ) :
     df_feature.columns = [ 'id_feature', 'feature', 'feature_type' ]
 
     # mapping using 1 based coordinates (0->1 based coordinate )
-    df_mtx[ 'barcode' ] = df_mtx.id_column.apply( MAP.Map( DICTIONARY_Build_from_arr( df_bc.barcode.values, index_start = 1 ) ).a2b ) # mapping using 1 based coordinates (0->1 based coordinate )
-    df_mtx[ 'id_feature' ] = df_mtx.id_row.apply( MAP.Map( DICTIONARY_Build_from_arr( df_feature.id_feature.values, index_start = 1 ) ).a2b ) 
+    df_mtx[ 'barcode' ] = df_mtx.id_column.apply( bk.Map( bk.DICTIONARY_Build_from_arr( df_bc.barcode.values, index_start = 1 ) ).a2b ) # mapping using 1 based coordinates (0->1 based coordinate )
+    df_mtx[ 'id_feature' ] = df_mtx.id_row.apply( bk.Map( bk.DICTIONARY_Build_from_arr( df_feature.id_feature.values, index_start = 1 ) ).a2b ) 
     df_mtx.drop( columns = [ 'id_row', 'id_column' ], inplace = True ) # drop unnecessary columns
     
     return df_mtx, df_feature
@@ -426,6 +417,8 @@ def Write_10X( df_mtx, df_feature, path_folder_output_mtx_10x ) :
     'path_folder_output_mtx_10x' : an output folder directory where the mtx_10x files will be written
 
     """
+    import scipy.io
+    
     df_mtx = deepcopy( df_mtx ) # create a copy of df_mtx before modification
 
     # create an output folder
@@ -433,7 +426,7 @@ def Write_10X( df_mtx, df_feature, path_folder_output_mtx_10x ) :
 
     ''' save barcode file '''
     # retrieve list of barcodes
-    arr_barcode = LIST_COUNT( df_mtx.barcode, duplicate_filter = None ).index.values
+    arr_barcode = bk.LIST_COUNT( df_mtx.barcode, duplicate_filter = None ).index.values
     pd.DataFrame( arr_barcode ).to_csv( f"{path_folder_output_mtx_10x}barcodes.tsv.gz", sep = '\t', index = False, header = False ) 
 
     ''' save feature file '''
@@ -444,8 +437,8 @@ def Write_10X( df_mtx, df_feature, path_folder_output_mtx_10x ) :
 
     ''' save matrix file '''
     # convert feature and barcode to integer indices
-    df_mtx.id_feature = df_mtx.id_feature.apply( MAP.Map( DICTIONARY_Build_from_arr( arr_id_feature, order_index_entry = False ) ).a2b ) # 0-based coordinates
-    df_mtx.barcode = df_mtx.barcode.apply( MAP.Map( DICTIONARY_Build_from_arr( arr_barcode, order_index_entry = False ) ).a2b ) # 0-based coordinates
+    df_mtx.id_feature = df_mtx.id_feature.apply( bk.Map( bk.DICTIONARY_Build_from_arr( arr_id_feature, order_index_entry = False ) ).a2b ) # 0-based coordinates
+    df_mtx.barcode = df_mtx.barcode.apply( bk.Map( bk.DICTIONARY_Build_from_arr( arr_barcode, order_index_entry = False ) ).a2b ) # 0-based coordinates
     # save count matrix as a gzipped matrix market format
     row, col, data = df_mtx[ [ 'id_feature', 'barcode', 'read_count' ] ].values.T
     sm = scipy.sparse.coo_matrix( ( data, ( row, col ) ), shape = ( len( arr_id_feature ), len( arr_barcode ) ) )
@@ -485,6 +478,8 @@ def AnnData_Convert_to_10X_MTX( adata, path_folder_mtx_output, dict_var_rename :
     
     'dict_var_rename' : a dictionary for renaming columns of adata.var columns
     """
+    import scipy.io
+    
     # compose df_var
     df_feature = adata.var
     df_feature.rename( columns = dict_var_rename, inplace = True )
@@ -585,7 +580,7 @@ def MTX_10X_Split( path_folder_mtx_10x_output, int_max_num_entries_for_chunk = 1
             file.write( 'completed' )
     else :
         ''' retrieve the list of split mtx files '''
-        df = GLOB_Retrive_Strings_in_Wildcards( f"{path_folder_mtx_10x_output}matrix.mtx.gz.*.gz" )
+        df = bk.GLOB_Retrive_Strings_in_Wildcards( f"{path_folder_mtx_10x_output}matrix.mtx.gz.*.gz" )
         df.wildcard_0 = df.wildcard_0.astype( int )
         df.sort_values( 'wildcard_0', ascending = True, inplace = True )
         l_path_file_mtx_10x = df.path.values
@@ -596,7 +591,7 @@ def __MTX_10X_Combine__renumber_feature_mtx_10x__( path_file_input, path_folder_
     internal function for MTX_10X_Combine
     # 2022-02-22 00:38:33 
     '''
-#     dict_id_feature_to_index_feature = PICKLE_Read( f'{path_folder_mtx_10x_output}dict_id_feature_to_index_feature.pickle' ) # retrieve id_feature to index_feature mapping 
+#     dict_id_feature_to_index_feature = bk.PICKLE_Read( f'{path_folder_mtx_10x_output}dict_id_feature_to_index_feature.pickle' ) # retrieve id_feature to index_feature mapping 
     for path_folder_mtx_10x, int_total_n_barcodes_of_previously_written_matrices, index_mtx_10x in pd.read_csv( path_file_input, sep = '\t' ).values :
         # directly write matrix.mtx.gz file without header
         with gzip.open( f"{path_folder_mtx_10x_output}matrix.mtx.gz.{index_mtx_10x}.gz", 'wb' ) as newfile :
@@ -639,8 +634,8 @@ def Read_SPLiT_Seq( path_folder_mtx ) :
     df_feature.columns = [ 'id_feature', 'feature', 'genome' ]
 
     # mapping using 1 based coordinates (0->1 based coordinate )
-    df_mtx[ 'barcode' ] = df_mtx.id_row.apply( MAP.Map( DICTIONARY_Build_from_arr( df_bc.barcode.values, index_start = 1 ) ).a2b ) # mapping using 1 based coordinates (0->1 based coordinate )
-    df_mtx[ 'id_feature' ] = df_mtx.id_column.apply( MAP.Map( DICTIONARY_Build_from_arr( df_feature.id_feature.values, index_start = 1 ) ).a2b ) 
+    df_mtx[ 'barcode' ] = df_mtx.id_row.apply( bk.Map( bk.DICTIONARY_Build_from_arr( df_bc.barcode.values, index_start = 1 ) ).a2b ) # mapping using 1 based coordinates (0->1 based coordinate )
+    df_mtx[ 'id_feature' ] = df_mtx.id_column.apply( bk.Map( bk.DICTIONARY_Build_from_arr( df_feature.id_feature.values, index_start = 1 ) ).a2b ) 
     df_mtx.drop( columns = [ 'id_row', 'id_column' ], inplace = True ) # drop unnecessary columns
     return df_feature, df_mtx
 def MTX_10X_Barcode_add_prefix_or_suffix( path_file_barcodes_input, path_file_barcodes_output = None, barcode_prefix = '', barcode_suffix = '' ) :
@@ -799,7 +794,7 @@ def MTX_10X_Combine( path_folder_mtx_10x_output, * l_path_folder_mtx_10x_input, 
         """ build a mapping of id_entry to index_entry, which will be consistent across datasets - for features/barcodes that are shared between matrices """
         global dict_id_entry_to_index_entry # use global variable for multiprocessing
         dict_id_entry_to_index_entry = dict( ( t_entry[ 0 ], index_entry + 1 ) for index_entry, t_entry in enumerate( l_t_entry ) ) # 0>1 based index
-        PICKLE_Write( f'{path_folder_mtx_10x_output}dict_id_entry_to_index_entry.pickle', dict_id_entry_to_index_entry ) # save id_feature to index_feature mapping as a pickle file
+        bk.PICKLE_Write( f'{path_folder_mtx_10x_output}dict_id_entry_to_index_entry.pickle', dict_id_entry_to_index_entry ) # save id_feature to index_feature mapping as a pickle file
 
         ''' collect the number of records for each 10X matrix '''
         int_total_n_records = 0 
@@ -813,11 +808,11 @@ def MTX_10X_Combine( path_folder_mtx_10x_output, * l_path_folder_mtx_10x_input, 
         """ write a part of a combined matrix.mtx.gz for each dataset using multiple processes """
         # compose inputs for multiprocessing
         df_input = pd.DataFrame( { 'path_folder_input_mtx_10x' : l_path_folder_mtx_10x_input, 'int_total_n_barcodes_of_previously_written_matrices' : ( l_int_total_n_barcodes_of_previously_written_matrices if flag_renumber_feature_index else l_int_total_n_features_of_previously_written_matrices ), 'index_mtx_10x' : np.arange( len( l_int_total_n_barcodes_of_previously_written_matrices ) if flag_renumber_feature_index else len( l_int_total_n_features_of_previously_written_matrices ) ) } )
-        Multiprocessing( df_input, __MTX_10X_Combine__renumber_barcode_or_feature_index_mtx_10x__, int_num_threads, global_arguments = [ path_folder_mtx_10x_output, flag_renumber_feature_index ] )
+        bk.Multiprocessing( df_input, __MTX_10X_Combine__renumber_barcode_or_feature_index_mtx_10x__, int_num_threads, global_arguments = [ path_folder_mtx_10x_output, flag_renumber_feature_index ] )
 #         os.remove( f'{path_folder_mtx_10x_output}dict_id_entry_to_index_entry.pickle' ) # remove pickle file
         
         """ combine parts and add the MTX file header to compose a combined mtx file """
-        df_file = GLOB_Retrive_Strings_in_Wildcards( f"{path_folder_mtx_10x_output}matrix.mtx.gz.*.gz" )
+        df_file = bk.GLOB_Retrive_Strings_in_Wildcards( f"{path_folder_mtx_10x_output}matrix.mtx.gz.*.gz" )
         df_file.wildcard_0 = df_file.wildcard_0.astype( int )
         df_file.sort_values( 'wildcard_0', inplace = True )
         # if 'flag_split_mtx' is True, does not delete the split mtx files
@@ -850,6 +845,8 @@ def __Combine_Dictionaries__( path_folder_mtx_10x_input, name_dict ) :
     """ # 2022-03-06 00:06:23 
     combined dictionaries processed from individual files
     """
+    import collections
+    
     if os.path.exists( f'{path_folder_mtx_10x_input}{name_dict}.tsv.gz' ) :
         ''' if an output file already exists, read the file and return the combined dictionary '''
         dict_combined = pd.read_csv( f'{path_folder_mtx_10x_input}{name_dict}.tsv.gz', sep = '\t', header = None, index_col = 0 ).iloc[ :, 0 ].to_dict( )
@@ -943,7 +940,7 @@ def __MTX_10X_Summarize_Counts__summarize_counts_for_each_mtx_10x__( path_file_i
                 line = file.readline( ).decode( ) # binary > uncompressed string # read the next line
     
     # save collected count as tsv files
-    str_uuid_process = UUID( ) # retrieve uuid of the current process
+    str_uuid_process = bk.UUID( ) # retrieve uuid of the current process
     pd.Series( dict_id_column_to_count ).to_csv( f'{path_folder_mtx_10x_input}dict_id_column_to_count.{str_uuid_process}.tsv.gz', sep = '\t', header = None )
     pd.Series( dict_id_column_to_n_features ).to_csv( f'{path_folder_mtx_10x_input}dict_id_column_to_n_features.{str_uuid_process}.tsv.gz', sep = '\t', header = None )
     pd.Series( dict_id_row_to_count ).to_csv( f'{path_folder_mtx_10x_input}dict_id_row_to_count.{str_uuid_process}.tsv.gz', sep = '\t', header = None )
@@ -1026,25 +1023,25 @@ def MTX_10X_Summarize_Counts( path_folder_mtx_10x_input, verbose = False, int_nu
                 assert not( '/' in name_set_feature or '\n' in name_set_feature )
 
             dict_name_set_feature_to_set_id_row = dict( ( name_set_feature, set( dict_id_feature_to_id_row[ id_feature ] for id_feature in dict_name_set_feature_to_l_id_feature[ name_set_feature ] ) ) for name_set_feature in dict_name_set_feature_to_l_id_feature )
-            # PICKLE_Write( f"{path_folder_mtx_10x_input}dict_name_set_feature_to_set_id_row.binary.pickle", dict_name_set_feature_to_set_id_row ) # write the dictionary as a pickle
+            # bk.PICKLE_Write( f"{path_folder_mtx_10x_input}dict_name_set_feature_to_set_id_row.binary.pickle", dict_name_set_feature_to_set_id_row ) # write the dictionary as a pickle
 
         ''' summarize each split mtx file '''
-        Multiprocessing( l_path_file_mtx_10x, __MTX_10X_Summarize_Counts__summarize_counts_for_each_mtx_10x__, n_threads = int_num_threads, global_arguments = [ path_folder_mtx_10x_input ] )
+        bk.Multiprocessing( l_path_file_mtx_10x, __MTX_10X_Summarize_Counts__summarize_counts_for_each_mtx_10x__, n_threads = int_num_threads, global_arguments = [ path_folder_mtx_10x_input ] )
 
         ''' combine summarized results '''
         # update the list of the names of dictionaries
-        l_name_dict += list( f"{name_set_feature}.dict_id_column_to_count" for name_set_feature in GLOB_Retrive_Strings_in_Wildcards( f'{path_folder_mtx_10x_input}*.dict_id_column_to_count.*.tsv.gz' ).wildcard_0.unique( ) ) 
+        l_name_dict += list( f"{name_set_feature}.dict_id_column_to_count" for name_set_feature in bk.GLOB_Retrive_Strings_in_Wildcards( f'{path_folder_mtx_10x_input}*.dict_id_column_to_count.*.tsv.gz' ).wildcard_0.unique( ) ) 
 
         dict_dict = dict( )
         for name_dict in l_name_dict :
             dict_dict[ name_dict ] = __Combine_Dictionaries__( path_folder_mtx_10x_input, name_dict )
         # write the flag
         with open( path_file_flag, 'w' ) as newfile :
-            newfile.write( 'completed at ' + TIME_GET_timestamp( True ) )
+            newfile.write( 'completed at ' + bk.TIME_GET_timestamp( True ) )
     else :
         ''' read summarized results '''
         # update the list of the names of dictionaries
-        l_name_dict += list( f"{name_set_feature}.dict_id_column_to_count" for name_set_feature in GLOB_Retrive_Strings_in_Wildcards( f'{path_folder_mtx_10x_input}*.dict_id_column_to_count.tsv.gz' ).wildcard_0.unique( ) ) 
+        l_name_dict += list( f"{name_set_feature}.dict_id_column_to_count" for name_set_feature in bk.GLOB_Retrive_Strings_in_Wildcards( f'{path_folder_mtx_10x_input}*.dict_id_column_to_count.tsv.gz' ).wildcard_0.unique( ) ) 
 
         dict_dict = dict( )
         for name_dict in l_name_dict :
@@ -1153,7 +1150,7 @@ def __MTX_10X_Calculate_Average_Log10_Transformed_Normalized_Expr__first_pass__(
                 line = file.readline( ).decode( ) # binary > uncompressed string # read the next line
     
     # save collected count as tsv files
-    str_uuid_process = UUID( ) # retrieve uuid of the current process
+    str_uuid_process = bk.UUID( ) # retrieve uuid of the current process
     pd.Series( dict_id_row_to_deviation_from_mean_count ).to_csv( f'{path_folder_mtx_10x_input}dict_id_row_to_deviation_from_mean_count.{str_uuid_process}.tsv.gz', sep = '\t', header = None )
     pd.Series( dict_id_row_to_deviation_from_mean_log_transformed_count ).to_csv( f'{path_folder_mtx_10x_input}dict_id_row_to_deviation_from_mean_log_transformed_count.{str_uuid_process}.tsv.gz', sep = '\t', header = None )
     pd.Series( dict_id_row_to_normalized_count ).to_csv( f'{path_folder_mtx_10x_input}dict_id_row_to_normalized_count.{str_uuid_process}.tsv.gz', sep = '\t', header = None )
@@ -1205,7 +1202,7 @@ def __MTX_10X_Calculate_Average_Log10_Transformed_Normalized_Expr__second_pass__
                 line = file.readline( ).decode( ) # binary > uncompressed string # read the next line
     
     # save collected count as tsv files
-    str_uuid_process = UUID( ) # retrieve uuid of the current process
+    str_uuid_process = bk.UUID( ) # retrieve uuid of the current process
     pd.Series( dict_id_row_to_deviation_from_mean_normalized_count ).to_csv( f'{path_folder_mtx_10x_input}dict_id_row_to_deviation_from_mean_normalized_count.{str_uuid_process}.tsv.gz', sep = '\t', header = None )
     pd.Series( dict_id_row_to_deviation_from_mean_log_transformed_normalized_count ).to_csv( f'{path_folder_mtx_10x_input}dict_id_row_to_deviation_from_mean_log_transformed_normalized_count.{str_uuid_process}.tsv.gz', sep = '\t', header = None )
 def MTX_10X_Calculate_Average_Log10_Transformed_Normalized_Expr( path_folder_mtx_10x_input, int_target_sum = 10000, verbose = False, int_num_threads = 15, flag_split_mtx = True, int_max_num_entries_for_chunk = 10000000 ) :
@@ -1256,7 +1253,7 @@ def MTX_10X_Calculate_Average_Log10_Transformed_Normalized_Expr( path_folder_mtx
         dict_id_row_to_avg_log_transformed_count = ( pd.Series( dict_id_row_to_log_transformed_count ) / int_num_cells ).to_dict( ) # calculate average log-transformed expression of each feature
         
         ''' calculated average log2 transformed normalized expr for each split mtx file '''
-        Multiprocessing( l_path_file_mtx_10x, __MTX_10X_Calculate_Average_Log10_Transformed_Normalized_Expr__first_pass__, n_threads = int_num_threads, global_arguments = [ path_folder_mtx_10x_input, int_target_sum ] )
+        bk.Multiprocessing( l_path_file_mtx_10x, __MTX_10X_Calculate_Average_Log10_Transformed_Normalized_Expr__first_pass__, n_threads = int_num_threads, global_arguments = [ path_folder_mtx_10x_input, int_target_sum ] )
 
         l_name_dict_first_pass = [ 'dict_id_row_to_deviation_from_mean_count', 'dict_id_row_to_deviation_from_mean_log_transformed_count', 'dict_id_row_to_normalized_count', 'dict_id_row_to_log_transformed_normalized_count' ]
         
@@ -1271,7 +1268,7 @@ def MTX_10X_Calculate_Average_Log10_Transformed_Normalized_Expr( path_folder_mtx
         dict_id_row_to_avg_log_transformed_normalized_count = ( pd.Series( dict_dict[ 'dict_id_row_to_log_transformed_normalized_count' ] ) / int_num_cells ).to_dict( ) # calculate average log-transformed expression of each feature
         
         ''' calculated average log2 transformed normalized expr for each split mtx file '''
-        Multiprocessing( l_path_file_mtx_10x, __MTX_10X_Calculate_Average_Log10_Transformed_Normalized_Expr__second_pass__, n_threads = int_num_threads, global_arguments = [ path_folder_mtx_10x_input, int_target_sum ] )
+        bk.Multiprocessing( l_path_file_mtx_10x, __MTX_10X_Calculate_Average_Log10_Transformed_Normalized_Expr__second_pass__, n_threads = int_num_threads, global_arguments = [ path_folder_mtx_10x_input, int_target_sum ] )
 
         l_name_dict_second_pass = [ 'dict_id_row_to_deviation_from_mean_normalized_count', 'dict_id_row_to_deviation_from_mean_log_transformed_normalized_count' ]
         
@@ -1302,7 +1299,7 @@ def MTX_10X_Calculate_Average_Log10_Transformed_Normalized_Expr( path_folder_mtx
         
         # write the flag
         with open( path_file_flag, 'w' ) as newfile :
-            newfile.write( 'completed at ' + TIME_GET_timestamp( True ) )
+            newfile.write( 'completed at ' + bk.TIME_GET_timestamp( True ) )
     else :
         ''' if 'MTX_10X_Calculate_Average_Log10_Transformed_Normalized_Expr' function has been already run on the current folder, read the previously saved result, and return the summary dataframe '''
         df_summary = pd.read_csv( f'{path_folder_mtx_10x_input}statistical_summary_of_features.int_target_sum__{int_target_sum}.tsv.gz', sep = '\t' ) # save statistical summary as a text file
@@ -1316,8 +1313,8 @@ def __MTX_10X_Filter__filter_mtx_10x__( path_file_input, path_folder_mtx_10x_out
     int_n_entries = total number of entries written by the current process after filtering
     """
     int_n_entries = 0 # total number of entries written by the current process after filtering
-#     dict_id_column_previous_to_id_column_current = PICKLE_Read( f'{path_folder_mtx_10x_output}dict_id_column_previous_to_id_column_current.pickle' ) # retrieve id_feature to index_feature mapping 
-#     dict_id_row_previous_to_id_row_current = PICKLE_Read( f'{path_folder_mtx_10x_output}dict_id_row_previous_to_id_row_current.pickle' ) # retrieve id_feature to index_feature mapping 
+#     dict_id_column_previous_to_id_column_current = bk.PICKLE_Read( f'{path_folder_mtx_10x_output}dict_id_column_previous_to_id_column_current.pickle' ) # retrieve id_feature to index_feature mapping 
+#     dict_id_row_previous_to_id_row_current = bk.PICKLE_Read( f'{path_folder_mtx_10x_output}dict_id_row_previous_to_id_row_current.pickle' ) # retrieve id_feature to index_feature mapping 
     """ write a filtered matrix.mtx.gz for each split mtx file """
     for path_file_mtx_10x, index_mtx_10x in pd.read_csv( path_file_input, sep = '\t' ).values :
         # directly write matrix.mtx.gz file without using an external dependency
@@ -1445,14 +1442,14 @@ def MTX_10X_Filter( path_folder_mtx_10x_input, path_folder_mtx_10x_output, min_c
     df_bc.reset_index( drop = False, inplace = True )
     df_bc[ 'id_column_current' ] = np.arange( len( df_bc ) )
     dict_id_column_previous_to_id_column_current = df_bc.set_index( 'id_column_previous' ).id_column_current.to_dict( ) 
-    PICKLE_Write( f'{path_folder_mtx_10x_output}dict_id_column_previous_to_id_column_current.pickle', dict_id_column_previous_to_id_column_current ) # save id_feature to index_feature mapping 
+    bk.PICKLE_Write( f'{path_folder_mtx_10x_output}dict_id_column_previous_to_id_column_current.pickle', dict_id_column_previous_to_id_column_current ) # save id_feature to index_feature mapping 
     """ retrieve a mapping between previous id_row to current id_row """
     df_feature = df_feature.loc[ list( set_id_row ) ]
     df_feature.index.name = 'id_row_previous'
     df_feature.reset_index( drop = False, inplace = True )
     df_feature[ 'id_row_current' ] = np.arange( len( df_feature ) )
     dict_id_row_previous_to_id_row_current = df_feature.set_index( 'id_row_previous' ).id_row_current.to_dict( ) 
-    PICKLE_Write( f'{path_folder_mtx_10x_output}dict_id_row_previous_to_id_row_current.pickle', dict_id_row_previous_to_id_row_current ) # save id_feature to index_feature mapping 
+    bk.PICKLE_Write( f'{path_folder_mtx_10x_output}dict_id_row_previous_to_id_row_current.pickle', dict_id_row_previous_to_id_row_current ) # save id_feature to index_feature mapping 
 
     ''' save barcode file '''
     df_bc.to_csv( f"{path_folder_mtx_10x_output}barcodes.tsv.gz", columns = [ 'barcode' ], sep = '\t', index = False, header = False ) 
@@ -1465,12 +1462,12 @@ def MTX_10X_Filter( path_folder_mtx_10x_input, path_folder_mtx_10x_output, min_c
     """ write a filtered matrix.mtx.gz for each split mtx file using multiple processes and retrieve the total number of entries written by each process """
     # compose inputs for multiprocessing
     df_input = pd.DataFrame( { 'path_file_mtx_10x' : l_path_file_mtx_10x, 'index_mtx_10x' : np.arange( len( l_path_file_mtx_10x ) ) } )
-    l_int_n_entries = Multiprocessing( df_input, __MTX_10X_Filter__filter_mtx_10x__, int_num_threads, global_arguments = [ path_folder_mtx_10x_output ] ) 
+    l_int_n_entries = bk.Multiprocessing( df_input, __MTX_10X_Filter__filter_mtx_10x__, int_num_threads, global_arguments = [ path_folder_mtx_10x_output ] ) 
     # retrieve the total number of entries
     int_total_n_entries = sum( l_int_n_entries )
     
     """ combine parts and add the MTX file header to compose a combined mtx file """
-    df_file = GLOB_Retrive_Strings_in_Wildcards( f"{path_folder_mtx_10x_output}matrix.mtx.gz.*.gz" )
+    df_file = bk.GLOB_Retrive_Strings_in_Wildcards( f"{path_folder_mtx_10x_output}matrix.mtx.gz.*.gz" )
     df_file.wildcard_0 = df_file.wildcard_0.astype( int )
     df_file.sort_values( 'wildcard_0', inplace = True )
     
@@ -1551,6 +1548,8 @@ def Merge_Sort_Files( file_output, * l_iterator_decorated_file_input ) :
     'path_file_output' : output file handle/stream
     'l_iterator_decorated_file_input' : a list of iterators based on input file handles (or streams). each iterator should yield the following tuple: (key_for_sorting, content_that_will_be_written_in_the_output_file). This function does not check whether the datatype of the 'content_that_will_be_written_in_the_output_file' matches that of 'path_file_output'
     """
+    import heapq
+    
     # handle invalid case
     if len( l_iterator_decorated_file_input ) == 0 :
         return - 1
@@ -1610,6 +1609,8 @@ def __Merge_Sort_and_Index_MTX_10X__( path_file_output, * l_path_file_input, fla
     
     'flag_ramtx_sorted_by_id_feature' : if True, sort by 'id_feature'. if False, sort by 'id_cell'
     """
+    import heapq
+    
     # process arguments for input files
     if isinstance( l_path_file_input[ 0 ], str ) : # if paths are given as input files
         flag_input_binary = l_path_file_input[ 0 ].rsplit( '.', 1 )[ 1 ].lower( ) == 'gz' # automatically detect gzipped input file # determined gzipped status by only looking at the first file
@@ -1682,7 +1683,7 @@ def Convert_df_count_to_MTX_10X( path_file_df_count, path_folder_mtx_10x_output,
     'path_file_df_count' : file path to 'df_count'
     '''
     # create a temporary output folder
-    path_folder_temp = f'{path_folder_mtx_10x_output}temp_{UUID( )}/' 
+    path_folder_temp = f'{path_folder_mtx_10x_output}temp_{bk.UUID( )}/' 
     os.makedirs( path_folder_temp, exist_ok = True ) 
 
     # retrieve unique feature/barcode information from df_count
@@ -1711,8 +1712,8 @@ def Convert_df_count_to_MTX_10X( path_file_df_count, path_folder_mtx_10x_output,
         # iterate through each chunk
         for df_chunk in pd.read_csv( path_file_df_count, iterator = True, header = 0, chunksize = chunksize, sep = '\t', usecols = [ 'id_feature', 'barcode', 'read_count' ] ) :
             df_chunk = df_chunk[ [ 'id_feature', 'barcode', 'read_count' ] ] # reorder columns
-            df_chunk[ 'id_feature' ] = df_chunk.id_feature.apply( MAP.Map( dict_to_int_feature ).a2b )
-            df_chunk[ 'barcode' ] = df_chunk.barcode.apply( MAP.Map( dict_to_int_barcode ).a2b )
+            df_chunk[ 'id_feature' ] = df_chunk.id_feature.apply( bk.Map( dict_to_int_feature ).a2b )
+            df_chunk[ 'barcode' ] = df_chunk.barcode.apply( bk.Map( dict_to_int_barcode ).a2b )
             df_chunk.to_csv( newfile, sep = ' ', header = None, index = False )
 
     # export result files
@@ -2030,408 +2031,6 @@ def _get_func_processed_bytes_to_arrays_mtx_and_other_settings_based_on_file_for
             return _pickle_bytes_to_obj( _gunzip_bytes( bytes_content ) )
     return str_ext, str_ext_index, func_processed_bytes_to_arrays_mtx
 
-''' deprecated methods for creating RAMtx objects '''
-def __Merge_Sort_MTX_10X_and_Write_and_Index_Zarr__( za_mtx, za_mtx_index, * l_path_file_input, flag_ramtx_sorted_by_id_feature = True, flag_delete_input_file_upon_completion = False, dtype_mtx = np.float64, dtype_mtx_index = np.float64, int_size_buffer_for_mtx_index = 1000 ) :
-    """ # deprecated
-    # 2022-07-02 11:37:05 
-    merge sort mtx files into a single mtx uncompressed file and index entries in the combined mtx file while writing the file
-    
-    # 2022-07-02 11:37:13 
-    za_mtx format change. now each mtx record contains two values instead of three values for more compact storage
-    
-    'za_mtx' : output Zarr matrix object (persistant array is recommended)
-    'za_mtx_index' : output Zarr matrix index object (persistant array is recommended)
-    'flag_ramtx_sorted_by_id_feature' : if True, sort by 'id_feature'. if False, sort by 'id_cell'
-    'flag_delete_input_file_upon_completion' : delete input files after the output files are generated
-    'int_size_buffer_for_mtx_index' : size of buffer for writing mtx index data to the input 'za_mtx_index' data object
-    """
-    # process arguments for input files
-    if isinstance( l_path_file_input[ 0 ], str ) : # if paths are given as input files
-        flag_input_binary = l_path_file_input[ 0 ].rsplit( '.', 1 )[ 1 ].lower( ) == 'gz' # automatically detect gzipped input file # determined gzipped status by only looking at the first file
-        l_file_input = list( gzip.open( path_file, 'rb' ) if flag_input_binary else open( path_file, 'r' ) for path_file in l_path_file_input )
-    else :
-        flag_input_binary = is_binary_stream( l_file_input[ 0 ] ) # detect binary stream 
-        l_file_input = l_path_file_input
-    # process argument for output file
-        
-    # define a function for decorating mtx record
-    def __decorate_mtx_file__( file ) :
-        ''' parse and decorate mtx record for sorting. the resulting records only contains two values, index of axis that were not indexed and the data value, for more compact storage and efficient retrival of the data. '''
-        while True :
-            line = file.readline( )
-            if len( line ) == 0 :
-                break
-            ''' parse a mtx record '''
-            line_decoded = line.decode( ) if flag_input_binary else line
-            index_row, index_column, float_value = ( line_decoded ).strip( ).split( ) # parse a record of a matrix-market format file
-            index_row, index_column, float_value = int( index_row ) - 1, int( index_column ) - 1, float( float_value ) # 1-based > 0-based coordinates
-            # return record with decoration according to the sorted axis # return 0-based coordinates
-            if flag_ramtx_sorted_by_id_feature :
-                yield index_row, ( index_column, float_value ) 
-            else :
-                yield index_column, ( index_row, float_value ) 
-    # perform merge sorting
-    int_entry_currently_being_written = None # place holder value
-    int_num_mtx_records_written = 0
-    l_mtx_record = [ ]
-    int_num_mtx_index_records_written = 0
-    l_mtx_index = [ ]
-    def flush_matrix_index( int_num_mtx_index_records_written ) :
-        ''' # 2022-06-21 16:26:09 
-        flush matrix index data and update 'int_num_mtx_index_records_written' '''
-        int_num_newly_added_mtx_index_records = len( l_mtx_index )
-        if int_num_newly_added_mtx_index_records > 0 :
-            za_mtx_index[ int_num_mtx_index_records_written : int_num_mtx_index_records_written + int_num_newly_added_mtx_index_records ] = np.array( l_mtx_index, dtype = dtype_mtx_index ) # add data to the zarr data sink
-            int_num_mtx_index_records_written += int_num_newly_added_mtx_index_records # update 'int_num_mtx_index_records_written'
-        return int_num_mtx_index_records_written
-    def flush_matrix( int_num_mtx_records_written ) : 
-        ''' # 2022-06-21 16:26:09 
-        flush a block of matrix data of a single entry (of the axis used for sorting) to Zarr and index the block, and update 'int_num_mtx_records_written' '''
-        int_num_newly_added_mtx_records = len( l_mtx_record )
-        if int_num_newly_added_mtx_records > 0 : # if there is valid record to be flushed
-            # add records to mtx_index
-            l_mtx_index.append( [ int_num_mtx_records_written, int_num_mtx_records_written + int_num_newly_added_mtx_records ] ) # collect information required for indexing
-            for int_entry in range( int_entry_currently_being_written + 1, int_entry_of_the_current_record ) : # for the int_entry that lack count data and does not have indexing data, put place holder values
-                l_mtx_index.append( [ -1, -1 ] ) # put place holder values for int_entry lacking count data.
-            
-            za_mtx[ int_num_mtx_records_written : int_num_mtx_records_written + int_num_newly_added_mtx_records ] = np.array( l_mtx_record, dtype = dtype_mtx ) # add data to the zarr data sink
-            int_num_mtx_records_written += int_num_newly_added_mtx_records
-        return int_num_mtx_records_written
-    
-    for int_entry_of_the_current_record, mtx_record in heapq.merge( * list( __decorate_mtx_file__( file ) for file in l_file_input ) ) : # retrieve int_entry and mtx_record of the current mtx_record
-        if int_entry_currently_being_written is None :
-            int_entry_currently_being_written = int_entry_of_the_current_record # update current int_entry
-        elif int_entry_currently_being_written != int_entry_of_the_current_record : # if current int_entry is different from the previous one, which mark the change of sorted blocks (a block has the same id_entry), save the data for the previous block to the output zarr and initialze data for the next block 
-            int_num_mtx_records_written = flush_matrix( int_num_mtx_records_written ) # flush data
-            l_mtx_record = [ ] # reset buffer
-            int_entry_currently_being_written = int_entry_of_the_current_record # update current int_entry
-            # flush matrix index once the buffer is full
-            if len( l_mtx_index ) >= int_size_buffer_for_mtx_index :
-                int_num_mtx_index_records_written = flush_matrix_index( int_num_mtx_index_records_written )
-                l_mtx_index = [ ] # reset buffer
-        # append the record to the data
-        l_mtx_record.append( mtx_record )
-        
-    # write the record for the last block
-    int_entry_of_the_current_record = za_mtx_index.shape[ 0 ] # set 'next' int_entry to the end of the int_entry values so that place holder values can be set to the missing int_entry 
-    int_num_mtx_records_written = flush_matrix( int_num_mtx_records_written ) # flush the last block
-    int_num_mtx_index_records_written = flush_matrix_index( int_num_mtx_index_records_written ) # flush matrix index data
-    
-    ''' delete input files once merge sort is completed if 'flag_delete_input_file_upon_completion' is True '''
-    if flag_delete_input_file_upon_completion and isinstance( l_path_file_input[ 0 ], str ) : # if paths are given as input files
-        for path_file in l_path_file_input :
-            os.remove( path_file )
-def Convert_MTX_10X_to_RAMtx( path_folder_mtx_10x_input, path_folder_ramtx_output, flag_ramtx_sorted_by_id_feature = True, int_num_threads = 15, int_num_threads_for_splitting = 3, int_max_num_entries_for_chunk = 10000000, int_max_num_files_for_each_merge_sort = 5, dtype_mtx = np.float64, dtype_mtx_index = np.float64, int_num_of_records_in_a_chunk_zarr_matrix = 20000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, verbose = False, flag_debugging = False ) :
-    '''  # deprecated
-    # 2022-07-08 01:56:32 
-    sort and index a given 'path_folder_mtx_10x_input' containing a 10X matrix file, constructing a random read access matrix (RAMtx).
-    'path_folder_mtx_10x_input' folder will be used as temporary folder
-    During the operation, the input matrix will be unzipped in two different formats before indexing, which might require extradisk space (expected peak disk usage: 4~8 times of the gzipped mtx file size).
-    if the 'path_folder_ramtx_output' folder contains RAMtx object of any format, this funciton will exit
-    Assumes the values stored in the 10X data is integer.
-
-    change in 2022-05-15 19:43:07 :
-    barcodes and features will be sorted, and both will be renumbered in the output matrix.mtx.gz file.
-
-    2022-05-16 15:05:32 :
-    barcodes and features with zero counts will not be removed to give flexibillity for the RAMtx object.
-
-    2022-06-10 20:04:06 :
-    memory leak issue detected and resolved
-
-    'int_num_threads' : number of threads for multiprocessing/multithreading. 
-    'path_folder_ramtx_output' : an empty folder should be given.
-    'flag_ramtx_sorted_by_id_feature' : if True, sort by 'id_feature'. if False, sort by 'id_cell'
-    'int_max_num_files_for_each_merge_sort' : (default: 5) the maximun number of files that can be merged in a merge sort run. reducing this number will increase the number of threads that can be used for sorting but increase the number of iteration for iterative merge sorting. (3~10 will produce an ideal performance.)
-    'dtype_mtx' (default: np.float64), dtype of the output zarr array for storing matrix
-    'dtype_mtx_index' (default: np.float64) : dtype of the output zarr array for storing matrix indices
-    'flag_debugging' : if True, does not delete temporary files
-    'int_num_of_records_in_a_chunk_zarr_matrix' : chunk size for output zarr objects
-    'int_num_of_entries_in_a_chunk_zarr_matrix_index' : chunk size for output zarr objects
-    'int_num_threads_for_splitting' : minimum number of threads for spliting and sorting of the input matrix.
-    
-    ❤️❤️❤️ # 2022-07-12 20:05:10  improve memory efficiency by using array for coordinate conversion and read chunking for 'Axis' generation
-    '''
-
-    path_file_flag = f"{path_folder_ramtx_output}ramtx.completed.flag"
-    if not os.path.exists( path_file_flag ) : # check flag
-        # create a temporary folder
-        path_temp = f"{path_folder_mtx_10x_input}temp_{UUID( )}/" 
-        os.makedirs( path_temp, exist_ok = True )
-
-        path_file_input_bc, path_file_input_feature, path_file_input_mtx = __Get_path_essential_files__( path_folder_mtx_10x_input )
-        int_num_features, int_num_barcodes, int_num_records = MTX_10X_Retrieve_number_of_rows_columns_and_records( path_folder_mtx_10x_input ) # retrieve metadata of mtx
-        int_max_num_entries_for_chunk = min( int( np.ceil( int_num_records / int_num_threads ) ), int_max_num_entries_for_chunk ) # update the 'int_max_num_entries_for_chunk' based on the total number of entries and the number of given threads
-
-        ''' retrieve mappings of previous index_entry to new index_entry after sorting (1-based) for both barcodes and features '''
-        # retrieve sorting indices of barcodes and features
-        dict_name_file_to_dict_index_entry_to_index_entry_new_after_sorting = dict( ( name_file, dict( ( e, i + 1 ) for i, e in enumerate( pd.read_csv( f"{path_folder_mtx_10x_input}{name_file}", sep = '\t', header = None, usecols = [ 0 ] ).squeeze( ).sort_values( ).index.values + 1 ) ) ) for name_file in [ 'barcodes.tsv.gz', 'features.tsv.gz' ] ) # 0>1 based coordinates. index_entry is in 1-based coordinate format (same as mtx format) # since rank will be used as a new index, it should be 1-based, and 1 will be added to the rank in 0-based coordinates
-        dict_name_file_to_mo_from_index_entry_to_index_entry_new_after_sorting = dict( ( name_file, MAP.Map( dict_name_file_to_dict_index_entry_to_index_entry_new_after_sorting[ name_file ] ).a2b ) for name_file in dict_name_file_to_dict_index_entry_to_index_entry_new_after_sorting ) # retrieve mapping objects for each name_file
-
-        ''' sort small chunks based on the mapped ranks and write them as small files '''
-        def __mtx_record_distributor__( * l_pipe_to_and_from_mtx_record_receiver ) :
-            ''' # 2022-06-10 21:15:45 
-            distribute matrix records from the input matrix file 
-
-            'l_pipe_to_and_from_mtx_record_receiver' : [ pipe_to_receiver_1, pipe_to_receiver_2, ..., pipe_from_receiver_1, pipe_from_receiver_2, ... ]
-            '''
-            # parse inputs
-            int_num_receiver = int( len( l_pipe_to_and_from_mtx_record_receiver ) / 2 ) # retrieve the number of receivers
-            l_pipe_to_mtx_record_receiver = l_pipe_to_and_from_mtx_record_receiver[ : int_num_receiver ]
-            l_pipe_from_mtx_record_receiver = l_pipe_to_and_from_mtx_record_receiver[ int_num_receiver : ]
-
-            with gzip.open( path_file_input_mtx, 'rb' ) as file : # assumes that the input fastq file is gzipped.
-                ''' read the first line '''
-                line = file.readline( ) # binary string
-                ''' if the first line of the file contains a comment line, read all comment lines and a description line following the comments. '''
-                if line.decode( )[ 0 ] == '%' :
-                    # read comment and the description line
-                    while True :
-                        if line.decode( )[ 0 ] != '%' :
-                            break
-                        line = file.readline( ) # try to read the description line
-                    line = file.readline( ) # read a mtx record 
-                ''' distribute mtx records '''
-                index_receiver = 0 
-                arr_num_mtx_record_need_flushing = np.zeros( len( l_pipe_to_mtx_record_receiver ) ) # record the number of mtx records that need flushing
-                l_line = [ ] # initialize the contents 
-                while True :
-                    if len( line ) == 0 : # if all records have been read
-                        l_pipe_to_mtx_record_receiver[ index_receiver ].send( b''.join( l_line ) ) # send the collected records
-                        break
-                    ''' if the current receiver is marked unavailable, check whether it is available now, and if not, wait a little and use the next receiver  '''
-                    if arr_num_mtx_record_need_flushing[ index_receiver ] < 0 :
-                        if not l_pipe_from_mtx_record_receiver[ index_receiver ].poll( ) : # if the receiver is still unavailable
-                            time.sleep( 1 ) # sleep for 1 second
-                            index_receiver = ( index_receiver + 1 ) % int_num_receiver # use the next receiver instead
-                            continue
-                        else :
-                            ''' if the receiver can become available, mark it as an available receiver '''
-                            l_pipe_from_mtx_record_receiver[ index_receiver ].recv( ) # clear the signal that indicates the receiver is not available
-                            arr_num_mtx_record_need_flushing[ index_receiver ] = 0 # remove the mark indicating the current receiver is 'unavailable'
-                    """ for the currently available receiver, add a record in the queue for the receiver and if the size of the queue is full, distribute the records to the receiver """
-                    ''' add a record in the queue for the receiver '''
-                    l_line.append( line ) # collect the content
-                    arr_num_mtx_record_need_flushing[ index_receiver ] += 1 # update the count
-                    ''' if the size of the queue is full, distribute the records to the receiver '''
-                    if arr_num_mtx_record_need_flushing[ index_receiver ] >= int_max_num_entries_for_chunk : # if the chunk is full, send collected content, start sorting and writing as a file
-                        l_pipe_to_mtx_record_receiver[ index_receiver ].send( b''.join( l_line ) ) # send the collected records
-                        l_line = [ ] # initialize the content for the next batch
-                        arr_num_mtx_record_need_flushing[ index_receiver ] = -1 # mark the current receiver as 'unavailable'
-                        index_receiver = ( index_receiver + 1 ) % int_num_receiver # use the next receiver
-                    ''' read the next record '''
-                    line = file.readline( ) # read a mtx record 
-            # notify each receiver that all records were parsed and receivers should exit after completing their remaining jobs
-            for pipe in l_pipe_to_mtx_record_receiver :
-                pipe.send( -1 )
-        def __mtx_record_sorter__( pipe_from_mtx_record_parser, pipe_to_mtx_record_parser ) :
-            ''' # 2022-07-08 01:56:26 
-            receive matrix record from the mtx record parser and write a sorted matrix file for each chunk
-
-            'pipe_from_mtx_record_parser' : if bytes is received, parse the bytes. if 0 is received, write the bytes to file. if -1 is received, write the bytes to file and exit
-            '''
-            while True :
-                byte_content = pipe_from_mtx_record_parser.recv( )
-                if byte_content == -1 or isinstance( byte_content, int ) : # complete the process
-                    break
-                # if there is valid content to be written, write the sorted records as a file
-                if len( byte_content ) > 0 :
-                    try :
-                        with io.BytesIO( byte_content ) as file :
-                            df = pd.read_csv( file, sep = ' ', header = None )
-                        del byte_content
-                        df.columns = [ 'index_row', 'index_col', 'float_value' ]
-                        for name_col, name_file in zip( [ 'index_row', 'index_col' ], [ 'features.tsv.gz', 'barcodes.tsv.gz' ] ) :
-                            df[ name_col ] = df[ name_col ].apply( dict_name_file_to_mo_from_index_entry_to_index_entry_new_after_sorting[ name_file ] ) # retrieve ranks of the entries, or new indices after sorting
-                        df.sort_values( 'index_row' if flag_ramtx_sorted_by_id_feature else 'index_col', inplace = True ) # sort by row if the matrix is sorted by features and sort by column if the matrix is sorted by barcodes
-                        df.to_csv( f"{path_temp}0.{UUID( )}.mtx.gz", sep = ' ', header = None, index = False ) # save the sorted mtx records as a file
-                        del df
-                    except :
-                        logging.info( byte_content.decode( ).split( '\n', 1 )[ 0 ] )
-                        break
-                pipe_to_mtx_record_parser.send( 'flush completed' ) # send signal that flushing the received data has been completed, and now ready to export matrix again
-
-        int_n_workers_for_sorting = min( int_num_threads_for_splitting, max( int_num_threads - 1, 1 ) ) # one thread for distributing records. Minimum numbers of workers for sorting is 1 # the number of worker for sorting should not exceed 3
-        l_pipes_from_distributor_to_sorter = list( mp.Pipe( ) for _ in range( int_n_workers_for_sorting ) ) # create pipes for sending records from the distributor to the sorter
-        l_pipes_from_sorter_to_distributor = list( mp.Pipe( ) for _ in range( int_n_workers_for_sorting ) ) # create pipes for sending records from the sorter to the distributor
-
-        l_processes = [ mp.Process( target = __mtx_record_distributor__, args = ( list( pipe_in for pipe_in, pipe_out in l_pipes_from_distributor_to_sorter ) + list( pipe_out for pipe_in, pipe_out in l_pipes_from_sorter_to_distributor ) ) ) ] # add a process for distributing fastq records
-        for index in range( int_n_workers_for_sorting ) :
-            l_processes.append( mp.Process( target = __mtx_record_sorter__, args = ( l_pipes_from_distributor_to_sorter[ index ][ 1 ], l_pipes_from_sorter_to_distributor[ index ][ 0 ] ) ) ) # add process for receivers
-        # start works and wait until all works are completed.
-        for p in l_processes :
-            p.start( )
-        for p in l_processes :
-            p.join( )
-
-        """
-        Iterative merge sort of MTX files
-        """
-        int_max_num_files_for_each_merge_sort = 5 # set the maximum number of files that can be merge-sorted at a single time
-        int_number_of_recursive_merge_sort = 0 # the number of merge sort steps that has been performed
-
-        ''' prepare workers '''
-        int_num_workers =  int_num_threads # the main thread will not takes a lot of computing time, since it will only be used to distribute jobs
-        l_pipes_from_main_process_to_worker = list( mp.Pipe( ) for _ in range( int_num_workers ) ) # create pipes for sending records from the main process to workers
-        l_pipes_from_worker_to_main_process = list( mp.Pipe( ) for _ in range( int_num_workers ) ) # create pipes for sending records from workers to the main process
-        arr_availability = np.full( int_num_workers, 'available', dtype = object ) # an array that will store availability status for each process
-        def __merge_sorter__( pipe_from_main_process, pipe_to_main_process ) :
-            while True :
-                args = pipe_from_main_process.recv( ) # receive work from the main process
-                if isinstance( args, int ) : # if a termination signal is received from the main process, exit 
-                    break
-                __Merge_Sort_MTX_10X__( * args, flag_ramtx_sorted_by_id_feature = flag_ramtx_sorted_by_id_feature, flag_delete_input_file_upon_completion = False if flag_debugging else True )
-                pipe_to_main_process.send( args ) # notify main process that the work has been done
-        l_worker = list( mp.Process( target = __merge_sorter__, args = ( l_pipes_from_main_process_to_worker[ index ][ 1 ], l_pipes_from_worker_to_main_process[ index ][ 0 ] ) ) for index in range( int_num_workers ) )
-        index_worker = 0 # index of current worker
-        ''' start workers '''
-        for p in l_worker :
-            p.start( ) # start workers
-
-        ''' until files can be merge-sorted only using a single process '''
-        while len( glob.glob( f"{path_temp}{int_number_of_recursive_merge_sort}.*.mtx.gz" ) ) > int_max_num_files_for_each_merge_sort :
-            l_path_file_to_be_merged = glob.glob( f"{path_temp}{int_number_of_recursive_merge_sort}.*.mtx.gz" ) # retrieve the paths of the files that will be merged
-            int_num_files_to_be_merged = len( l_path_file_to_be_merged ) # retrieve the number of files that will be merged.
-            if verbose :
-                logging.info( f'current recursive merge sort step is {int_number_of_recursive_merge_sort + 1}, merging {int_num_files_to_be_merged} files' )
-
-            ''' distribute works to workers '''
-            l_l_path_file_input = LIST_Split( l_path_file_to_be_merged, int( np.ceil( int_num_files_to_be_merged / int_max_num_files_for_each_merge_sort ) ) )
-            l_l_path_file_input_for_distribution = deepcopy( l_l_path_file_input )[ : : -1 ] # a list containing inputs
-            l_l_path_file_input_completed = [ ]
-            while len( l_l_path_file_input_completed ) != len( l_l_path_file_input ) : # until all works are distributed and completed
-                if arr_availability[ index_worker ] == 'available' : # if the current worker is available
-                    if len( l_l_path_file_input_for_distribution ) > 0 : # if there are works remain to be given, give a work to the current worker
-                        path_file_output = f"{path_temp}{int_number_of_recursive_merge_sort + 1}.{UUID( )}.mtx.gz"
-                        l_pipes_from_main_process_to_worker[ index_worker ][ 0 ].send( [ path_file_output ] + list( l_l_path_file_input_for_distribution.pop( ) ) ) # give a work to the current worker
-                        arr_availability[ index_worker ] = 'working' # update the status of the worker to 'working'
-                else : # if the current worker is still working
-                    time.sleep( 1 ) # give time to workers until the work is completed
-
-                if arr_availability[ index_worker ] == 'working' and l_pipes_from_worker_to_main_process[ index_worker ][ 1 ].poll( ) : # if the previous work given to the current thread has been completed
-                    l_l_path_file_input_completed.append( l_pipes_from_worker_to_main_process[ index_worker ][ 1 ].recv( ) ) # collect the information about the completed work
-                    arr_availability[ index_worker ] = 'available' # update the status of the worker
-
-                index_worker = ( index_worker + 1 ) % int_num_workers # set the next worker as the current worker
-            if verbose :
-                logging.info( f"all works for the 'int_number_of_recursive_merge_sort'={int_number_of_recursive_merge_sort} completed" )
-
-            ''' update the number of recursive merge sort steps '''
-            int_number_of_recursive_merge_sort += 1
-
-        ''' send termination signals to the workers '''
-        for index in range( int_num_workers ) :
-            l_pipes_from_main_process_to_worker[ index ][ 0 ].send( -1 )
-        if verbose :
-            logging.info( 'termination signal given' )
-
-        ''' dismiss workers '''
-        for p in l_worker :
-            p.join( )    
-
-        """
-        Final merge sort step and construct RAMTx (Zarr) matrix
-        """
-        # create an output directory
-        os.makedirs( path_folder_ramtx_output, exist_ok = True )
-
-        # open a persistent zarray to store matrix and matrix index
-        za_mtx = zarr.open( f'{path_folder_ramtx_output}matrix.zarr', mode = 'w', shape = ( int_num_records, 2 ), chunks = ( int_num_of_records_in_a_chunk_zarr_matrix, 2 ), dtype = dtype_mtx ) # each mtx record will contains two values instead of three values for more compact storage 
-        za_mtx_index = zarr.open( f'{path_folder_ramtx_output}matrix.index.zarr', mode = 'w', shape = ( int_num_features if flag_ramtx_sorted_by_id_feature else int_num_barcodes, 2 ), chunks = ( int_num_of_entries_in_a_chunk_zarr_matrix_index, 2 ), dtype = dtype_mtx_index ) # max number of matrix index entries is 'int_num_records' of the input matrix. this will be resized # dtype of index should be np.float64 to be compatible with Zarr.js, since Zarr.js currently does not support np.int64...
-
-        # merge-sort the remaining files into the output zarr data sink and index the zarr
-        __Merge_Sort_MTX_10X_and_Write_and_Index_Zarr__( za_mtx, za_mtx_index, * glob.glob( f"{path_temp}{int_number_of_recursive_merge_sort}.*.mtx.gz" ), flag_ramtx_sorted_by_id_feature = flag_ramtx_sorted_by_id_feature, flag_delete_input_file_upon_completion = False if flag_debugging else True, int_size_buffer_for_mtx_index = int_num_of_entries_in_a_chunk_zarr_matrix_index ) # matrix index buffer size is 'int_num_of_entries_in_a_chunk_zarr_matrix_index'
-            
-        ''' write sorted barcodes and features files to zarr objects'''
-        for name_axis, flag_used_for_sorting in zip( [ 'barcodes', 'features' ], [ not flag_ramtx_sorted_by_id_feature, flag_ramtx_sorted_by_id_feature ] ) : # retrieve a flag whether the entry was used for sorting.
-            df = pd.read_csv( f"{path_folder_mtx_10x_input}{name_axis}.tsv.gz", sep = '\t', header = None )
-            df.sort_values( 0, inplace = True ) # sort by id_barcode or id_feature
-            
-            # annotate and split the dataframe into a dataframe containing string representations and another dataframe containing numbers and categorical data, and save to Zarr objects separately
-            df.columns = list( f"{name_axis}_{i}" for i in range( len( df.columns ) ) ) # name the columns using 0-based indices
-            df_str = df.iloc[ :, : 2 ]
-            df_num_and_cat = df.iloc[ :, 2 : ]
-            del df 
-            
-            # write zarr object for random access of string representation of features/barcodes
-            za = zarr.open( f'{path_folder_ramtx_output}{name_axis}.str.zarr', mode = 'w', shape = df_str.shape, chunks = ( int_num_of_entries_in_a_chunk_zarr_matrix_index, 1 ), dtype = str, synchronizer = zarr.ThreadSynchronizer( ) ) # multithreading? # string object # individual columns will be chucked, so that each column can be retrieved separately.
-            za[ : ] = df_str.values
-            # write random-access compatible format for web applications (#2022-06-20 10:57:51 currently there is no javascript packages supporting string zarr objects)
-            if flag_used_for_sorting :
-                WEB.Index_Chunks_and_Base64_Encode( df_to_be_chunked_and_indexed = df_str, int_num_rows_for_each_chunk = int_num_of_entries_in_a_chunk_zarr_matrix_index, path_prefix_output = f"{path_folder_ramtx_output}{name_axis}.str", path_folder_temp = path_temp, flag_delete_temp_folder = True, flag_include_header = False )
-            del df_str
-            
-            # build a ZarrDataFrame object for random access of number and categorical data of features/barcodes
-            zdf = ZarrDataFrame( f'{path_folder_ramtx_output}{name_axis}.num_and_cat.zdf', df = df_num_and_cat, int_num_rows = len( df_num_and_cat ), int_num_rows_in_a_chunk = int_num_of_entries_in_a_chunk_zarr_matrix_index, flag_store_string_as_categorical = True, flag_retrieve_categorical_data_as_integers = True, flag_enforce_name_col_with_only_valid_characters = False, flag_load_data_after_adding_new_column = False ) # use the same chunk size for all feature/barcode objects
-            del df_num_and_cat
-
-        ''' write metadata '''
-        root = zarr.group( f'{path_folder_ramtx_output}' )
-        root.attrs[ 'dict_metadata' ] = { 
-            'path_folder_mtx_10x_input' : path_folder_mtx_10x_input,
-            'flag_ramtx_sorted_by_id_feature' : flag_ramtx_sorted_by_id_feature,
-            'str_completed_time' : TIME_GET_timestamp( True ),
-            'int_num_features' : int_num_features,
-            'int_num_barcodes' : int_num_barcodes,
-            'int_num_records' : int_num_records,
-            'int_num_of_records_in_a_chunk_zarr_matrix' : int_num_of_records_in_a_chunk_zarr_matrix,
-            'int_num_of_entries_in_a_chunk_zarr_matrix_index' : int_num_of_entries_in_a_chunk_zarr_matrix_index,
-            'version' : _version_,
-        }
-
-        ''' delete temporary folder '''
-        if not flag_debugging :
-            shutil.rmtree( path_temp )
-
-        ''' write a flag indicating the export has been completed '''
-        with open( path_file_flag, 'w' ) as file :
-            file.write( TIME_GET_timestamp( True ) )
-def Convert_MTX_10X_to_RamData( path_folder_mtx_10x_input, path_folder_ramdata_output, name_layer = 'raw', int_num_threads = 15, int_num_threads_for_splitting = 3, int_max_num_entries_for_chunk = 10000000, int_max_num_files_for_each_merge_sort = 5, dtype_mtx = np.float64, dtype_mtx_index = np.float64, int_num_of_records_in_a_chunk_zarr_matrix = 10000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, flag_simultaneous_indexing_of_cell_and_barcode = True, verbose = False, flag_debugging = False ) :
-    """  # deprecated
-    # 2022-07-08 02:00:14 
-    convert 10X count matrix data to the two RAMtx object, one sorted by features and the other sorted by barcodes, and construct a RamData data object on disk, backed by Zarr persistant arrays
-
-    inputs:
-    ========
-    'path_folder_mtx_10x_input' : an input directory of 10X matrix data
-    'path_folder_ramdata_output' an output directory of RamData
-    'name_layer' : a name of the given data layer
-    'int_num_threads' : the number of threads for multiprocessing
-    'dtype_mtx' (default: np.float64), dtype of the output zarr array for storing matrix
-    'dtype_mtx_index' (default: np.float64) : dtype of the output zarr array for storing matrix indices
-    'flag_simultaneous_indexing_of_cell_and_barcode' : if True, create cell-sorted RAMtx and feature-sorted RAMtx simultaneously using two worker processes with the half of given 'int_num_threads'. it is generally recommended to turn this feature on, since the last step of the merge-sort is always single-threaded.
-    """
-    # build barcode- and feature-sorted RAMtx objects
-    path_folder_data = f"{path_folder_ramdata_output}{name_layer}/" # define directory of the output data
-    if flag_simultaneous_indexing_of_cell_and_barcode :
-        l_process = list( mp.Process( target = Convert_MTX_10X_to_RAMtx, args = ( path_folder_mtx_10x_input, path_folder_ramtx_output, flag_ramtx_sorted_by_id_feature, int_num_threads_for_the_current_process, int_num_threads_for_splitting, int_max_num_entries_for_chunk, int_max_num_files_for_each_merge_sort, dtype_mtx, dtype_mtx_index, int_num_of_records_in_a_chunk_zarr_matrix, int_num_of_entries_in_a_chunk_zarr_matrix_index, verbose, flag_debugging ) ) for path_folder_ramtx_output, flag_ramtx_sorted_by_id_feature, int_num_threads_for_the_current_process in zip( [ f"{path_folder_data}sorted_by_barcode/", f"{path_folder_data}sorted_by_feature/" ], [ False, True ], [ int( np.floor( int_num_threads / 2 ) ), int( np.ceil( int_num_threads / 2 ) ) ] ) )
-        for p in l_process : p.start( )
-        for p in l_process : p.join( )
-    else :
-        Convert_MTX_10X_to_RAMtx( path_folder_mtx_10x_input, path_folder_ramtx_output = f"{path_folder_data}sorted_by_barcode/", flag_ramtx_sorted_by_id_feature = False, int_num_threads = int_num_threads, int_num_threads_for_splitting = int_num_threads_for_splitting, int_max_num_entries_for_chunk = int_max_num_entries_for_chunk, int_max_num_files_for_each_merge_sort = int_max_num_files_for_each_merge_sort, dtype_mtx = dtype_mtx, dtype_mtx_index = dtype_mtx_index, int_num_of_records_in_a_chunk_zarr_matrix = int_num_of_records_in_a_chunk_zarr_matrix, int_num_of_entries_in_a_chunk_zarr_matrix_index = int_num_of_entries_in_a_chunk_zarr_matrix_index, verbose = verbose, flag_debugging = flag_debugging )
-        Convert_MTX_10X_to_RAMtx( path_folder_mtx_10x_input, path_folder_ramtx_output = f"{path_folder_data}sorted_by_feature/", flag_ramtx_sorted_by_id_feature = True, int_num_threads = int_num_threads, int_num_threads_for_splitting = int_num_threads_for_splitting, int_max_num_entries_for_chunk = int_max_num_entries_for_chunk, int_max_num_files_for_each_merge_sort = int_max_num_files_for_each_merge_sort, dtype_mtx = dtype_mtx, dtype_mtx_index = dtype_mtx_index, int_num_of_records_in_a_chunk_zarr_matrix = int_num_of_records_in_a_chunk_zarr_matrix, int_num_of_entries_in_a_chunk_zarr_matrix_index = int_num_of_entries_in_a_chunk_zarr_matrix_index, verbose = verbose, flag_debugging = flag_debugging )
-
-    # copy features/barcode.tsv.gz random access files for the web (stacked base64 encoded tsv.gz files)
-    # copy features/barcode string representation zarr objects
-    # copy features/barcode ZarrDataFrame containing number/categorical data
-    for name_axis_singular in [ 'feature', 'barcode' ] :
-        for str_suffix in [ 's.str.tsv.gz.base64.concatenated.txt', 's.str.index.tsv.gz.base64.txt', 's.str.zarr', 's.num_and_cat.zdf' ] :
-            OS_Run( [ 'cp', '-r', f"{path_folder_data}sorted_by_{name_axis_singular}/{name_axis_singular}{str_suffix}", f"{path_folder_ramdata_output}{name_axis_singular}{str_suffix}" ] )
-            
-    # write metadata 
-    int_num_features, int_num_barcodes, int_num_records = MTX_10X_Retrieve_number_of_rows_columns_and_records( path_folder_mtx_10x_input ) # retrieve metadata of the input 10X mtx
-    root = zarr.group( path_folder_ramdata_output )
-    root.attrs[ 'dict_metadata' ] = { 
-        'path_folder_mtx_10x_input' : path_folder_mtx_10x_input,
-        'str_completed_time' : TIME_GET_timestamp( True ),
-        'int_num_features' : int_num_features,
-        'int_num_barcodes' : int_num_barcodes,
-        'int_num_of_records_in_a_chunk_zarr_matrix' : int_num_of_records_in_a_chunk_zarr_matrix,
-        'int_num_of_entries_in_a_chunk_zarr_matrix_index' : int_num_of_entries_in_a_chunk_zarr_matrix_index,
-        'layers' : [ name_layer ],
-        'version' : _version_,
-    }
-    
 """ above functions will be moved below eventually """
 
 ''' miscellaneous functions '''
@@ -2448,11 +2047,10 @@ def convert_numpy_dtype_number_to_number( e ) :
 
 ''' methods for logging purposes '''
 def installed_packages( ) :
-    """ # 2022-08-09 02:09:07 
+    """ # 2022-12-01 21:24:03 
     display the installed packages of scelephant
     """
-    df_installed_packages = bk.PD_Select( bk.PIP_List_Packages( ), index = [ 'igraph', 'biobookshelf', 'typing', 'zarr', 'numcodecs', 'anndata', 'scanpy', 'shelve', 'sklearn', 'tarfile', 'requests', 'shutil', 'numba', 'tqdm', 'umap', 'hdbscan', 'pgzip', 'scipy', 'pynndescent', 'leidenalg', 'sys', 'os', 'subprocess', 'subprocess', 'multiprocessing', 'ctypes', 'logging', 'inspect', 'copy', 'collections', 'ast', 'pickle', 'traceback', 'mmap', 'itertools', 'math', 'uuid', 'gc', 'time', 'heapq', 'datetime', 'json', 'numpy', 'pandas', 'matplotlib', 'requests', 'ftplib', 'urllib', 'importlib', 'bokeh', 'pysam', 'plotly', 'scanpy', 'bitarray', 'intervaltree', 'statsmodels', 'scipy', 'upsetplot' ] )
-    display( df_installed_packages )
+    df_installed_packages = bk.PD_Select( bk.PIP_List_Packages( ), index = [ 's3fs', 'fsspec', 'umap-learn', 'tensorflow', 'igraph', 'biobookshelf', 'typing', 'zarr', 'numcodecs', 'anndata', 'scanpy', 'shelve', 'sklearn', 'tarfile', 'requests', 'shutil', 'numba', 'tqdm', 'umap', 'hdbscan', 'pgzip', 'scipy', 'pynndescent', 'leidenalg', 'sys', 'os', 'subprocess', 'subprocess', 'multiprocessing', 'ctypes', 'logging', 'inspect', 'copy', 'collections', 'ast', 'pickle', 'traceback', 'mmap', 'itertools', 'math', 'uuid', 'gc', 'time', 'heapq', 'datetime', 'json', 'numpy', 'pandas', 'matplotlib', 'requests', 'ftplib', 'urllib', 'importlib', 'bokeh', 'pysam', 'plotly', 'scanpy', 'bitarray', 'intervaltree', 'statsmodels', 'scipy', 'upsetplot' ] )
     return df_installed_packages 
 
 ''' methods for jupyter notebook interaction (IPython) '''
@@ -2464,7 +2062,7 @@ def html_from_dict( dict_data : dict, name_dict : str = None ) :
     'dict_data' : a dictionary that contains JSON-like data
     'name_dict' : name of the dictionary
     """
-    str_uuid = UUID( ) # retrieve a unique id for this function call. returned HTML document will contain DOM elements with unique ids
+    str_uuid = bk.UUID( ) # retrieve a unique id for this function call. returned HTML document will contain DOM elements with unique ids
     return """
     <!DOCTYPE html>
     <html>
@@ -2515,10 +2113,13 @@ def tar_extract( path_file_input, path_folder_output ) :
         tar.extractall( path_folder_output )
 
 ''' methods for handling remote file '''
+''' remote files over HTTP '''
 def http_response_code( url ) :
     """ # 2022-08-05 22:27:27 
     check http response code
     """
+    import requests # download from url 
+    
     status_code = None # by default, 'status_code' is None
     try:
         r = requests.head( url )
@@ -2530,10 +2131,14 @@ def download_file( url, path_file_local ) :
     """ # 2022-08-05 22:14:30 
     download file from the remote location to the local directory
     """
+    import requests # download from url 
+    
     with requests.get( url, stream = True ) as r :
         with open( path_file_local, 'wb' ) as f :
             shutil.copyfileobj( r.raw, f )
-
+''' remote files over AWS S3 '''
+            
+            
 ''' memory-efficient methods for creating RAMtx/RamData object '''
 # latest 2022-07-28 11:31:12 
 # implementation using pipe (~3 times more efficient)
@@ -2584,6 +2189,8 @@ def concurrent_merge_sort_using_pipe( pipe_sender, * l_pipe_receiver, int_max_nu
     returns:
     l_p : list of processes for all the workers that will be used for sorting
     """
+    import heapq 
+    
     # parse arguments
     int_max_num_pipe_for_each_worker = int( int_max_num_pipe_for_each_worker )
     # handle when no input pipes are given
@@ -2645,7 +2252,7 @@ def write_stream_as_a_gzip_file_using_pipe( pipe_receiver, path_file_gzip, func,
     'flag_dtype_is_float' : set this flag to True to export float values to the output mtx matrix
     'compresslevel' : compression level of the output Gzip file. 6 by default
     'header' : a header text to include. if None is given, no header will be written.
-    'int_num_threads' : the number of threads for gzip writer. if 'int_num_threads' > 1, pgzip will be used to write the output gzip file. please note that pgzip (multithreaded version of gzip module) has some memory-leaking issue.
+    'int_num_threads' : the number of threads for gzip writer. (deprecated, currently only supporting single-thread due to memory-leakage issue of pgzip package)
     'int_buffer_size' : the number of entries for each batch that will be given to 'pipe_sender'. increasing this number will reduce the overhead associated with interprocess-communication through pipe, but will require more memory usage
     
     returns:
@@ -2658,7 +2265,7 @@ def write_stream_as_a_gzip_file_using_pipe( pipe_receiver, path_file_gzip, func,
         """ # 2022-07-25 22:22:33 
         unzip gzip file and create a stream using the given pipe
         """
-        with gzip.open( path_file_gzip, "wt", compresslevel = compresslevel ) if int_num_threads <= 1 else pgzip.open( path_file_gzip, "wt", compresslevel = compresslevel, thread = int_num_threads ) as newfile : # open the output file
+        with gzip.open( path_file_gzip, "wt", compresslevel = compresslevel ) as newfile : # open the output file
             if header is not None : # if a valid header is given, write the header
                 newfile.write( header )
             while True :
@@ -2972,7 +2579,7 @@ def create_and_sort_chunk( path_file_gzip, path_prefix_chunk, func_encoding, fun
                     int_num_sent_records += len( l_buffer ) # update 'int_num_sent_records'
                     l_buffer = [ ] # initialize the next buffer
                     int_num_sent_records = 0 # initialize the next chunk
-                    l_pipe_sender_record[ index_worker ].send( f"{path_prefix_chunk}.{UUID( )}.gz" ) # assign the file path of the chunk
+                    l_pipe_sender_record[ index_worker ].send( f"{path_prefix_chunk}.{bk.UUID( )}.gz" ) # assign the file path of the chunk
                     arr_num_files[ index_worker ] += 1 # update the number of files for the process
                     index_worker = ( 1 + index_worker ) % int_num_workers  # update the index of the worker
                     __collect_file_path( ) # collect and report file path
@@ -2982,7 +2589,7 @@ def create_and_sort_chunk( path_file_gzip, path_prefix_chunk, func_encoding, fun
                 
         if len( l_buffer ) > 0 : # if there is some buffer remaining, flush the buffer
             l_pipe_sender_record[ index_worker ].send( l_buffer ) # send a list of records
-            l_pipe_sender_record[ index_worker ].send( f"{path_prefix_chunk}.{UUID( )}.gz" ) # assign the file path of the chunk
+            l_pipe_sender_record[ index_worker ].send( f"{path_prefix_chunk}.{bk.UUID( )}.gz" ) # assign the file path of the chunk
             arr_num_files[ index_worker ] += 1 # update the number of files for the process
             __collect_file_path( ) # collect and report file path
 
@@ -3020,7 +2627,7 @@ def sort_mtx( path_file_gzip, path_file_gzip_sorted = None, int_num_records_in_a
         assert za_mtx is not None and za_mtx_index is not None # if ramtx zarr object will be written, both arguments should be valid
     # create a temporary folder
     path_folder = path_file_gzip.rsplit( '/', 1 )[ 0 ] + '/'
-    path_folder_temp = f"{path_folder}temp_{UUID( )}/"
+    path_folder_temp = f"{path_folder}temp_{bk.UUID( )}/"
     os.makedirs( path_folder_temp, exist_ok = True )
     
     # create and sort chunks
@@ -3083,9 +2690,9 @@ def sort_mtx( path_file_gzip, path_file_gzip_sorted = None, int_num_records_in_a
         pipe_sender.send( concurrent_merge_sort_using_pipe_mtx( path_file_output = path_file_output, l_path_file = l_path_file, flag_mtx_sorted_by_id_feature = flag_mtx_sorted_by_id_feature, int_buffer_size = int_buffer_size, compresslevel = compresslevel, int_max_num_pipe_for_each_worker = int_max_num_input_files_for_each_merge_sort_worker, flag_dtype_is_float = flag_dtype_is_float, flag_return_processes = False, int_num_threads = int_num_threads_for_writing, flag_delete_input_files = True ) )
     def __run_combine_chunks( l_path_file ) :
         pipe_sender, pipe_receiver = mp.Pipe( ) # create a link
-        path_file_output = f"{path_folder_temp}combined_chunk.{UUID( )}.gz"
+        path_file_output = f"{path_folder_temp}combined_chunk.{bk.UUID( )}.gz"
         p = mp.Process( target = __combine_chunks, args = ( path_file_output, l_path_file, pipe_sender ) )
-        dict_process[ UUID( ) ] = { 'p' : p, 'pipe_receiver' : pipe_receiver, 'path_file_output' : path_file_output } # collect the process
+        dict_process[ bk.UUID( ) ] = { 'p' : p, 'pipe_receiver' : pipe_receiver, 'path_file_output' : path_file_output } # collect the process
         p.start( ) # start the process
     def __collect_files_for_concurrent_merge_sorting( ) :
         for id_process in list( dict_process ) :
@@ -3300,7 +2907,7 @@ def create_ramtx_from_mtx( path_folder_mtx_10x_input, path_folder_output, mode =
     int_num_features, int_num_barcodes, int_num_records = MTX_10X_Retrieve_number_of_rows_columns_and_records( path_folder_mtx_10x_input ) # retrieve metadata of mtx
     # create an output directory
     os.makedirs( path_folder_output, exist_ok = True )
-    path_folder_temp = f"{path_folder_output}temp_{UUID( )}/"
+    path_folder_temp = f"{path_folder_output}temp_{bk.UUID( )}/"
     os.makedirs( path_folder_temp, exist_ok = True )
     
     """
@@ -3360,7 +2967,7 @@ def create_ramtx_from_mtx( path_folder_mtx_10x_input, path_folder_output, mode =
     dict_metadata = { 
         'path_folder_mtx_10x_input' : path_folder_mtx_10x_input,
         'mode' : mode,
-        'str_completed_time' : TIME_GET_timestamp( True ),
+        'str_completed_time' : bk.TIME_GET_timestamp( True ),
         'int_num_features' : int_num_features,
         'int_num_barcodes' : int_num_barcodes,
         'int_num_records' : int_num_records,
@@ -3376,7 +2983,7 @@ def create_ramtx_from_mtx( path_folder_mtx_10x_input, path_folder_output, mode =
     
     ''' write a flag indicating the export has been completed '''
     with open( path_file_flag_completion, 'w' ) as file :
-        file.write( TIME_GET_timestamp( True ) )
+        file.write( bk.TIME_GET_timestamp( True ) )
 def create_ramdata_from_mtx( path_folder_mtx_10x_input, path_folder_ramdata_output, set_modes = { 'dense' }, name_layer = 'raw', int_num_records_in_a_chunk = 10000000, int_buffer_size = 300, compresslevel = 6, flag_dtype_is_float = False, int_num_threads_for_chunking = 5, int_num_threads_for_writing = 1, int_max_num_input_files_for_each_merge_sort_worker = 8, int_num_chunks_to_combine_before_concurrent_merge_sorting = 8, dtype_dense_mtx = np.uint32, dtype_sparse_mtx = np.float64, dtype_sparse_mtx_index = np.float64, int_num_of_records_in_a_chunk_zarr_matrix = 20000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, chunks_dense = ( 2000, 1000 ), int_num_of_entries_in_a_chunk_metadata = 1000, flag_multiprocessing = True, verbose = False, flag_debugging = False ) :
     """ # 2022-08-05 21:41:07 
     sort a given mtx file in a very time- and memory-efficient manner, and create sparse (sorted by barcode/feature).
@@ -3465,7 +3072,7 @@ def create_ramdata_from_mtx( path_folder_mtx_10x_input, path_folder_ramdata_outp
     root = zarr.group( path_folder_ramdata_output )
     root.attrs[ 'dict_metadata' ] = { 
         'path_folder_mtx_10x_input' : path_folder_mtx_10x_input,
-        'str_completed_time' : TIME_GET_timestamp( True ),
+        'str_completed_time' : bk.TIME_GET_timestamp( True ),
         'int_num_features' : int_num_features,
         'int_num_barcodes' : int_num_barcodes,
         'layers' : [ name_layer ],
@@ -3569,6 +3176,8 @@ class AnnDataContainer( ) :
                 in summary, (1) when AnnData is given, the validity of the path will not be checked, (2) when path is not given, the default path will be used.
     """
     def __init__( self, flag_enforce_name_adata_with_only_valid_characters = True, path_prefix_default = None, mode = 'a', path_prefix_default_mask = None, flag_is_read_only = False, ** args ) :
+        import scanpy
+        
         self.__str_invalid_char = '! @#$%^&*()-=+`~:;[]{}\|,<.>/?' + '"' + "'" if flag_enforce_name_adata_with_only_valid_characters else ''
         self.path_prefix_default = path_prefix_default
         self._mode = mode
@@ -3628,6 +3237,8 @@ class AnnDataContainer( ) :
         ''' # 2022-05-24 02:33:36 
         load given anndata object(s) of the given list of 'name_adata' 
         '''
+        import scanpy
+        
         for name_adata in l_name_adata :
             if name_adata not in self : # skip the 'name_adata' that does not exist in the current container
                 continue
@@ -3665,6 +3276,8 @@ class AnnDataContainer( ) :
         """ # 2022-06-09 18:13:21 
         save the given AnnData objects to disk
         """
+        import scanpy
+        
         for name_adata in l_name_adata :
             if name_adata not in self : # skip the 'name_adata' that does not exist in the current container
                 continue
@@ -3676,6 +3289,8 @@ class AnnDataContainer( ) :
         """ # 2022-06-09 18:23:44 
         empty the count matrix of the given AnnData objects 
         """
+        import scanpy
+        
         for name_adata in l_name_adata :
             if name_adata not in self : # skip the 'name_adata' that does not exist in the current container
                 continue
@@ -4144,7 +3759,7 @@ class ZarrDataFrame( ) :
         else :
             # check whether the given filter is bitarray
             if isinstance( ba_filter, np.ndarray ) : # convert numpy array to bitarray
-                ba_filter = bk.BA.to_bitarray( ba_filter )
+                ba_filter = BA.to_bitarray( ba_filter )
             assert isinstance( ba_filter, bitarray ) # make sure that the input value is a bitarray object
             
             # check the length of filter bitarray
@@ -4178,7 +3793,7 @@ class ZarrDataFrame( ) :
                         ba_zdf = bitarray( zdf._n_rows_unfiltered )
                         ba_zdf.setall( 0 )
                         # compose filter
-                        for int_entry_combined in bk.BA.find( ba_filter ) : # iterate active entries in the combined axis
+                        for int_entry_combined in BA.find( ba_filter ) : # iterate active entries in the combined axis
                             if int_entry_combined in dict_index_mapping_interleaved : # if the active entry also exists in the current axis, update the filter
                                 ba_zdf[ dict_index_mapping_interleaved[ int_entry_combined ] ] = 1
                                 
@@ -4437,7 +4052,7 @@ class ZarrDataFrame( ) :
             queries = range( * queries.indices( self._n_rows_unfiltered ) ) # convert slice to range
         else :
             # detect boolean mask
-            flag_queries_in_bool_mask = bk.BA.detect_boolean_mask( queries )
+            flag_queries_in_bool_mask = BA.detect_boolean_mask( queries )
             # convert boolean masks to np.ndarray object
             if flag_queries_in_bool_mask :
                 if not isinstance( queries, bitarray ) : # if type is not bitarray
@@ -4447,8 +4062,8 @@ class ZarrDataFrame( ) :
                     # handle np.ndarray 
                     if isinstance( queries, np.ndarray ) and queries.dtype != bool :
                         queries = queries.astype( bool ) # change to ndarray
-                    queries = bk.BA.to_bitarray( queries ) # convert numpy boolean array to bitarray
-                queries = bk.BA.find( queries ) # convert bitarray to generator
+                    queries = BA.to_bitarray( queries ) # convert numpy boolean array to bitarray
+                queries = BA.find( queries ) # convert bitarray to generator
         return iter( queries ) if hasattr( queries, '__iter__' ) else queries # iterate over integer indices
         
 #         if self._mask is not None : # if mask is available, return the result of the mask (assuming mask is more accessible, possibly available in the local storage)
@@ -4598,17 +4213,17 @@ class ZarrDataFrame( ) :
                 flag_coords_in_coordinate_arrays = True
             else :
                 # detect boolean mask
-                flag_coords_in_bool_mask = bk.BA.detect_boolean_mask( coords )
+                flag_coords_in_bool_mask = BA.detect_boolean_mask( coords )
                 # convert boolean masks to np.ndarray object
                 if flag_coords_in_bool_mask :
                     # handle np.ndarray mask
                     if isinstance( coords, np.ndarray ) and coords.dtype != bool :
                         coords = coords.astype( bool ) # change dtype
                     else : # handle other masks
-                        coords = bk.BA.convert_mask_to_array( coords )
+                        coords = BA.convert_mask_to_array( coords )
         else : 
             # when indexing on the primary axis is not active
-            coords = slice( None, None, None ) if self.filter is None else bk.BA.to_array( self.filter ) # retrieve selection filter for the primary axis according to the self.filter
+            coords = slice( None, None, None ) if self.filter is None else BA.to_array( self.filter ) # retrieve selection filter for the primary axis according to the self.filter
             if isinstance( args, tuple ) : # if indexing in non-primary axis is active
                 name_col, coords_rest = args[ 0 ], args[ 2 : ]
             else : # only column name was given
@@ -4749,17 +4364,17 @@ class ZarrDataFrame( ) :
                 flag_coords_in_coordinate_arrays = True
             else :
                 # detect boolean mask
-                flag_coords_in_bool_mask = bk.BA.detect_boolean_mask( coords )
+                flag_coords_in_bool_mask = BA.detect_boolean_mask( coords )
                 # convert boolean masks to np.ndarray object
                 if flag_coords_in_bool_mask :
                     # handle np.ndarray mask
                     if isinstance( coords, np.ndarray ) and coords.dtype != bool :
                         coords = coords.astype( bool ) # change dtype
                     else : # handle other masks
-                        coords = bk.BA.convert_mask_to_array( coords )
+                        coords = BA.convert_mask_to_array( coords )
         else : 
             # when indexing on the primary axis is not active
-            coords = slice( None, None, None ) if self.filter is None else bk.BA.to_array( self.filter ) # retrieve selection filter for the primary axis according to the self.filter
+            coords = slice( None, None, None ) if self.filter is None else BA.to_array( self.filter ) # retrieve selection filter for the primary axis according to the self.filter
             if isinstance( args, tuple ) : # if indexing in non-primary axis is active
                 name_col, coords_rest = args[ 0 ], args[ 2 : ]
             else : # only column name was given
@@ -4861,7 +4476,7 @@ class ZarrDataFrame( ) :
             
         # retrieve data values from the 'values' 
         if isinstance( values, bitarray ) :
-            values = bk.BA.to_array( values ) # retrieve boolean values from the input bitarray
+            values = BA.to_array( values ) # retrieve boolean values from the input bitarray
         if isinstance( values, pd.Series ) :
             values = values.values
         # convert values that is not numpy.ndarray to numpy.ndarray object (for the consistency of the loaded_data)
@@ -4931,7 +4546,7 @@ class ZarrDataFrame( ) :
             if dtype != za.dtype : # dtype should be larger than za.dtype if they are not equal (due to increased number of bits required to encode categorical data)
                 if self.verbose :
                     logging.info( f'{za.dtype} will be changed to {dtype}' )
-                path_folder_col_new = f"{self._path_folder_zdf}{name_col}_{UUID( )}/" # compose the new output folder
+                path_folder_col_new = f"{self._path_folder_zdf}{name_col}_{bk.UUID( )}/" # compose the new output folder
                 za_new = zarr.open( path_folder_col_new, mode = 'w', shape = za.shape, chunks = za.chunks, dtype = dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object using the new dtype
                 za_new[ : ] = za[ : ] # copy the data 
                 shutil.rmtree( path_folder_col ) # delete the previous Zarr object
@@ -5058,7 +4673,7 @@ class ZarrDataFrame( ) :
         ''' # 2022-07-01 22:32:00 
         return loaded data as a dataframe, with properly indexed rows
         '''
-        arr_index = np.arange( self._n_rows_unfiltered ) if self.filter is None else bk.BA.to_integer_indices( self.filter ) # retrieve integer indices of the rows
+        arr_index = np.arange( self._n_rows_unfiltered ) if self.filter is None else BA.to_integer_indices( self.filter ) # retrieve integer indices of the rows
         if len( self._loaded_data ) > 0 : # if a cache is not empty
             df = pd.DataFrame( self._loaded_data )
             df.index = arr_index # add integer indices of the rows
@@ -5145,7 +4760,7 @@ class ZarrDataFrame( ) :
         l_name_col = list( e for e in l_name_col if isinstance( e, str ) and e in self ) # validate 'l_name_col' # use only hashable strings
         
         # initialize dataframe using the index (integer representations of all entries or entries of the active entries of the filter only)
-        df = pd.DataFrame( index = np.arange( self._n_rows_unfiltered, dtype = int ) if self.filter is None else bk.BA.to_integer_indices( self.filter ) )
+        df = pd.DataFrame( index = np.arange( self._n_rows_unfiltered, dtype = int ) if self.filter is None else BA.to_integer_indices( self.filter ) )
         
         if len( l_name_col ) == 0 : # if no columns have been given, return en empty dataframe containing only the index
             return df
@@ -5225,7 +4840,7 @@ class ZarrDataFrame( ) :
             return
         
         n = self._n_rows_unfiltered # retrieve the number of rows in the unfiltered ZarrDataFrame
-        arr_index = np.arange( n, dtype = int ) if self.filter is None else bk.BA.to_integer_indices( self.filter ) # retrieve integer indices of the rows
+        arr_index = np.arange( n, dtype = int ) if self.filter is None else BA.to_integer_indices( self.filter ) # retrieve integer indices of the rows
         for name_col in set_name_col : 
             if name_col in self.dict : # ignore columns that were already loaded
                 continue
@@ -5722,14 +5337,14 @@ class RamDataAxis( ) :
             ba_filter = np.array( ba_filter, dtype = bool )
         # handle when a numpy ndarray has been given (convert it to bitarray)
         if isinstance( ba_filter, np.ndarray ) :
-            ba_filter = bk.BA.to_bitarray( ba_filter )
+            ba_filter = BA.to_bitarray( ba_filter )
         assert isinstance( ba_filter, bitarray ) # check the return is bitarray object
         return ba_filter
     def __iter__( self ) :
         """ # 2022-07-02 22:16:56 
         iterate through valid entries in the axis, according to the filter and whether the string representations are loaded or not. if string representations were loaded, iterate over string representations.
         """
-        return ( ( bk.BA.to_integer_indices( self.filter ) if self.filter is not None else np.arange( len( self ) ) ) if self._dict_str_to_i is None else self._dict_str_to_i ).__iter__( )
+        return ( ( BA.to_integer_indices( self.filter ) if self.filter is not None else np.arange( len( self ) ) ) if self._dict_str_to_i is None else self._dict_str_to_i ).__iter__( )
     def __len__( self ) :
         ''' # 2022-08-21 15:31:48 
         returns the number of entries in the Axis. when view is active, the length after applying the view will be returned. when view is absent, the number of all entries will be returned, regardless of whether a filter is active or not.
@@ -5782,7 +5397,7 @@ class RamDataAxis( ) :
             n_active_entries = ba.count( )
             # initialize dictionary
             dict_change = np.zeros( n, dtype = dtype ) if ( n_active_entries / n ) > float_min_proportion_of_active_entries_in_an_axis_for_using_array else dict( ) # implement a dictionary using an array if the proportion of active entries in the axis is larger than the given threshold to reduce the memory footprint and increase the efficiency of conversion process
-            for i, e in enumerate( bk.BA.to_integer_indices( ba ) ) : # iterate through 'int_entry' of the active entries
+            for i, e in enumerate( BA.to_integer_indices( ba ) ) : # iterate through 'int_entry' of the active entries
                 dict_change[ e ] = i
         self.dict_change = dict_change # load 'dict_change'
     def destroy_view( self ) :
@@ -5844,7 +5459,7 @@ class RamDataAxis( ) :
                         ba_comp = bitarray( ax.meta._n_rows_unfiltered )
                         ba_comp.setall( 0 )
                         # compose filter
-                        for int_entry_combined in bk.BA.find( ba_filter ) : # iterate active entries in the combined axis
+                        for int_entry_combined in BA.find( ba_filter ) : # iterate active entries in the combined axis
                             if int_entry_combined in dict_index_mapping_interleaved : # if the active entry also exists in the current axis, update the filter
                                 ba_comp[ dict_index_mapping_interleaved[ int_entry_combined ] ] = 1
                                 
@@ -5876,7 +5491,7 @@ class RamDataAxis( ) :
             ba_filter_combined.setall( 0 )
             
             # transfer component entries to combined entries
-            for int_entry_component in bk.BA.find( ba_filter ) :
+            for int_entry_component in BA.find( ba_filter ) :
                 ba_filter_combined[ dict_index_mapping_from_component_to_combined[ int_entry_component ] ] = True
             
             # return the filter of the combined axis
@@ -5931,9 +5546,9 @@ class RamDataAxis( ) :
             # handle bitarray query
             if isinstance( queries, bitarray ) :
                 if queries.count( ) > len( queries ) / 8 : # if the number of active entries is larger than the threshold, use the boolean array form
-                    queries = bk.BA.to_array( queries )
+                    queries = BA.to_array( queries )
                 else : # if the number of active entries is smaller than the threshold, use the 
-                    queries = bk.BA.to_integer_indices( queries )
+                    queries = BA.to_integer_indices( queries )
             
             return za.get_orthogonal_selection( ( queries, int_index_col ) )
     def iterate_str( self, int_num_entries_in_a_batch : int = 1000, int_index_col : Union[ int, None ] = None ) :
@@ -5943,7 +5558,7 @@ class RamDataAxis( ) :
         int_index_col : Union[ int, None ] = None : the index of the column containing string representation to retrieve. if a single integer index is given, retrieve values from a single column. If a list or a tuple of integer indices are given, values of the columns will be retrieved.
         """
         l_int_entry_in_a_batch = [ ] # initialize a batch container 
-        for int_entry in ( range( self.int_num_entries ) if self.filter is None else bk.BA.find( self.filter ) ) : # iterate through integer indices of the active entries
+        for int_entry in ( range( self.int_num_entries ) if self.filter is None else BA.find( self.filter ) ) : # iterate through integer indices of the active entries
             l_int_entry_in_a_batch.append( int_entry )
             # if a batch is full, flush the batch
             if len( l_int_entry_in_a_batch ) >= int_num_entries_in_a_batch :
@@ -5965,7 +5580,7 @@ class RamDataAxis( ) :
         path_folder_str_zarr = f"{self._path_folder}{self._name_axis}.str.zarr"
         
         # compose a pair of dictionaries for the conversion
-        arr_int_entry = np.arange( self.int_num_entries ) if self.filter is None else bk.BA.to_integer_indices( self.filter ) # retrieve integer representations of the entries
+        arr_int_entry = np.arange( self.int_num_entries ) if self.filter is None else BA.to_integer_indices( self.filter ) # retrieve integer representations of the entries
         arr_str = self.get_str( queries = arr_int_entry, int_index_col = int_index_col ) # retrieve string representations of the entries
         
         self._dict_str_to_i = dict( ( e, i ) for e, i in zip( arr_str, arr_int_entry ) ) 
@@ -6147,7 +5762,7 @@ class RamDataAxis( ) :
             ns[ 'int_num_entries_written' ] += n # update the number of entries written
             
         # process entries using a buffer
-        for i in range( len( self ) ) if self.filter is None else bk.BA.find( self.filter, val = 1 ) : # iteratre through active integer representations of the entries
+        for i in range( len( self ) ) if self.filter is None else BA.find( self.filter, val = 1 ) : # iteratre through active integer representations of the entries
             ns[ 'l_buffer' ].append( i )
             if len( ns[ 'l_buffer' ] ) >= int_size_buffer : # flush the buffer if it is full
                 flush_buffer( )
@@ -6256,7 +5871,7 @@ class RamDataAxis( ) :
             ba_remaining = ba.copy( ) # create a copy of the bitarray of active entries to mark the remaining entries
             float_prob_selection = int_num_entries_for_batch / max( 1, int_num_active_entries - int_num_of_previously_returned_entries ) # calculate the initial probability for selection of entries
             while int_num_entries_added < int_num_active_entries : # repeat entry selection process until all entries are selected
-                for int_entry in bk.BA.find( ba_remaining ) : # iterate through remaining active entries
+                for int_entry in BA.find( ba_remaining ) : # iterate through remaining active entries
                     if np.random.random( ) < float_prob_selection : # randomly make a decision whether to include the current entry or not
                         ns[ 'l_int_entry_current_batch' ].append( int_entry ) # collect 'int_entry' of the selected entry
                         ba_remaining[ int_entry ] = False # remove the entry from the 'ba_remaining' bitarray
@@ -6274,7 +5889,7 @@ class RamDataAxis( ) :
                 ns[ 'l_int_entry_current_batch' ] = np.sort( ns[ 'l_int_entry_current_batch' ] ) # sort the list of int_entries
                 yield __compose_batch( ) # return batch
         else : # return barcodes in a batch sequentially
-            for int_entry in bk.BA.find( ba ) : # iterate through active entries of the given bitarray
+            for int_entry in BA.find( ba ) : # iterate through active entries of the given bitarray
                 ns[ 'l_int_entry_current_batch' ].append( int_entry ) # collect int_entry for the current batch
                 # once the batch is full, yield the batch
                 if len( ns[ 'l_int_entry_current_batch' ] ) >= int_num_entries_for_batch :
@@ -6300,7 +5915,7 @@ class RamDataAxis( ) :
         'name_col_filter' : name of the column of the metadata ZarrDataFrame that will contain the filter
         """
         if name_col_filter is not None : # if a given filter name is valid
-            self.meta[ name_col_filter, : ] = bk.BA.to_array( self.ba_active_entries ) # save filter to the storage # when a filter is not active, save filter of all active entries of the RAMtx
+            self.meta[ name_col_filter, : ] = BA.to_array( self.ba_active_entries ) # save filter to the storage # when a filter is not active, save filter of all active entries of the RAMtx
     def change_or_save_filter( self, name_col_filter : str ) :
         """ # 2022-08-06 22:36:48 
         change filter to 'name_col_filter' if 'name_col_filter' exists in the metadata, or save the currently active entries (filter) to the metadata using the name 'name_col_filter'
@@ -6328,7 +5943,7 @@ class RamDataAxis( ) :
         ba_subsampled.setall( 0 ) # exclude all entries by default
         
         # perform subsampling
-        for int_entry in bk.BA.find( ba_active_entries ) :
+        for int_entry in BA.find( ba_active_entries ) :
             if np.random.random( ) < float_prop_subsampling :
                 ba_subsampled[ int_entry ] = True
         
@@ -6541,7 +6156,7 @@ class RAMtx( ) :
                     self._dict_metadata = { 
                         'path_folder_mtx_10x_input' : None,
                         'mode' : '___'.join( list( 'None' if rtx is None else rtx.mode for rtx in l_rtx ) ), # compose mode
-                        'str_completed_time' : TIME_GET_timestamp( True ),
+                        'str_completed_time' : bk.TIME_GET_timestamp( True ),
                         'int_num_features' : ramdata.ft.int_num_entries,
                         'int_num_barcodes' : ramdata.bc.int_num_entries,
                         'int_num_records' : sum( rtx._int_num_records for rtx in l_rtx if rtx is not None ), # calculate the total number of records
@@ -6704,7 +6319,7 @@ class RAMtx( ) :
                 return ba
             
         za = zarr.open( path_folder_zarr, mode = 'r', synchronizer = zarr.ThreadSynchronizer( ) ) # open zarr object of the current RAMtx object
-        ba = bk.BA.to_bitarray( za[ : ] ) # return the boolean array of active entries as a bitarray object
+        ba = BA.to_bitarray( za[ : ] ) # return the boolean array of active entries as a bitarray object
 
         # if metadata of the number of active entries is not available, update the metadata
         if 'n_active_entries' in self._dict_metadata :
@@ -7086,7 +6701,7 @@ class RAMtx( ) :
         if self.ba_filter_axis_for_querying is None : # if filter is not set, iterate over all elements
             return iter( range( self.len_axis_for_querying ) )
         else : # if filter is active, yield indices of active elements only
-            return iter( bk.BA.to_integer_indices( self.ba_filter_axis_for_querying ) )
+            return iter( BA.to_integer_indices( self.ba_filter_axis_for_querying ) )
     def drop_reference( self ) :
         """ # 2022-10-20 00:11:09 
         for a combined RAMtx object, drop a RAMtx object from the reference RamData
@@ -7141,7 +6756,7 @@ class RAMtx( ) :
         ''' handle when empty 'l_int_entry' has been given and filter has been set  '''
         # logging.info( f'ba_filter_axis_for_querying: {len(ba_filter_axis_for_querying) if ba_filter_axis_for_querying is not None else None}' )
         if ba_filter_axis_for_querying is not None :
-            l_int_entry = bk.BA.to_integer_indices( ba_filter_axis_for_querying ) if flag_empty_input else list( int_entry for int_entry in l_int_entry if ba_filter_axis_for_querying[ int_entry ] ) # filter 'l_int_entry' or use the entries in the given filter (if no int_entry was given, use all active entries in the filter)
+            l_int_entry = BA.to_integer_indices( ba_filter_axis_for_querying ) if flag_empty_input else list( int_entry for int_entry in l_int_entry if ba_filter_axis_for_querying[ int_entry ] ) # filter 'l_int_entry' or use the entries in the given filter (if no int_entry was given, use all active entries in the filter)
         # logging.info( f'l_int_entry: {len(l_int_entry)}' )
                 
         # if no valid entries are available, return an empty result
@@ -7440,7 +7055,7 @@ class RAMtx( ) :
         if self.int_num_cpus > 1 and int_num_entries > 1 : # enter multi-processing mode only more than one entry should be retrieved
             # initialize workers
             int_n_workers = min( self.int_num_cpus, int_num_entries ) # one thread for distributing records. Minimum numbers of workers for sorting is 1 # the number of workers should not be larger than the number of entries to retrieve.
-            l_l_int_entry_for_each_worker = list( l for l in LIST_Split( l_int_entry, int_n_workers, flag_contiguous_chunk = True ) if len( l ) > 0 ) # retrieve a list of valid work loads for the workers
+            l_l_int_entry_for_each_worker = list( l for l in bk.LIST_Split( l_int_entry, int_n_workers, flag_contiguous_chunk = True ) if len( l ) > 0 ) # retrieve a list of valid work loads for the workers
             int_n_workers = min( int_n_workers, len( l_l_int_entry_for_each_worker ) ) # adjust the number of workers according to the number of distributed workloads
             
             l_pipes_from_main_process_to_worker = list( mp.Pipe( ) for _ in range( int_n_workers ) ) # create pipes for sending records to workers # add process for receivers
@@ -7562,7 +7177,7 @@ class RAMtx( ) :
             ns[ 'int_num_records' ] += arr_weight.sum( ) # update total number of records
             ns[ 'l_int_entry_for_weight_calculation_batch' ] = [ ] # empty the weight calculation batch
 
-        for int_entry in bk.BA.find( ba ) : # iterate through active entries of the given bitarray
+        for int_entry in BA.find( ba ) : # iterate through active entries of the given bitarray
             ns[ 'l_int_entry_for_weight_calculation_batch' ].append( int_entry ) # collect int_entry for the current 'weight_calculation_batch'
             # once 'weight_calculation' batch is full, process the 'weight_calculation' batch
             if len( ns[ 'l_int_entry_for_weight_calculation_batch' ] ) == int_num_entries_for_each_weight_calculation_batch :
@@ -7646,7 +7261,7 @@ class RAMtx( ) :
             ns[ 'l_int_entry_for_weight_calculation_batch' ] = [ ]
                 
 
-        for int_entry in bk.BA.find( ba ) : # iterate through active entries of the given bitarray
+        for int_entry in BA.find( ba ) : # iterate through active entries of the given bitarray
             ns[ 'l_int_entry_for_weight_calculation_batch' ].append( int_entry ) # collect int_entry for the current 'weight_calculation_batch'
             # once 'weight_calculation' batch is full, process the 'weight_calculation' batch
             if len( ns[ 'l_int_entry_for_weight_calculation_batch' ] ) == int_num_entries_for_each_weight_calculation_batch : # if batch is full
@@ -7985,6 +7600,7 @@ class RamData( ) :
         int_index_component_reference : Union[ int, None ] = None # if an integer is given and 'combined' mode is being used, use the component as the default reference component
 
     === AnnDataContainer ===
+    flag_load_anndata_container : bool = False # load anndata container to load/save anndata objects stored in the curren RamData object
     'flag_enforce_name_adata_with_only_valid_characters' : enforce valid characters in the name of AnnData
     """
     def __init__( 
@@ -8011,6 +7627,7 @@ class RamData( ) :
         path_folder_ramdata_mask : Union[ str, None ] = None, 
         dict_kw_zdf : dict = { 'flag_retrieve_categorical_data_as_integers' : False, 'flag_load_data_after_adding_new_column' : True, 'flag_enforce_name_col_with_only_valid_characters' : True }, 
         dict_kw_view : dict = { 'float_min_proportion_of_active_entries_in_an_axis_for_using_array' : 0.1, 'dtype' : np.int32 }, 
+        flag_load_anndata_container : bool = False,
         flag_enforce_name_adata_with_only_valid_characters : bool = True, 
         int_index_component_reference : Union[ int, None ] = None,
         verbose : bool = True, 
@@ -8085,13 +7702,13 @@ class RamData( ) :
                 # compose metadata
                 self._dict_metadata = { 
                     'path_folder_mtx_10x_input' : None,
-                    'str_completed_time' : TIME_GET_timestamp( True ),
+                    'str_completed_time' : bk.TIME_GET_timestamp( True ),
                     'int_num_features' : self.ft.int_num_entries,
                     'int_num_barcodes' : self.bc.int_num_entries,
                     'layers' : [ ],
                     'models' : dict( ),
                     'version' : _version_,
-                    'identifier' : UUID( ),
+                    'identifier' : bk.UUID( ),
                 }
                 self._root.attrs[ 'dict_metadata' ] = self._dict_metadata # write the metadata
                 self._dict_metadata[ 'layers' ] = set( self._dict_metadata[ 'layers' ] )
@@ -8103,8 +7720,9 @@ class RamData( ) :
         
         # initialize databases
         if self._path_folder_ramdata_local is not None : # retrieve ramdata object in the local file system, and if the object is available, load/initialize anndatacontainer and shelvecontainer in the local file system
-            # set AnnDataContainer attribute for containing various AnnData objects associated with the current RamData
-            self.ad = AnnDataContainer( path_prefix_default = self._path_folder_ramdata_local, flag_enforce_name_adata_with_only_valid_characters = flag_enforce_name_adata_with_only_valid_characters, ** GLOB_Retrive_Strings_in_Wildcards( f'{self._path_folder_ramdata_local}*.h5ad' ).set_index( 'wildcard_0' ).path.to_dict( ), mode = self._mode, path_prefix_default_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only ) # load locations of AnnData objects stored in the RamData directory
+            if flag_load_anndata_container :
+                # set AnnDataContainer attribute for containing various AnnData objects associated with the current RamData
+                self.ad = AnnDataContainer( path_prefix_default = self._path_folder_ramdata_local, flag_enforce_name_adata_with_only_valid_characters = flag_enforce_name_adata_with_only_valid_characters, ** bk.GLOB_Retrive_Strings_in_Wildcards( f'{self._path_folder_ramdata_local}*.h5ad' ).set_index( 'wildcard_0' ).path.to_dict( ), mode = self._mode, path_prefix_default_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only ) # load locations of AnnData objects stored in the RamData directory
 
             # open a shelve-based persistent dictionary to save/retrieve arbitrary picklable python objects associated with the current RamData in a memory-efficient manner
             self.ns = ShelveContainer( f"{self._path_folder_ramdata_local}ns", mode = self._mode, path_prefix_shelve_mask = f"{self._path_folder_ramdata_mask}ns", flag_is_read_only = self._flag_is_read_only )
@@ -8118,7 +7736,7 @@ class RamData( ) :
         """
         # [TEMP] add identifier
         if 'identifier' not in self._dict_metadata :
-            self._dict_metadata[ 'identifier' ] = UUID( )
+            self._dict_metadata[ 'identifier' ] = bk.UUID( )
             self._save_metadata_( )
         
         return self._dict_metadata[ 'identifier' ]
@@ -8467,7 +8085,7 @@ class RamData( ) :
         l_str_bc = None
         if flag_use_str_repr_bc :
             dict_map = self.bc.map_int
-            l_str_bc = list( dict_map[ i ] for i in bk.BA.to_integer_indices( ba_entry_bc ) )
+            l_str_bc = list( dict_map[ i ] for i in BA.to_integer_indices( ba_entry_bc ) )
             del dict_map
         if flag_str_not_loaded_bc : # if 'str' data was not loaded, unload the str data once all necessary data has been retrieved
             self.bc.unload_str( )
@@ -8482,7 +8100,7 @@ class RamData( ) :
         l_str_ft = None
         if flag_use_str_repr_ft :
             dict_map = self.ft.map_int
-            l_str_ft = list( dict_map[ i ] for i in bk.BA.to_integer_indices( ba_entry_ft ) )
+            l_str_ft = list( dict_map[ i ] for i in BA.to_integer_indices( ba_entry_ft ) )
             del dict_map
         if flag_str_not_loaded_ft : # if 'str' data was not loaded, unload the str data once all necessary data has been retrieved
             self.ft.unload_str( )
@@ -8501,6 +8119,8 @@ class RamData( ) :
             [ 'str', { 'X_pca' : slice( 0, 10 ), 'X_umap', : None } ] as 'barcode_column' will include X_umap and X_pca in obsm in the resulting anndata object
             [ 'str', { 'X_pca' : slice( 0, 10 ), { 'X_umap' } ] as 'barcode_column' will also include X_umap and X_pca in obsm in the resulting anndata object
         '''
+        import anndata
+        
         assert isinstance( args, tuple ) # more than one arguments should be given
         # if the first argument appears to be 'name_layer', load the layer and drop the argument
         if isinstance( args[ 0 ], str ) and args[ 0 ] in self.layers :
@@ -8627,7 +8247,7 @@ class RamData( ) :
         """
         path_folder = self._path_folder_ramdata_modifiable # retrieve path to the modifiable ramdata object
         if path_folder is not None : # if valid location is available (assumes it is a local directory)
-            path_folder_temp = f"{path_folder}temp_{UUID( )}/"
+            path_folder_temp = f"{path_folder}temp_{bk.UUID( )}/"
             os.makedirs( path_folder_temp, exist_ok = True ) # create the temporary folder
             return path_folder_temp # return the path to the temporary folder
     def summarize( self, name_layer : str, axis : Union[ int, str ], summarizing_func, l_name_col_summarized : Union[ list, None ] = None, str_prefix : Union[ str, None ] = None, str_suffix : str = '' ) :
@@ -8972,7 +8592,7 @@ class RamData( ) :
             ns = dict( ) # create a namespace that can safely shared between different scopes of the functions
             ns[ 'int_num_records_written_to_ramtx' ] = 0 # initlaize the total number of records written to ramtx object
             # create a temporary folder
-            path_folder_temp = f'{path_folder_layer_new}temp_{UUID( )}/'
+            path_folder_temp = f'{path_folder_layer_new}temp_{bk.UUID( )}/'
             os.makedirs( path_folder_temp, exist_ok = True )
             
             ''' initialize output ramtx objects '''
@@ -8982,7 +8602,7 @@ class RamData( ) :
                 os.makedirs( path_folder_ramtx_dense, exist_ok = True ) # create the output ramtx object folder
                 path_folder_ramtx_dense_mtx = f"{path_folder_ramtx_dense}matrix.zarr/" # retrieve the folder path of the output RAMtx Zarr matrix object.
                 # assert not os.path.exists( path_folder_ramtx_dense_mtx ) # output zarr object should NOT exists!
-                path_file_lock_mtx_dense = f'{path_folder_layer_new}lock_{UUID( )}.sync' # define path to locks for parallel processing with multiple processes
+                path_file_lock_mtx_dense = f'{path_folder_layer_new}lock_{bk.UUID( )}.sync' # define path to locks for parallel processing with multiple processes
                 za_mtx_dense = zarr.open( path_folder_ramtx_dense_mtx, mode = 'w', shape = ( rtx._int_num_barcodes, rtx._int_num_features ), chunks = chunks_dense, dtype = dtype_dense_mtx, synchronizer = zarr.ProcessSynchronizer( path_file_lock_mtx_dense ) ) # use the same chunk size of the current RAMtx
             """ %% SPARSE %% """
             if flag_sparse_ramtx_output : # if sparse output is present
@@ -9007,7 +8627,7 @@ class RamData( ) :
                 ''' # 2022-05-08 13:19:07 
                 retrieve data for a given list of entries, transform values, and save to a Zarr object and index the object, and returns the number of written records and the paths of the written objects (index and Zarr matrix)
                 '''
-                str_uuid = UUID( )
+                str_uuid = bk.UUID( )
                 # retrieve fork-safe RAMtx
                 rtx_fork_safe = rtx.load_zarr_server( ) if rtx.contains_remote else rtx # load zarr_server (if RAMtx contains remote data source) to be thread-safe
 
@@ -9030,10 +8650,10 @@ class RamData( ) :
                     """ %% SPARSE %% """
                     if flag_sparse_ramtx_output : # if sparse output is present
                         # open an Zarr object
-                        path_folder_zarr_output_sparse = f"{path_folder_temp}{UUID( )}.zarr/" # define output Zarr object path
+                        path_folder_zarr_output_sparse = f"{path_folder_temp}{bk.UUID( )}.zarr/" # define output Zarr object path
                         za_output_sparse = zarr.open( path_folder_zarr_output_sparse, mode = 'w', shape = ( rtx_fork_safe._int_num_records, 2 ), chunks = za_mtx_sparse.chunks, dtype = dtype_of_value, synchronizer = zarr.ThreadSynchronizer( ) )
                         # define an index file
-                        path_file_index_output_sparse = f"{path_folder_temp}{UUID( )}.index.tsv.gz" # define output index file path
+                        path_file_index_output_sparse = f"{path_folder_temp}{bk.UUID( )}.index.tsv.gz" # define output index file path
                         l_index = [ ] # collect index
 
                     # iterate through the data of each entry and transform the data
@@ -9192,7 +8812,7 @@ class RamData( ) :
                 root = zarr.group( path_folder_ramtx_dense )
                 root.attrs[ 'dict_metadata' ] = { 
                     'mode' : 'dense',
-                    'str_completed_time' : TIME_GET_timestamp( True ),
+                    'str_completed_time' : bk.TIME_GET_timestamp( True ),
                     'int_num_features' : rtx._int_num_features,
                     'int_num_barcodes' : rtx._int_num_barcodes,
                     'int_num_records' : ns[ 'int_num_records_written_to_ramtx' ],
@@ -9205,7 +8825,7 @@ class RamData( ) :
                 root.attrs[ 'dict_metadata' ] = { 
                     'mode' : mode_sparse,
                     'flag_ramtx_sorted_by_id_feature' : rtx.is_for_querying_features,
-                    'str_completed_time' : TIME_GET_timestamp( True ),
+                    'str_completed_time' : bk.TIME_GET_timestamp( True ),
                     'int_num_features' : rtx._int_num_features,
                     'int_num_barcodes' : rtx._int_num_barcodes,
                     'int_num_records' : ns[ 'int_num_records_written_to_ramtx' ],
@@ -9393,13 +9013,13 @@ class RamData( ) :
         root = zarr.group( path_folder_ramdata_output )
         root.attrs[ 'dict_metadata' ] = { 
             'path_folder_mtx_10x_input' : None,
-            'str_completed_time' : TIME_GET_timestamp( True ),
+            'str_completed_time' : bk.TIME_GET_timestamp( True ),
             'int_num_features' : self.ft.meta.n_rows,
             'int_num_barcodes' : self.bc.meta.n_rows,
             'layers' : list( set_name_layer ),
             'models' : dict( ),
             'version' : _version_,
-            'identifier' : UUID( ),
+            'identifier' : bk.UUID( ),
         }
     def normalize( self, name_layer = 'raw', name_layer_new = 'normalized', name_col_total_count = 'raw_sum', int_total_count_target = 10000, mode_instructions = [ [ 'sparse_for_querying_features', 'sparse_for_querying_features' ], [ 'sparse_for_querying_barcodes', 'sparse_for_querying_barcodes' ] ], int_num_threads = None, ** kwargs ) :
         ''' # 2022-07-06 23:58:15 
@@ -9751,16 +9371,20 @@ class RamData( ) :
 
         # load a raw count layer
         if name_layer_raw is not None : # check validity of name_layer
-            self.layer = name_layer_raw 
-            self.layer[ 'dense' ].survey_number_of_records_for_each_entry( ) # prepare operation on dense RAMtx
+            self.layer = name_layer_raw  # load the 'raw' layer
+            # if the input matrix is 'dense', prepare operation for dense matrix
+            if 'dense' in self.layer : 
+                self.layer[ 'dense' ].survey_number_of_records_for_each_entry( ) # prepare operation on dense RAMtx
 
         # in 'slow' mode, use sparse matrix for more efficient operation
         if not flag_use_fast_mode and name_layer_raw is not None : # check validity of name_layer
-            """ %% SLOW MODE %% """
-            if self.verbose :
-                logging.info( f"[RamData.prepare_dimension_reduction_from_raw] [SLOW MODE] converting dense to sparse formats ... " )
-            # dense -> sparse conversion
-            self.apply( name_layer_raw, name_layer_raw, 'ident', mode_instructions = [ [ 'dense', 'sparse_for_querying_features' ], [ 'dense', 'sparse_for_querying_barcodes' ] ] ) # assumes raw count data (or the equivalent of it) is available in 'dense' format (local)
+            # if 'dense' matrix is available, convert dense to sparse formats
+            if 'dense' in self.layer : 
+                """ %% SLOW MODE %% """
+                if self.verbose :
+                    logging.info( f"[RamData.prepare_dimension_reduction_from_raw] [SLOW MODE] converting dense to sparse formats ... " )
+                # dense -> sparse conversion
+                self.apply( name_layer_raw, name_layer_raw, 'ident', mode_instructions = [ [ 'dense', 'sparse_for_querying_features' ], [ 'dense', 'sparse_for_querying_barcodes' ] ] ) # assumes raw count data (or the equivalent of it) is available in 'dense' format (local)
 
         # copy raw count data available remotely to local storage for caching
         flag_raw_in_remote_location = self.contains_remote and name_layer_raw in self.layers and name_layer_raw not in self.layers_excluding_components # retrieve a flag indicating raw count data resides in remote location
@@ -9950,7 +9574,7 @@ class RamData( ) :
         flag_subsample : bool = True, 
         dict_kw_subsample : dict = dict( ), 
         flag_skip_pca : bool = False, 
-        str_embedding_method : typing.Literal[ 'pumap', 'scanpy-umap', 'scanpy-tsne', 'knn_embedder', 'knngraph' ] = 'pumap',
+        str_embedding_method : Literal[ 'pumap', 'scanpy-umap', 'scanpy-tsne', 'knn_embedder', 'knngraph' ] = 'pumap',
         dict_kw_for_run_scanpy_using_pca = { 'int_neighbors_n_neighbors' : 10, 'int_neighbors_n_pcs' : 30, 'set_method' : { 'leiden', 'umap' }, 'dict_kw_umap' : dict( ),'dict_leiden' : { 'resolution' : 1 },'dict_kw_tsne' : dict( ) }
     ) :
         """ # 2022-11-16 17:53:57 
@@ -10268,8 +9892,10 @@ class RamData( ) :
             if not os.path.exists( path_file_model ) :
                 return 
 
-            model = PICKLE_Read( path_file_model )
+            model = bk.PICKLE_Read( path_file_model )
         elif type_model == 'pumap' : # parametric umap model
+            import umap.parametric_umap as pumap # parametric UMAP
+            
             # define paths
             name_model_file = f"{name_model}.{type_model}.tar.gz"
             path_prefix_model = f"{path_folder_models}{name_model}.{type_model}"
@@ -10291,6 +9917,8 @@ class RamData( ) :
             if not hasattr( model, 'decoder' ) : 
                 model.decoder = None
         elif type_model in self._set_type_model_keras_model : # handle 'dict_model' containing 'dl_model'
+            import tensorflow as tf
+            
             # define paths
             name_model_file = f"{name_model}.{type_model}.tar.gz"
             path_prefix_model = f"{path_folder_models}{name_model}.{type_model}"
@@ -10307,7 +9935,7 @@ class RamData( ) :
             if not os.path.exists( path_prefix_model ) : # if the model has not been extracted from the tar.gz archive
                 tar_extract( path_file_model, path_folder_models ) # extract tar.gz file of pumap object
 
-            model = PICKLE_Read( f"{path_prefix_model}/metadata.pickle" ) # load metadata first
+            model = bk.PICKLE_Read( f"{path_prefix_model}/metadata.pickle" ) # load metadata first
             model[ 'dl_model' ] = tf.keras.models.load_model( f"{path_prefix_model}/dl_model.hdf5" ) # load keras model                
         return model # return loaded model
     def save_model( self, model, name_model : str, type_model : Literal[ 'ipca', 'pumap', 'hdbscan', 'knn_classifier', 'knn_embedder', 'knngraph' ] ) :
@@ -10335,7 +9963,7 @@ class RamData( ) :
         # save model
         if type_model in self._set_type_model_picklable : # handle picklable models
             path_file_model = f"{path_folder_models}{name_model}.{type_model}.pickle"
-            PICKLE_Write( path_file_model, model )
+            bk.PICKLE_Write( path_file_model, model )
         elif type_model == 'pumap' : # parametric umap model
             path_prefix_model = f"{path_folder_models}{name_model}.pumap"
             path_file_model = path_prefix_model + '.tar.gz'
@@ -10346,7 +9974,7 @@ class RamData( ) :
             path_file_model = path_prefix_model + '.tar.gz'
             dl_model = model.pop( 'dl_model' ) # remove the keras model 'dl_model' from dict_model, enable the remaining 'dict_model' to become picklable
             dl_model.save( f"{path_prefix_model}/dl_model.hdf5" ) # save keras model
-            PICKLE_Write( f"{path_prefix_model}/metadata.pickle", model ) # save metadata as a pickle file
+            bk.PICKLE_Write( f"{path_prefix_model}/metadata.pickle", model ) # save metadata as a pickle file
             tar_create( path_file_model, path_prefix_model ) # create tar.gz file of pumap object for efficient retrieval and download
         int_file_size = os.path.getsize( path_file_model ) # retrieve file size of the saved model
         
@@ -10370,7 +9998,7 @@ class RamData( ) :
         models = self.models_excluding_components if flag_exclude_components else self.models # retrieve currently available models
             
         return type_model in models and name_model in models[ type_model ] # exists in the models of the current RamData
-    def delete_model( self, name_model : str, type_model : typing.Literal[ 'ipca', 'pumap' ] ) :
+    def delete_model( self, name_model : str, type_model : Literal[ 'ipca', 'pumap' ] ) :
         """ # 2022-08-05 19:44:23 
         delete model of the RamData if the model exists in the RamData
         
@@ -10452,7 +10080,7 @@ class RamData( ) :
             return
         
         # parse query
-        l_int_entry_query = bk.BA.to_integer_indices( ax_for_querying[ queries ] ) # retrieve bitarray of the queried entries, convert to list of integer indices
+        l_int_entry_query = BA.to_integer_indices( ax_for_querying[ queries ] ) # retrieve bitarray of the queried entries, convert to list of integer indices
         
         ax_not_for_querying.backup_view( ) # back-up current view and reset the view of the axis not for querying
         mtx = rtx.get_sparse_matrix( l_int_entry_query ) # retrieve expr matrix of the queries in sparse format
@@ -10498,6 +10126,8 @@ class RamData( ) :
         === when reference ramdata is used ===
         int_index_component_reference : Union[ None, int ] = None # the index of the reference component RamData to use. if None is given, does not use any component as a reference component
         """
+        from sklearn.decomposition import IncrementalPCA
+        
         """
         1) Prepare
         """
@@ -10558,7 +10188,7 @@ class RamData( ) :
         2) Fit PCA with/without subsampling of barcodes
         """
         # initialize iPCA object
-        ipca = skl.decomposition.IncrementalPCA( n_components = int_num_components, batch_size = int_num_barcodes_in_ipca_batch, copy = False, whiten = flag_ipca_whiten ) # copy = False to increase memory-efficiency
+        ipca = IncrementalPCA( n_components = int_num_components, batch_size = int_num_barcodes_in_ipca_batch, copy = False, whiten = flag_ipca_whiten ) # copy = False to increase memory-efficiency
 
         # define functions for multiprocessing step
         def process_batch( pipe_receiver_batch, pipe_sender_result ) :
@@ -10793,6 +10423,8 @@ class RamData( ) :
         'dict_kw_pumap' : remaining keyworded arguments of umap.ParametricUMAP
         
         """
+        import umap.parametric_umap as pumap # parametric UMAP
+        
         """
         1) Prepare
         """
@@ -10916,6 +10548,8 @@ class RamData( ) :
         returns:
         arr_cluster_label, clusterer(hdbscan object)
         """
+        import hdbscan # for clustering
+        
         """
         1) Prepare
         """
@@ -10961,6 +10595,8 @@ class RamData( ) :
 
         # draw graphs
         if name_col_embedding is not None : # visualize clustering results if 'name_col_embedding' has been given
+            import seaborn as sns
+            
             color_palette = sns.color_palette( 'Paired', len( set( arr_cluster_label ) ) )
             cluster_colors = [ color_palette[ x ] if x >= 0 else ( 0.5, 0.5, 0.5 ) for x in arr_cluster_label ]
             fig, plt_ax = plt.subplots( 1, 1, figsize = ( 7, 7 ) )
@@ -11000,6 +10636,11 @@ class RamData( ) :
 
         returns:
         """
+        # for leiden clustering
+        import igraph as ig
+        import leidenalg
+        import pynndescent
+        
         """
         1) Prepare
         """
@@ -11091,6 +10732,8 @@ class RamData( ) :
 
         # draw graphs
         if name_col_embedding is not None : # visualize clustering results if 'name_col_embedding' has been given
+            import seaborn as sns
+            
             color_palette = sns.color_palette( 'Paired', len( set( arr_cluster_label ) ) )
             cluster_colors = [ color_palette[ x ] if x >= 0 else ( 0.5, 0.5, 0.5 ) for x in arr_cluster_label ]
             fig, plt_ax = plt.subplots( 1, 1, figsize = ( 7, 7 ) )
@@ -11121,6 +10764,8 @@ class RamData( ) :
         returns:
         labels, index 
         """
+        import pynndescent
+        
         # handle inputs
         flag_axis_is_barcode = axis in { 0, 'barcode', 'barcodes' } # retrieve a flag indicating whether the data is summarized for each barcode or not
         
@@ -11254,7 +10899,7 @@ class RamData( ) :
         # return the counts of each unique label
         return dict_label_counter
     ''' subsampling method '''
-    def subsample( self, name_model = 'leiden', int_num_entries_to_use : int = 30000, int_num_entries_to_subsample : int = 100000, int_num_iterations_for_subsampling : int = 2, name_col_data : str = 'X_pca', int_num_components_data : int = 20, int_num_clus_expected : Union[ int, None ] = 20, name_col_label : str = 'subsampling_label', name_col_avg_dist : str = 'subsampling_avg_dist', axis : typing.Union[ int, str ] = 'barcodes', name_col_filter : str = 'filter_pca', name_col_filter_subsampled : str = "filter_subsampled", resolution = 0.7, directed : bool = True, use_weights : bool = True, dict_kw_leiden_partition : dict = { 'n_iterations' : -1, 'seed' : 0 }, dict_kw_pynndescent_transformer : dict = { 'n_neighbors' : 10, 'metric' : 'euclidean', 'low_memory' : True }, n_neighbors : int = 20, dict_kw_pynndescent : dict = { 'low_memory' : True, 'n_jobs' : None, 'compressed' : False }, int_num_threads : int = 10, int_num_entries_in_a_batch : int = 10000 ) :
+    def subsample( self, name_model = 'leiden', int_num_entries_to_use : int = 30000, int_num_entries_to_subsample : int = 100000, int_num_iterations_for_subsampling : int = 2, name_col_data : str = 'X_pca', int_num_components_data : int = 20, int_num_clus_expected : Union[ int, None ] = 20, name_col_label : str = 'subsampling_label', name_col_avg_dist : str = 'subsampling_avg_dist', axis : Union[ int, str ] = 'barcodes', name_col_filter : str = 'filter_pca', name_col_filter_subsampled : str = "filter_subsampled", resolution = 0.7, directed : bool = True, use_weights : bool = True, dict_kw_leiden_partition : dict = { 'n_iterations' : -1, 'seed' : 0 }, dict_kw_pynndescent_transformer : dict = { 'n_neighbors' : 10, 'metric' : 'euclidean', 'low_memory' : True }, n_neighbors : int = 20, dict_kw_pynndescent : dict = { 'low_memory' : True, 'n_jobs' : None, 'compressed' : False }, int_num_threads : int = 10, int_num_entries_in_a_batch : int = 10000 ) :
         """ # 2022-10-02 23:53:54 
         subsample informative entries through iterative density-based subsampling combined with community detection algorithm
         
@@ -11294,6 +10939,8 @@ class RamData( ) :
         
         returns:
         """
+        import pynndescent
+        
         # handle inputs
         flag_axis_is_barcode = axis in { 0, 'barcode', 'barcodes' } # retrieve a flag indicating whether the data is summarized for each barcode or not
         
@@ -11498,7 +11145,7 @@ class RamData( ) :
         # retrieve labels
         arr_label = ax.meta[ name_col_label ] if len( ax.meta.get_zarr( name_col_label ).shape ) == 1 else ax.meta[ name_col_label, None, index_col_of_name_col_label ] # check whether the dimension of the column containing labels is 1D or 2D
         
-        s_count_label = LIST_COUNT( arr_label, duplicate_filter = False )
+        s_count_label = bk.LIST_COUNT( arr_label, duplicate_filter = False )
         s_count_label.sort_values( inplace = True ) # sort by cluster size
 
         """
@@ -11527,7 +11174,7 @@ class RamData( ) :
         ba_subsampled = bitarray( ax.int_num_entries )
         ba_subsampled.setall( 0 )
         # iterate over label and int_entry
-        for label, int_entry in zip( arr_label, bk.BA.find( ax.filter ) ) :
+        for label, int_entry in zip( arr_label, BA.find( ax.filter ) ) :
             if np.random.random( ) < dict_name_clus_to_num_entries_to_be_subsampled_remaining[ label ] / dict_name_clus_to_num_entries_remaining[ label ] : # determine whether to subsample an entry
                 ba_subsampled[ int_entry ] = 1 # select the entry
                 dict_name_clus_to_num_entries_to_be_subsampled_remaining[ label ] -= 1 # consume 'dict_name_clus_to_num_entries_to_be_subsampled_remaining'
@@ -11548,11 +11195,12 @@ class RamData( ) :
         int_neighbors_n_pcs : int = 30, 
         set_method : set = { 'leiden', 'umap' }, 
         str_suffix : str = '_scanpy', 
+        dict_kw_neighbors : dict = dict( ),
         dict_kw_umap : dict = dict( ),
-        dict_leiden : dict = dict( ),
+        dict_kw_leiden : dict = dict( ),
         dict_kw_tsne : dict = dict( )
     ) :
-        """ # 2022-09-12 22:43:20 
+        """ # 2022-11-29 09:05:36 
         run scanpy methods using the PCA values calculated using scelephant
 
         name_col_pca : str = 'X_pca' #
@@ -11561,10 +11209,13 @@ class RamData( ) :
         int_neighbors_n_pcs : int = 30 # the number of PCA components for building the neighborhood graph
         set_method = { 'leiden', 'umap' } # scanpy methods to use
         str_suffix = '_scanpy' # suffix for the output column names of the 'barcodes' metadata
+        dict_kw_neighbors = dict( ) # keyworded arguments for scanpy umap method
         dict_kw_umap = dict( ) # keyworded arguments for scanpy umap method
-        dict_leiden = dict( ) # keyworded arguments for scanpy leiden method
+        dict_kw_leiden = dict( ) # keyworded arguments for scanpy leiden method
         dict_kw_tsne = dict( ) # keyworded arguments for scanpy tsne method
         """
+        import scanpy as sc
+        
         # if no set_method was given, exit early 
         if len( set_method ) == 0 :
             return
@@ -11575,7 +11226,7 @@ class RamData( ) :
             logging.info( '[RamData.run_scanpy_using_pca] anndata retrieved.' )
         
         # build a neighborhood graph
-        sc.pp.neighbors( adata, n_neighbors = int_neighbors_n_neighbors, n_pcs = int_neighbors_n_pcs, use_rep = name_col_pca )
+        sc.pp.neighbors( adata, n_neighbors = int_neighbors_n_neighbors, n_pcs = int_neighbors_n_pcs, use_rep = name_col_pca, ** dict_kw_neighbors )
         if self.verbose :
             logging.info( '[RamData.run_scanpy_using_pca] K-nearest neighbor graphs calculation completed.' )
         # perform analysis
@@ -11585,7 +11236,7 @@ class RamData( ) :
             if self.verbose :
                 logging.info( '[RamData.run_scanpy_using_pca] UMAP calculation completed, and resulting UMAP-embedding was saved to RamData.' )
         if 'leiden' in set_method :
-            sc.tl.leiden( adata, ** dict_leiden ) # perform analysis using scanpy
+            sc.tl.leiden( adata, ** dict_kw_leiden ) # perform analysis using scanpy
             self.bc.meta[ f'leiden{str_suffix}' ] = adata.obs[ 'leiden' ].values.astype( int ) # save result to RamData
             if self.verbose :
                 logging.info( '[RamData.run_scanpy_using_pca] leiden clustering completed, and resulting cluster membership information was saved to RamData.' )
@@ -11609,6 +11260,8 @@ class RamData( ) :
         n_neighbors : int = 10 # the number of neighbors to use
         dict_kw_pynndescent : dict = { 'low_memory' : True, 'n_jobs' : None, 'compressed' : False } # the additional keyworded arguments for pynndescent index
         """
+        import pynndescent
+        
         # handle inputs
         flag_axis_is_barcode = axis in { 0, 'barcode', 'barcodes' } # retrieve a flag indicating whether the data is summarized for each barcode or not
         
@@ -11885,6 +11538,10 @@ class RamData( ) :
         n_neighbors : int = 10 # the number of neighbors to use
         dict_kw_pynndescent : dict = { 'low_memory' : True, 'n_jobs' : None, 'compressed' : False } # the additional keyworded arguments for pynndescent index
         """
+        import tensorflow as tf
+        from sklearn.model_selection import train_test_split
+        from tensorflow.keras import layers
+        
         # handle inputs
         flag_axis_is_barcode = axis in { 0, 'barcode', 'barcodes' } # retrieve a flag indicating whether the data is summarized for each barcode or not
 
@@ -11981,7 +11638,7 @@ class RamData( ) :
         model.summary( )
 
         # split test/training dataset
-        X_train, X_test, y_train, y_test = skl.model_selection.train_test_split( X, y, ** dict_kw_train_test_split ) # split train/test dataset
+        X_train, X_test, y_train, y_test = train_test_split( X, y, ** dict_kw_train_test_split ) # split train/test dataset
 
         # start training
         # mirrored_strategy = tf.distribute.MirroredStrategy( ) # distributed training
@@ -12207,6 +11864,9 @@ class RamData( ) :
         an array with a shape of ( the number of all features ) X ( the number of all cluster labels ), stored in the feature metadata using the given column name
         information about which column of the output array represent which cluster label is available in the column metadata.
         """
+        from sklearn.metrics import roc_auc_score
+        import scipy.stats
+        
         # handle inputs
         if name_col_label not in self.bc.meta : # check input label
             if self.verbose  :
@@ -12306,7 +11966,7 @@ class RamData( ) :
                 
                 # calculate auroc
                 if flag_calcualte_auroc :
-                    dict_summary[ name_col_auroc ][ index_clus ] = skl.metrics.roc_auc_score( mask, arr_expr )
+                    dict_summary[ name_col_auroc ][ index_clus ] = roc_auc_score( mask, arr_expr )
                     
                 # calculate ttest
                 if flag_calculate_pval and test is not None :
@@ -12521,499 +12181,53 @@ class RamData( ) :
         if self.verbose :
             logging.info( f'cell filtering completed for {len( set_str_barcode )} cells. A filtered RamData was exported at {path_folder_ramdata_output}' )
 
-# utility functions
-# for benchmarking
-def draw_result( self, path_folder_graph, dict_kw_scatter = { 's' : 2, 'linewidth' : 0, 'alpha' : 0.1 } ) :
-    """ # 2022-08-16 12:00:56 
-    draw resulting UMAP graph
+# plotly visualization functions            
+def pl_umap( adata, color : str, name_col_umap : str = 'X_umap', x_range : Union[ tuple, None ] = None, y_range : Union[ tuple, None ] = None ) :
+    """ # 2022-11-29 23:08:58 
+    Plot an interactive scatter plot (using UMAP embeddings) of a given anndata using plotly express
+    
+    adata # input AnnData object 
+    color : str # name of the gene name or column containing barcode annotations in adata.obs dataframe.
+    name_col_umap : str = 'X_umap' # name of array in adata.obsm containing UMAP embeddings
+    x_range : Union[ tuple, None ] = None, y_range : Union[ tuple, None ] = None # ranges to visualize. set to None to plot all ranges
+    
     """
-    arr_cluster_label = self.bc.meta[ 'subsampling_label', None, 1 ]
-    embedding = self.bc.meta[ 'X_umap' ]
+    # for plotly python
+    import plotly.express as px
     
-    # adjust graph settings based on the number of cells to plot
-    int_num_bc = embedding.shape[ 0 ]
-    size_factor = max( 1, np.log( int_num_bc ) - np.log( 5000 ) )
-    dict_kw_scatter = { 's' : 20 / size_factor, 'linewidth' : 0, 'alpha' : 0.5 / size_factor }
-    if arr_cluster_label is None :
-        arr_cluster_label = [ arr_cluster_label ]
-    color_palette = sns.color_palette( 'Paired', len( set( arr_cluster_label ) ) )
-    cluster_colors = [ color_palette[ x ] if x is not None and x >= 0 else ( 0.5, 0.5, 0.5 ) for x in arr_cluster_label ]
-    fig, plt_ax = plt.subplots( 1, 1, figsize = ( 7, 7 ) )
-    plt_ax.scatter( * embedding.T, c = cluster_colors, ** dict_kw_scatter )
-    MPL_basic_configuration( x_label = 'UMAP_1', y_label = 'UMAP_1', show_grid = False )
-    MPL_SAVE( 'umap.leiden', folder = path_folder_graph )
-def umap( adata, l_name_col_for_regression = [ ], float_scale_max_value = 10, int_pca_n_comps = 50, int_neighbors_n_neighbors = 10, int_neighbors_n_pcs = 50, dict_kw_umap = dict( ), dict_leiden = dict( ) ) :
-    ''' # 2022-07-06 20:49:44 
-    retrieve all expression data of the RamData with current barcodes/feature filters', perform dimension reduction process, and return the new AnnData object with umap coordinate and leiden cluster information
-
-    'adata' : input adata object
-    'l_name_col_for_regression' : a list of column names for the regression step. a regression step is often the longest step for demension reduction and clustering process. By simply skipping this step, one can retrieve a brief cluster structures of the cells in a very short time. to skip the regression step, please set this argument to an empty list [ ].
-    '''
-    # perform dimension reduction and clustering processes
-    l_name_col_for_regression = list( set( adata.obs.columns.values ).intersection( l_name_col_for_regression ) ) # retrieve valid column names for regression
-    if len( l_name_col_for_regression ) > 1 :
-        sc.pp.regress_out( adata, l_name_col_for_regression )
-    sc.pp.scale( adata, max_value = float_scale_max_value )
-    sc.tl.pca( adata, svd_solver = 'arpack', n_comps = int_pca_n_comps )
-    sc.pl.pca_variance_ratio( adata, log = True )
-    sc.pp.neighbors( adata, n_neighbors = int_neighbors_n_neighbors, n_pcs = int_neighbors_n_pcs )
-    sc.tl.umap( adata, ** dict_kw_umap )
-    sc.tl.leiden( adata, ** dict_leiden )
-
-    return adata
-
-''' # not implemented in zarr '''
-def Convert_Scanpy_AnnData_to_RAMtx( adata, path_folder_ramtx_output, flag_ramtx_sorted_by_id_feature = True, file_format = 'mtx_gzipped', int_num_threads = 15, verbose = False, flag_overwrite_existing_files = False, flag_sort_and_index_again = False, flag_debugging = False, flag_covert_dense_matrix = False, int_num_digits_after_floating_point_for_export = 5, flag_output_value_is_float = True, dtype_of_row_and_col_indices = np.uint32, dtype_of_value = None ) :
-    ''' # 2022-05-25 22:50:27 
-    build RAMtx from Scanpy AnnData
-    It is recommended to load all data on the memory for efficient conversion. It is often not practical to use the disk-backed AnnData to build RAMtx due to slow access time of the object.
+    df = deepcopy( adata.obs )
     
-    2022-05-16 15:05:32 :
-    barcodes and features with zero counts will not be removed to give flexibillity to the RAMtx object.
+    flag_is_gene_expression_data_being_plotted = False
     
-    'path_folder_ramtx_output' an output directory of RAMtx object
-    'flag_ramtx_sorted_by_id_feature' : a flag indicating whether the output matrix is sorted and indexed by id_feature.
-    'file_format' : file_format of the output RAMtx object. please check 'Convert_MTX_10X_to_RAMtx' function docstring for more details.
-    'int_num_threads' : the number of processes to use.
-    'dtype_of_row_and_col_indices' (default: np.uint32), 'dtype_of_value' (default: None (auto-detect)) : numpy dtypes for pickle and feather outputs. choosing smaller format will decrease the size of the object on disk
-    'flag_covert_dense_matrix' : by default, only sparse matrix will be converted to RAMtx. However, dense matrix can be also converted to RAMtx if this flag is set to True
-    '''
-    ''' handle inputs '''
-    flag_is_data_dense = isinstance( adata.X, ( np.ndarray ) ) # check whether the data matrix is in dense format
-    if not flag_covert_dense_matrix and flag_is_data_dense :
-        raise IndexError( "currently dense matrix is not allowed to be converted to RAMtx. to allow this behavior, please set 'flag_is_data_dense' to True" )
-
-    """ retrieve RAMtx_file_format specific export settings """
-    # prepare
-    str_format_value = "{:." + str( int_num_digits_after_floating_point_for_export ) + "f}" if flag_output_value_is_float else "{}" # a string for formating value
-    str_etx, str_ext_index, func_arrays_mtx_to_processed_bytes = _get_func_arrays_mtx_to_processed_bytes_and_other_settings_based_on_file_format( file_format, str_format_value, dtype_of_row_and_col_indices, dtype_of_value )
-        
-    # create an ramtx output folder
-    os.makedirs( path_folder_ramtx_output, exist_ok = True )
+    if color in df.columns.values :
+        name_col_color = color # set 'name_col_color'
+    if color in adata.var.index.values :
+        df[ 'gene_expr' ] = adata[ :, [ color ] ].X.toarray( ).ravel( ) 
+        name_col_color = 'gene_expr' # set 'name_col_color'
+        flag_is_gene_expression_data_being_plotted = True # set a flag
     
-#     2022-05-16 15:05:32 :
-#     barcodes and features with zero counts will not be removed to give flexibillity to the RAMtx object. 
-#     ''' preprocess input AnnData '''
-#     # discard barcodes and features with zero counts
-#     arr_mask_valid_barcode = np.array( adata.X.sum( axis = 1 ) ).ravel( ) > 0
-#     arr_mask_valid_feature = np.array( adata.X.sum( axis = 0 ) ).ravel( ) > 0
-#     if sum( arr_mask_valid_barcode ) != adata.shape[ 0 ] or sum( arr_mask_valid_feature ) != adata.shape[ 1 ] :
-#         adata = adata[ adata.X.sum( axis = 1 ) > 0, adata.X.sum( axis = 0 ) > 0 ].copy( )
-        
-    ''' output metadata associated with anndata to RAMtx '''
-    # save metadata (obs & var)
-    # save (obs)
-    df_obs = deepcopy( adata.obs )
-    df_obs.reset_index( drop = False, inplace = True )
-    df_obs.rename( columns = { 'index' : 'id_cell' }, inplace = True )
-    arr_index_sorting_obs = df_obs.id_cell.argsort( ).values
-    df_obs.sort_values( 'id_cell', inplace = True )
-    df_obs.to_csv( f'{path_folder_ramtx_output}df_obs.tsv.gz', index = False, sep = '\t' )
-
-    # save (var)
-    df_var = deepcopy( adata.var )
-    df_var.reset_index( drop = False, inplace = True )
-    df_var.rename( columns = { 'index' : 'name_feature', 'gene_ids' : 'id_feature' }, inplace = True )
-    df_var = df_var[ [ 'id_feature', 'name_feature', 'feature_types' ] + list( df_var.columns.values[ 3 : ] ) ] # rearrange column names
-    arr_index_sorting_var = df_var.id_feature.argsort( ).values
-    df_var.sort_values( 'id_feature', inplace = True )
-    df_var.to_csv( f"{path_folder_ramtx_output}df_var.tsv.gz", sep = '\t', index = False )
-
-    """ save X as RAMtx """
-    # use multiple processes
-    # create a temporary folder
-    path_folder_temp = f'{path_folder_ramtx_output}temp_{UUID( )}/'
-    os.makedirs( path_folder_temp, exist_ok = True )
-
-    # prepare multiprocessing
-    arr_index_sorting = arr_index_sorting_var if flag_ramtx_sorted_by_id_feature else arr_index_sorting_obs # retrieve index sorting
-    l_arr_index_sorting_for_each_chunk, l_arr_weight_for_each_chunk = LIST_Split( arr_index_sorting, int_num_threads, flag_contiguous_chunk = True, arr_weight_for_load_balancing = np.array( adata.X.sum( axis = 0 if flag_ramtx_sorted_by_id_feature else 1 ) ).ravel( )[ arr_index_sorting ], return_split_arr_weight = True ) # perform load balancing using the total count for each entry as a weight
-    dict_index_sorting_to_int_entry_sorted = dict( ( index_before_sorting, index_after_sorting + 1 ) for index_after_sorting, index_before_sorting in enumerate( arr_index_sorting ) ) # retrieve mapping between index for sorting to int_entry after sorted 
-    ''' retrieve mappings of previous int_entry to new int_entry after sorting (1-based) for both barcodes and features '''
-    # retrieve sorting indices of barcodes and features
-    dict_name_entry_to_dict_int_entry_to_int_entry_new_after_sorting = dict( ( name_entry, dict( ( int_entry_before_sorting, int_entry_after_sorting ) for int_entry_after_sorting, int_entry_before_sorting in enumerate( arr_index_sorting ) ) ) for name_entry, arr_index_sorting in zip( [ 'barcodes', 'features' ], [ arr_index_sorting_obs, arr_index_sorting_var ] ) ) # 0>1 based coordinates. int_entry is in 1-based coordinate format (same as mtx format) # since rank will be used as a new index, it should be 1-based, and 1 will be added to the rank in 0-based coordinates
-
-    # setting for the pipeline
-    int_total_weight_for_each_batch = 2500000
-    vfunc_map_index_barcode = np.vectorize( MAP.Map( dict_name_entry_to_dict_int_entry_to_int_entry_new_after_sorting[ 'barcodes' ] ).a2b )
-    vfunc_map_index_feature = np.vectorize( MAP.Map( dict_name_entry_to_dict_int_entry_to_int_entry_new_after_sorting[ 'features' ] ).a2b )
-    def __compress_and_index_a_portion_of_sparse_matrix_as_a_worker__( index_chunk ) :
-        ''' # 2022-05-08 13:19:13 
-        save a portion of a sparse matrix 
-        '''
-        # open output files
-        file_output = open( f'{path_folder_temp}indexed.{index_chunk}.{str_etx}', 'wb' ) # open file appropriate for the file format
-        file_index_output = gzip.open( f'{path_folder_temp}indexed.{index_chunk}.{str_etx}.{str_ext_index}', 'wb' ) # open file appropriate for the file format
-
-        int_num_bytes_written = 0 # track the number of written bytes
-        # methods and variables for handling metadata
-        int_total_weight_current_batch = 0
-        l_index_sorting_current_batch = [ ]
-        def __process_batch__( file_output, file_index_output, int_num_bytes_written, l_index_sorting_current_batch ) :
-            ''' # 2022-05-08 13:19:07 
-            process the current batch and return updated 'int_num_bytes_written' 
-            '''
-            # retrieve the number of index_entries
-            int_num_entries = len( l_index_sorting_current_batch )
-            # handle invalid inputs
-            if int_num_entries == 0 :
-                return 0 # '0' bytes were written
-
-            # retrieve data for the current batch
-            arr_int_row, arr_int_col, arr_value = scipy.sparse.find( adata.X[ :, l_index_sorting_current_batch ] if flag_ramtx_sorted_by_id_feature else adata.X[ l_index_sorting_current_batch, : ] )
-            # handle invalid batch
-            if len( arr_int_row ) == 0 :
-                return 0 # '0' bytes were written
-            # renumber indices of sorted entries to match that in the sorted matrix
-            int_entry_sorted_first_entry_in_a_batch = dict_name_entry_to_dict_int_entry_to_int_entry_new_after_sorting[ 'features' if flag_ramtx_sorted_by_id_feature else 'barcodes' ][ l_index_sorting_current_batch[ 0 ] ] # retrieve the new index for the first record
-            if flag_ramtx_sorted_by_id_feature :
-                arr_int_col += int_entry_sorted_first_entry_in_a_batch # since the entries were already sorted, indices reset by starting from 0, simply adding the new index of the first entry is sufficient for renumbering
-                arr_int_row = vfunc_map_index_barcode( arr_int_row ) # renumber barcodes (new indices are indices after sorting)
-            else :
-                arr_int_col = vfunc_map_index_feature( arr_int_col ) # renumber features (new indices are indices after sorting)
-                arr_int_row += int_entry_sorted_first_entry_in_a_batch # since the entries were already sorted, indices reset by starting from 0, simply adding the new index of the first entry is sufficient for renumbering
-                
-            # by default, AnnData.X sparsematrix is sorted by feature. therefore, it should be sorted by barcode if 'flag_ramtx_sorted_by_id_feature' is False
-            if not flag_ramtx_sorted_by_id_feature :
-                argsort_arr_int_row = arr_int_row.argsort( ) # retrieve sorting indices to sort values based on 'arr_int_row'
-                # sort by 'arr_int_row'
-                arr_int_row = arr_int_row[ argsort_arr_int_row ]
-                arr_int_col = arr_int_col[ argsort_arr_int_row ]
-                arr_value = arr_value[ argsort_arr_int_row ]
-
-            # retrieve the start of the block, marked by the change of int_entry 
-            l_pos_start_block = [ 0 ] + list( np.where( np.diff( arr_int_col if flag_ramtx_sorted_by_id_feature else arr_int_row ) )[ 0 ] + 1 ) + [ len( arr_value ) ] # np.diff decrease the index of entries where change happens, and +1 should be done 
-            for index_block in range( len( l_pos_start_block ) - 1 ) : # for each block (each block contains records of a single entry)
-                slice_for_the_current_block = slice( l_pos_start_block[ index_block ], l_pos_start_block[ index_block + 1 ] )
-                arr_int_row_of_the_current_block, arr_int_col_of_the_current_block, arr_value_of_the_current_block = arr_int_row[ slice_for_the_current_block ], arr_int_col[ slice_for_the_current_block ], arr_value[ slice_for_the_current_block ] # retrieve data for the current block
-                int_entry = arr_int_col_of_the_current_block[ 0 ] if flag_ramtx_sorted_by_id_feature else arr_int_row_of_the_current_block[ 0 ] # retrieve int_entry of the current block
-                
-                bytes_processed = func_arrays_mtx_to_processed_bytes( ( arr_int_col_of_the_current_block, arr_int_row_of_the_current_block, arr_value_of_the_current_block ) ) # convert arrays_mtx to processed bytes
-                int_num_bytes_written_for_the_current_entry = len( bytes_processed ) # record the number of bytes of the written data
-                # write the processed bytes to the output file
-                file_output.write( bytes_processed )
-
-                # write the index
-                file_index_output.write( ( '\t'.join( map( str, [ int_entry + 1, int_num_bytes_written, int_num_bytes_written + int_num_bytes_written_for_the_current_entry ] ) ) + '\n' ).encode( ) ) # write an index for the current entry # 0>1 coordinates for 'int_entry'
-                int_num_bytes_written += int_num_bytes_written_for_the_current_entry # update the number of bytes written
-
-            return int_num_bytes_written
-
-        for int_entry, float_weight in zip( l_arr_index_sorting_for_each_chunk[ index_chunk ], l_arr_weight_for_each_chunk[ index_chunk ] ) : # retrieve inputs for the current process
-            # add current index_sorting to the current batch
-            l_index_sorting_current_batch.append( int_entry )
-            int_total_weight_current_batch += float_weight
-            # if the weight becomes larger than the threshold, process the batch and reset the batch
-            if int_total_weight_current_batch > int_total_weight_for_each_batch :
-                # process the current batch
-                int_num_bytes_written = __process_batch__( file_output, file_index_output, int_num_bytes_written, l_index_sorting_current_batch )
-                # initialize the next batch
-                l_index_sorting_current_batch = [ ]
-                int_total_weight_current_batch = 0
-                
-        # process the remaining entries
-        int_num_bytes_written = __process_batch__( file_output, file_index_output, int_num_bytes_written, l_index_sorting_current_batch )
-        
-        # close files
-        for file in [ file_output, file_index_output ] :
-            file.close( )
-        
-        # if no entries have been written, delete the output files
-        if int_num_bytes_written == 0 :
-            for path_file in [ f'{path_folder_temp}indexed.{index_chunk}.{str_etx}', f'{path_folder_temp}indexed.{index_chunk}.{str_etx}.{str_ext_index}' ] :
-                os.remove( path_file )
-
-    l_worker = list( mp.Process( target = __compress_and_index_a_portion_of_sparse_matrix_as_a_worker__, args = ( index_chunk, ) ) for index_chunk in range( int_num_threads ) )
-
-    ''' start works and wait until all works are completed by workers '''
-    for p in l_worker :
-        p.start( ) # start workers
-    for p in l_worker :
-        p.join( )    
-
-    ''' retrieve metadata from AnnData.X '''
-    int_num_barcodes, int_num_features = adata.X.shape # AnnData sparse matrix: row  = barcode, col = feature
-    int_num_records = adata.X.count_nonzero( ) # retrieve the number of entries
-
-    ''' write the metadata row of the matrix '''
-    with gzip.open( f'{path_folder_temp}indexed.-1.{str_etx}', 'wb' ) as file : # the metadata row should be located at the front of the output matrix file
-        file.write( f"""%%MatrixMarket matrix coordinate integer general\n%\n{int_num_features} {int_num_barcodes} {int_num_records}\n""".encode( ) ) # 10X matrix: row = feature, col = barcode
-    int_num_bytes_for_mtx_header = os.stat( f'{path_folder_temp}indexed.-1.{str_etx}' ).st_size # retrieve the file size of the matrix header
-
-    ''' combine outputs matrix '''
-    # combine output matrix files
-    for str_filename_glob in [ f'indexed.*.{str_etx}' ] :
-        # collect the list of input files in the order of 'index_chunk'
-        df = GLOB_Retrive_Strings_in_Wildcards( f'{path_folder_temp}{str_filename_glob}' )
-        df[ 'wildcard_0' ] = df.wildcard_0.astype( int )
-        df.sort_values( 'wildcard_0', inplace = True ) # sort the list of input files in the order of 'index_chunk'
-        # combine input files
-        OS_Run( [ 'cat' ] + list( df.path.values ), path_file_stdout = f"{path_folder_temp}{str_filename_glob.replace( '.*.', '.' )}", stdout_binary = True )
-        # delete input files
-#         for path_file in df.path.values :
-#             os.remove( path_file )
-    ''' combine output index '''
-    # collect the paths of the index files
-    df_file = GLOB_Retrive_Strings_in_Wildcards( f'{path_folder_temp}indexed.*.{str_etx}.{str_ext_index}' )
-    df_file[ 'wildcard_0' ] = df_file.wildcard_0.astype( int )
-    df_file.sort_values( 'wildcard_0', inplace = True ) # sort the list of input files in the order of 'index_chunk'
-    # update index information after concatenation of the chunks and combine index files
-    l = [ ]
-    int_num_bytes_written = int_num_bytes_for_mtx_header # consider the number of bytes for the written header line
-    for path_file in df_file.path.values :
-        # read index of the current chunk
-        df_index = pd.read_csv( path_file, sep = '\t', header = None )
-        df_index.columns = [ 'index_entry', 'int_pos_start', 'int_pos_end' ]
-        # update index information after concatenation
-        int_num_bytes_written_for_the_current_chunk = df_index.int_pos_end.values[ -1 ]
-        df_index[ 'int_pos_start' ] = df_index.int_pos_start + int_num_bytes_written
-        df_index[ 'int_pos_end' ] = df_index.int_pos_end + int_num_bytes_written
-        int_num_bytes_written += int_num_bytes_written_for_the_current_chunk # update the number of bytes written after concatenation
-        l.append( df_index )
-    pd.concat( l ).to_csv( f'{path_folder_temp}indexed.{str_etx}.{str_ext_index}', sep = '\t', index = False )
-    ''' delete temporary files '''
-    if not flag_debugging :
-        # delete temporary files
-        for str_name_file_glob in [ f'indexed.*.{str_etx}.{str_ext_index}' ] :
-            for path_file in glob.glob( f'{path_folder_temp}{str_name_file_glob}' ) :
-                os.remove( path_file )
-
-    ''' export features and barcodes '''
-    # rename output files
-    os.rename( f"{path_folder_temp}indexed.{str_etx}", f"{path_folder_ramtx_output}matrix.{str_etx}" )
-    os.rename( f"{path_folder_temp}indexed.{str_etx}.{str_ext_index}", f"{path_folder_ramtx_output}matrix.{str_etx}.{str_ext_index}" )
-
-    # delete temporary folder
-    if not flag_debugging :
-        shutil.rmtree( path_folder_temp ) 
-
-    # export features and barcodes
-    df_obs[ [ 'id_cell' ] ].to_csv( f"{path_folder_ramtx_output}barcodes.tsv.gz", sep = '\t', header = None, index = False )
-    df_var[ [ 'id_feature', 'name_feature', 'feature_types' ] ].to_csv( f"{path_folder_ramtx_output}features.tsv.gz", sep = '\t', header = None, index = False )
-
-    ''' export settings used for sort, indexing, and exporting '''
-    dict_metadata = { 
-        'path_folder_mtx_10x_input' : None,
-        'flag_ramtx_sorted_by_id_feature' : flag_ramtx_sorted_by_id_feature,
-        'str_completed_time' : TIME_GET_timestamp( True ),
-        'flag_output_value_is_float' : flag_output_value_is_float,
-        'int_num_digits_after_floating_point_for_export' : int_num_digits_after_floating_point_for_export,
-        'int_num_features' : int_num_features,
-        'int_num_barcodes' : int_num_barcodes,
-        'int_num_records' : int_num_records,
-        'file_format' : [ file_format ],
-    }
-    with open( f"{path_folder_ramtx_output}ramtx.metadata.json", 'w' ) as file :
-        json.dump( dict_metadata, file )
-def Convert_Scanpy_AnnData_to_RamData( adata, path_folder_ramdata_output, name_data = 'from_anndata', file_format = 'mtx_gzipped', int_num_threads = 15, verbose = False, flag_overwrite_existing_files = False, flag_sort_and_index_again = False, flag_debugging = False, flag_covert_dense_matrix = False, inplace = False, int_num_digits_after_floating_point_for_export = 5, flag_output_value_is_float = True, dtype_of_row_and_col_indices = np.uint32, dtype_of_value = None, flag_simultaneous_indexing_of_cell_and_barcode = True ) :
-    ''' # 2022-05-14 16:45:56 
-    build RAMtx from Scanpy AnnData. 
-    It is recommended to load all data on the memory for efficient conversion. It is often not practical to use the disk-backed AnnData to build RAMtx due to slow access time of the object.
+    # retrieve umap coordinates
+    x = adata.obsm[ name_col_umap ][ :, 0 ]
+    y = adata.obsm[ name_col_umap ][ :, 1 ]
+    df[ 'UMAP-1' ] = x
+    df[ 'UMAP-2' ] = y
     
-    inputs:
-    ========
-    'path_folder_ramdata_output' an output directory of RamData
-    'name_data' : a name of the given data
-    'file_format' : file_format of the output RAMtx objects. please check 'Convert_MTX_10X_to_RAMtx' function docstring for more details.
-    'flag_covert_dense_matrix' : by default, only sparse matrix will be converted to RAMtx. However, dense matrix can be also converted to RAMtx if this flag is set to True
-    'inplace' : the original anndata will be modified, and the count data stored at adata.X will be deleted.
-    'flag_simultaneous_indexing_of_cell_and_barcode' : if True, create cell-sorted RAMtx and feature-sorted RAMtx simultaneously using two worker processes with the half of given 'int_num_threads'. it is generally recommended to turn this feature on, since the last step of the merge-sort is always single-threaded.
-    'dtype_of_row_and_col_indices' (default: np.uint32), 'dtype_of_value' (default: None (auto-detect)) : numpy dtypes for pickle and feather outputs. choosing smaller format will decrease the size of the object on disk
-    '''
-    # create the RamData output folder
-    os.makedirs( path_folder_ramdata_output, exist_ok = True ) 
-
-    # build barcode- and feature-sorted RAMtx objects
-    path_folder_data = f"{path_folder_ramdata_output}{name_data}/"
-    if flag_simultaneous_indexing_of_cell_and_barcode :
-        l_process = list( mp.Process( target = Convert_Scanpy_AnnData_to_RAMtx, args = ( adata, path_folder_ramtx_output, flag_ramtx_sorted_by_id_feature, file_format, int_num_threads_for_the_current_process, verbose, flag_overwrite_existing_files, flag_sort_and_index_again, flag_debugging, flag_covert_dense_matrix, int_num_digits_after_floating_point_for_export, flag_output_value_is_float, dtype_of_row_and_col_indices, dtype_of_value ) ) for path_folder_ramtx_output, flag_ramtx_sorted_by_id_feature, int_num_threads_for_the_current_process in zip( [ f"{path_folder_data}sorted_by_barcode/", f"{path_folder_data}sorted_by_feature/" ], [ False, True ], [ int( np.floor( int_num_threads / 2 ) ), int( np.ceil( int_num_threads / 2 ) ) ] ) )
-        for p in l_process : p.start( )
-        for p in l_process : p.join( )
-    else :
-        Convert_Scanpy_AnnData_to_RAMtx( adata, path_folder_ramtx_output = f"{path_folder_data}sorted_by_barcode/", flag_ramtx_sorted_by_id_feature = False, file_format = file_format, int_num_threads = int_num_threads, verbose = verbose, flag_overwrite_existing_files = flag_overwrite_existing_files, flag_sort_and_index_again = flag_sort_and_index_again, flag_debugging = flag_debugging, flag_covert_dense_matrix = flag_covert_dense_matrix, int_num_digits_after_floating_point_for_export = int_num_digits_after_floating_point_for_export, flag_output_value_is_float = flag_output_value_is_float, dtype_of_row_and_col_indices = dtype_of_row_and_col_indices, dtype_of_value = dtype_of_value )
-        Convert_Scanpy_AnnData_to_RAMtx( adata, path_folder_ramtx_output = f"{path_folder_data}sorted_by_feature/", flag_ramtx_sorted_by_id_feature = True, file_format = file_format, int_num_threads = int_num_threads, verbose = verbose, flag_overwrite_existing_files = flag_overwrite_existing_files, flag_sort_and_index_again = flag_sort_and_index_again, flag_debugging = flag_debugging, flag_covert_dense_matrix = flag_covert_dense_matrix, int_num_digits_after_floating_point_for_export = int_num_digits_after_floating_point_for_export, flag_output_value_is_float = flag_output_value_is_float, dtype_of_row_and_col_indices = dtype_of_row_and_col_indices, dtype_of_value = dtype_of_value )
+    # retrieving data of the barcodes in the given ranges
+    mask = np.ones( len( df ), dtype = bool )
+    if x_range is not None :
+        x_min, x_max = x_range
+        if x_min is not None :
+            mask &= x >= x_min
+        if x_max is not None :
+            mask &= x <= x_max
+    if y_range is not None :
+        y_min, y_max = y_range
+        if y_min is not None :
+            mask &= y >= y_min
+        if y_max is not None :
+            mask &= y <= y_max
+    df = df[ mask ]
     
-    ''' export anndata without any count data to the RamData output folder '''
-    if not inplace :
-        adata = adata.copy( ) # copy adata
-    adata.X = scipy.sparse.csr_matrix( scipy.sparse.coo_matrix( ( [], ( [], [] ) ), shape = ( len( adata.obs ), len( adata.var ) ) ) ) # store the empty sparse matrix
-    # sort barcode and features
-    adata.obs = adata.obs.sort_index( )
-    adata.var = adata.var.sort_values( 'gene_ids' )
-    adata.write( f'{path_folder_ramdata_output}main.h5ad' )
-    
-    ''' copy features and barcode files of the output RAMtx object to the RamData root directory '''
-    for name_file in [ 'features.tsv.gz', 'barcodes.tsv.gz' ] :
-        OS_Run( [ 'cp', f"{path_folder_data}sorted_by_barcode/{name_file}", f"{path_folder_ramdata_output}{name_file}" ] )
-''' methods for combining/analyzing RAMtx objects '''
-def Convert_df_count_to_RAMtx( path_file_df_count, path_folder_ramtx_output, flag_ramtx_sorted_by_id_feature = True, int_num_threads = 15, flag_debugging = False, inplace = False ) :
-    """ # 2022-05-12 17:37:15 
-    Convert df_count from the scarab output to RAMtx count matrix object (in 'mtx_gzipped' format only) (this function is used internally by scarab).
-    This function load an entire 'df_count' in memory, which makes processing of samples with large 'df_count' difficult.
-    
-    'path_file_df_count' : a df_count dataframe or a file path of the saved 'df_count'
-    'path_folder_ramtx_output' : an output folder for exporting RAMtx data
-    'flag_ramtx_sorted_by_id_feature' : sort by id_feature if 'flag_ramtx_sorted_by_id_feature' is True. else, sort by id_cell/barcode
-    'int_num_threads' : number of threads for compressing and indexing RAMtx data
-    'inplace' : create a copy of 'df_count' and does not modify 'df_count' while exporting the count matrix
-    """
-    ''' handle inputs '''
-    if isinstance( path_file_df_count, str ) :
-        df_count = pd.read_csv( path_file_df_count, sep = '\t' )
-    elif isinstance( path_file_df_count, pd.DataFrame ) : # if dataframe is given, use the dataframe as df_count
-        df_count = path_file_df_count
-    else :
-        OSError( f"invalid input for the argument {path_file_df_count}" )
-
-    ''' create an RAMtx output folder '''
-    os.makedirs( path_folder_ramtx_output, exist_ok = True )
-
-    ''' save barcode file '''
-    # retrieve list of barcodes
-    arr_barcode = LIST_COUNT( df_count.barcode, duplicate_filter = None ).index.values
-    pd.DataFrame( arr_barcode ).to_csv( f"{path_folder_ramtx_output}barcodes.tsv.gz", sep = '\t', index = False, header = False ) # does not need to add '-1' since the barcoded bam already has it
-
-    ''' save feature file '''
-    # compose a feature dataframe
-    df_feature = df_count[ [ 'feature', 'id_feature' ] ].drop_duplicates( ignore_index = True )
-    df_feature.sort_values( 'id_feature', inplace = True ) # sort by 'id_feature'
-    df_feature[ '10X_type' ] = 'Gene Expression'
-    df_feature[ [ 'id_feature', 'feature', '10X_type' ] ].to_csv( f"{path_folder_ramtx_output}features.tsv.gz", sep = '\t', index = False, header = False ) # save as a file
-    # retrieve list of features
-    arr_id_feature = df_feature.id_feature.values
-
-    ''' prepare matrix file for indexing '''
-    # convert feature and barcode to integer indices
-    df_count.drop( columns = [ 'feature' ], inplace = True ) # drop unncessary columns
-    df_count.id_feature = df_count.id_feature.apply( MAP.Map( dict( ( e, i + 1 ) for i, e in enumerate( arr_id_feature ) ) ).a2b ) # 0>1-based coordinates
-    df_count.barcode = df_count.barcode.apply( MAP.Map( dict( ( e, i + 1 ) for i, e in enumerate( arr_barcode ) ) ).a2b ) # 0>1-based coordinates
-    # sort df_count based on the entry 
-    df_count.sort_values( 'id_feature' if flag_ramtx_sorted_by_id_feature else 'barcode', inplace = True )
-
-    """ save df_count data as RAMtx """
-    # use multiple processes
-    # create a temporary folder
-    path_folder_temp = f'{path_folder_ramtx_output}temp_{UUID( )}/'
-    os.makedirs( path_folder_temp, exist_ok = True )
-
-    # prepare multiprocessing
-    name_col_entry = 'id_feature' if flag_ramtx_sorted_by_id_feature else 'barcode'
-    s = df_count[ [ name_col_entry, 'read_count', ] ].groupby( [ name_col_entry ] ).sum( ).read_count.sort_index( ) # retrieve index_entry and weights for index_entry
-    arr_index_entry, arr_index_entry_weight = s.index.values, s.values # use total counts as weight
-    l_arr_index_entry_for_each_chunk, l_arr_weight_for_each_chunk = LIST_Split( arr_index_entry, int_num_threads, flag_contiguous_chunk = True, arr_weight_for_load_balancing = arr_index_entry_weight, return_split_arr_weight = True ) # perform load balancing using the total count for each entry as a weight
-
-    # retrieve boundaries of blocks for each entry
-    l_pos_start_block = [ 0 ] + list( np.where( np.diff( df_count[ name_col_entry ] ) )[ 0 ] + 1 ) + [ len( df_count ) ] # np.diff decrease the index of entries where change happens, and +1 should be done 
-
-    # retrieve data of df_count
-    arr_df = df_count[ [ 'barcode', 'id_feature', 'read_count' ] ].values
-
-    # setting for the pipeline
-    def __compress_and_index_a_portion_of_df_count_as_a_worker__( index_chunk ) :
-        ''' # 2022-05-08 13:19:13 
-        save a portion of a sparse matrix 
-        '''
-        # open output files
-        file_output = open( f'{path_folder_temp}indexed.{index_chunk}.mtx.gz', 'wb' )
-        file_index_output = gzip.open( f'{path_folder_temp}indexed.{index_chunk}.mtx.idx.tsv.gz', 'wb' )
-
-        int_num_bytes_written = 0 # track the number of written bytes
-        for index_entry, float_weight in zip( l_arr_index_entry_for_each_chunk[ index_chunk ], l_arr_weight_for_each_chunk[ index_chunk ] ) : # retrieve inputs for the current process
-            # process the current entry        
-            # retrieve data for the current entry
-            arr_index_col, arr_index_row, arr_value = arr_df[ l_pos_start_block[ index_entry - 1 ] : l_pos_start_block[ index_entry ] ].T
-
-            # compress the data for the entry 
-            gzip_file = io.BytesIO( )
-
-            with gzip.GzipFile( fileobj = gzip_file, mode = 'w' ) as file :
-                file.write( ( '\n'.join( list( str( index_row ) + ' ' + str( index_col ) + ' ' + str( value ) for index_row, index_col, value in zip( arr_index_row, arr_index_col, arr_value ) ) ) + '\n' ).encode( ) ) # read the data for the entry from input file # assumes all values of the count matrix is an integer
-            int_num_bytes_written_for_the_current_entry = gzip_file.tell( ) # record the number of bytes of the compressed data
-
-            # write the compressed file to the output file
-            gzip_file.seek( 0 )
-            file_output.write( gzip_file.read( ) )
-            gzip_file.close( )
-
-            # write the index
-            file_index_output.write( ( '\t'.join( map( str, [ index_entry, int_num_bytes_written, int_num_bytes_written + int_num_bytes_written_for_the_current_entry ] ) ) + '\n' ).encode( ) ) # write an index for the current entry
-            int_num_bytes_written += int_num_bytes_written_for_the_current_entry # update the number of bytes written
-
-        # close files
-        for file in [ file_output, file_index_output ] :
-            file.close( )
-
-    l_worker = list( mp.Process( target = __compress_and_index_a_portion_of_df_count_as_a_worker__, args = ( index_chunk, ) ) for index_chunk in range( int_num_threads ) )
-
-    ''' start works and wait until all works are completed by workers '''
-    for p in l_worker :
-        p.start( ) # start workers
-    for p in l_worker :
-        p.join( )  
-
-    ''' retrieve metadata from df_count ('header') '''
-    int_num_rows, int_num_columns, int_num_records = len( arr_id_feature ), len( arr_barcode ), len( df_count ) # 10X matrix: row = feature, col = barcode
-
-    ''' write the metadata row of the matrix '''
-    with gzip.open( f'{path_folder_temp}indexed.-1.mtx.gz', 'wb' ) as file : # the metadata row should be located at the front of the output matrix file
-        file.write( f"""%%MatrixMarket matrix coordinate integer general\n%\n{int_num_rows} {int_num_columns} {int_num_records}\n""".encode( ) )
-    int_num_bytes_for_mtx_header = os.stat( f'{path_folder_temp}indexed.-1.mtx.gz' ).st_size # retrieve the file size of the matrix header
-
-    ''' combine outputs matrix '''
-    # combine output matrix files
-    for str_filename_glob in [ 'indexed.*.mtx.gz' ] :
-        # collect the list of input files in the order of 'index_chunk'
-        df = GLOB_Retrive_Strings_in_Wildcards( f'{path_folder_temp}{str_filename_glob}' )
-        df[ 'wildcard_0' ] = df.wildcard_0.astype( int )
-        df.sort_values( 'wildcard_0', inplace = True ) # sort the list of input files in the order of 'index_chunk'
-        # combine input files
-        OS_Run( [ 'cat' ] + list( df.path.values ), path_file_stdout = f"{path_folder_temp}{str_filename_glob.replace( '.*.', '.' )}", stdout_binary = True )
-        # delete input files
-        for path_file in df.path.values :
-            os.remove( path_file )
-    ''' combine output index '''
-    # collect the paths of the index files
-    df_file = GLOB_Retrive_Strings_in_Wildcards( f'{path_folder_temp}indexed.*.mtx.idx.tsv.gz' )
-    df_file[ 'wildcard_0' ] = df_file.wildcard_0.astype( int )
-    df_file.sort_values( 'wildcard_0', inplace = True ) # sort the list of input files in the order of 'index_chunk'
-    # update index information after concatenation of the chunks and combine index files
-    l = [ ]
-    int_num_bytes_written = int_num_bytes_for_mtx_header # consider the number of bytes for the written header line
-    for path_file in df_file.path.values :
-        # read index of the current chunk
-        df_index = pd.read_csv( path_file, sep = '\t', header = None )
-        df_index.columns = [ 'index_entry', 'int_pos_start', 'int_pos_end' ]
-        # update index information after concatenation
-        int_num_bytes_written_for_the_current_chunk = df_index.int_pos_end.values[ -1 ]
-        df_index[ 'int_pos_start' ] = df_index.int_pos_start + int_num_bytes_written
-        df_index[ 'int_pos_end' ] = df_index.int_pos_end + int_num_bytes_written
-        int_num_bytes_written += int_num_bytes_written_for_the_current_chunk # update the number of bytes written after concatenation
-        l.append( df_index )
-    pd.concat( l ).to_csv( f'{path_folder_temp}indexed.mtx.idx.tsv.gz', sep = '\t', index = False )
-    ''' delete temporary files '''
-    if not flag_debugging :
-        # delete temporary files
-        for str_name_file_glob in [ 'indexed.*.mtx.idx.tsv.gz' ] :
-            for path_file in glob.glob( f'{path_folder_temp}{str_name_file_glob}' ) :
-                os.remove( path_file )
-
-    ''' export results to the output folder '''
-    # rename output files
-    os.rename( f"{path_folder_temp}indexed.mtx.gz", f"{path_folder_ramtx_output}matrix.mtx.gz" )
-    os.rename( f"{path_folder_temp}indexed.mtx.idx.tsv.gz", f"{path_folder_ramtx_output}matrix.mtx.gz.idx.tsv.gz" )
-
-    # delete temporary folder
-    shutil.rmtree( path_folder_temp ) 
-
-    ''' export settings used for sort and indexing '''
-    dict_metadata = { 
-        'path_folder_mtx_10x_input' : None,
-        'flag_ramtx_sorted_by_id_feature' : flag_ramtx_sorted_by_id_feature,
-        'str_completed_time' : TIME_GET_timestamp( True ),
-        'int_num_features' : int_num_rows,
-        'int_num_barcodes' : int_num_columns,
-        'int_num_records' : int_num_records,
-        'file_format' : [ 'mtx_gzipped' ],
-    }
-    with open( f"{path_folder_ramtx_output}ramtx.metadata.json", 'w' ) as file :
-        json.dump( dict_metadata, file )
+    # draw scatter graph
+    fig = px.scatter( df, x = 'UMAP-1', y = 'UMAP-2', color = name_col_color, hover_data = [ 'name_dataset', 'name_sample' ],color_continuous_scale = px.colors.sequential.Reds, title = f"gene expression of {color}" if flag_is_gene_expression_data_being_plotted else name_col_color )
+    return fig
