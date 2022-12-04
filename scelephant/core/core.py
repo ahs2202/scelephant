@@ -1,11 +1,10 @@
-# from biobookshelf.main import *
-# from biobookshelf import *
-# import biobookshelf as bk
+# # %% CORE %% 
+# # import internal modules
+# from . import BA
+# from . import biobookshelf as bk
 
-# %% CORE %% 
-# import internal modules
-from . import BA
-from . import biobookshelf as bk
+from biobookshelf import BA
+import biobookshelf as bk
 
 from typing import Union, List, Literal
 import os
@@ -24,6 +23,7 @@ import base64 # for converting binary to text data (web application)
 import json # to read and write JSON file
 import matplotlib.pyplot as plt
 import scipy.sparse
+import io
 
 pd.options.mode.chained_assignment = None  # default='warn' # to disable worining
 
@@ -34,15 +34,10 @@ from bitarray import bitarray ## binary arrays
 
 import shelve # for persistent database (key-value based database)
 
-import tarfile # tar.gz
-
-from numba import jit # for speed up
-
 from tqdm import tqdm as progress_bar # for progress bar
 
 # # for handling s3 objects
 # import s3fs
-
 
 # set logging format
 logging.basicConfig( format = '[SC-Elephant] %(asctime)s - %(message)s', level = logging.INFO )
@@ -206,7 +201,7 @@ RamDataAxis object will be no longer modify filter using current RamDataLayer's 
 - RamData.apply_dl method was implemented, for applying the trained deep-learning model across the entries
 
 # 2022-09-18 01:00:28 
-- an issue in the RAMtx.load_zarr_server method was resolved (mask was not properly set)
+- an issue in the RAMtx.get_fork_safe_version method was resolved (mask was not properly set)
 - RamData.get_model_path method was implemented. it uses recursive solution for retrieving (remote) path of the given model from components and masks
 - RamData.load_model method was re-implemented using RamData.get_model_path
 - RamData.prepare_dimension_reduction_from_raw was modified to support fast embedding of barcodes of the non-reference RamData components with the reference barcodes of the reference RamData component.
@@ -251,6 +246,9 @@ It was due to reading the description line of the input matrix (# rows, # cols, 
 # 2022-12-02 00:14:34 
 dependency on biobookshelf was dropped by migrating necessary functions to scelephant core/biobookshelf.py
 also, heavy packages (tensorflow, pynndescent, etc.) will not be loaded by default
+
+# 2022-12-03 11:42:43 
+RAMtx.survey_number_of_records_for_each_entry 
 
 ##### Future implementations #####
 # 2022-12-01 20:48:47 
@@ -390,7 +388,7 @@ def Read_10X( path_folder_mtx_10x, verbose = False ) :
     path_file_mtx = f'{path_folder_mtx_10x}matrix.mtx.gz'
 
     # check whether all required files are present
-    if sum( list( not os.path.exists( path_folder ) for path_folder in [ path_file_bc, path_file_feature, path_file_mtx ] ) ) :
+    if sum( list( not filesystem_operations( 'exists', path_folder ) for path_folder in [ path_file_bc, path_file_feature, path_file_mtx ] ) ) :
         if verbose :
             logging.info( f'required file(s) is not present at {path_folder_mtx_10x}' )
 
@@ -422,7 +420,7 @@ def Write_10X( df_mtx, df_feature, path_folder_output_mtx_10x ) :
     df_mtx = deepcopy( df_mtx ) # create a copy of df_mtx before modification
 
     # create an output folder
-    os.makedirs( path_folder_output_mtx_10x, exist_ok = True )
+    filesystem_operations( 'mkdir', path_folder_output_mtx_10x, exist_ok = True )
 
     ''' save barcode file '''
     # retrieve list of barcodes
@@ -445,33 +443,9 @@ def Write_10X( df_mtx, df_feature, path_folder_output_mtx_10x ) :
     scipy.io.mmwrite( f"{path_folder_output_mtx_10x}matrix", sm )
     # remove previous output file to overwrite the file
     path_file_mtx_output = f"{path_folder_output_mtx_10x}matrix.mtx.gz"
-    if os.path.exists( path_file_mtx_output ) :
-        os.remove( path_file_mtx_output )
-    OS_Run( [ 'gzip', f"{path_folder_output_mtx_10x}matrix.mtx" ] ) # gzip the mtx file
-# def MTX_Write_10X_from_AnnData( adata, path_folder_mtx_output, dict_var_rename : dict = { 'feature_types' : 'feature_type', 'gene_ids' : 'id_feature' } ) :
-#     """ # 2022-11-24 03:09:51 
-#     write AnnData count matrix as a 10X matrix object 
-    
-#     'dict_var_rename' : a dictionary for renaming columns of adata.var columns
-#     """
-#     # compose df_var
-#     df_feature = adata.var
-#     df_feature.index.name = 'feature'
-#     df_feature.reset_index( drop = False, inplace = True )
-#     df_feature.rename( columns = dict_var_rename, inplace = True )
-    
-#     # compose df_mtx
-#     arr_barcode, arr_id_feature, arr_read_count = scipy.sparse.find( adata.X )
-#     df_mtx = pd.DataFrame( { 'barcode' : arr_barcode, 'id_feature' : arr_id_feature, 'read_count' : arr_read_count } )
-    
-#     arr_barcodes = adata.obs.index.values
-#     df_mtx[ 'barcode' ] = list( arr_barcodes[ e ] for e in df_mtx.barcode.values )
-
-#     arr_feature = df_feature.id_feature.values
-#     df_mtx[ 'id_feature' ] = list( arr_feature[ e ] for e in df_mtx.id_feature.values )
-    
-#     # output mtx 
-#     Write_10X( df_mtx, df_feature, path_folder_mtx_output )
+    if filesystem_operations( 'exists', path_file_mtx_output ) :
+        filesystem_operations( 'rm', path_file_mtx_output )
+    bk.OS_Run( [ 'gzip', f"{path_folder_output_mtx_10x}matrix.mtx" ] ) # gzip the mtx file
 def AnnData_Convert_to_10X_MTX( adata, path_folder_mtx_output, dict_var_rename : dict = { 'feature_types' : 'feature_type', 'gene_ids' : 'id_feature' }, dtype_value = np.int64 ) :
     """ # 2022-11-24 16:47:33 
     write AnnData count matrix as a 10X matrix object 
@@ -491,7 +465,7 @@ def AnnData_Convert_to_10X_MTX( adata, path_folder_mtx_output, dict_var_rename :
         arr_read_count = arr_read_count.astype( dtype_value )
     
     # create an output folder
-    os.makedirs( path_folder_mtx_output, exist_ok = True )
+    filesystem_operations( 'mkdir', path_folder_mtx_output, exist_ok = True )
 
     ''' save barcode file '''
     # retrieve list of barcodes
@@ -511,9 +485,9 @@ def AnnData_Convert_to_10X_MTX( adata, path_folder_mtx_output, dict_var_rename :
     scipy.io.mmwrite( f"{path_folder_mtx_output}matrix", sm )
     # remove previous output file to overwrite the file
     path_file_mtx_output = f"{path_folder_mtx_output}matrix.mtx.gz"
-    if os.path.exists( path_file_mtx_output ) :
-        os.remove( path_file_mtx_output )
-    OS_Run( [ 'gzip', f"{path_folder_mtx_output}matrix.mtx" ] ) # gzip the mtx file
+    if filesystem_operations( 'exists', path_file_mtx_output ) :
+        filesystem_operations( 'rm', path_file_mtx_output )
+    bk.OS_Run( [ 'gzip', f"{path_folder_mtx_output}matrix.mtx" ] ) # gzip the mtx file
 def __function_for_adjusting_thresholds_for_filtering_empty_droplets__( path_folder_mtx_10x_output, min_counts, min_features, min_cells ) :
     ''' # 2022-02-23 14:26:07 
     This function is intended for the use in 'MTX_10X_Filter' function for filtering cells from the 10X dataset (before chromium X, 10,000 cells per channel)
@@ -548,13 +522,13 @@ def MTX_10X_Split( path_folder_mtx_10x_output, int_max_num_entries_for_chunk = 1
     ''' if 'flag_split_mtx_again' flag is True, remove previously split files '''
     path_file_flag = f"{path_folder_mtx_10x_output}matrix.mtx.gz.split.flag"
     if flag_split_mtx_again :
-        os.remove( path_file_flag ) # remove the flag
+        filesystem_operations( 'rm', path_file_flag ) # remove the flag
         # remove previously split files
-        for path_file in glob.glob( f'{path_folder_mtx_10x_output}matrix.mtx.gz.*.gz' ) :
-            os.remove( path_file )
+        for path_file in filesystem_operations( 'glob', f'{path_folder_mtx_10x_output}matrix.mtx.gz.*.gz' ) :
+            filesystem_operations( 'rm', path_file )
 
     ''' split input matrix file '''
-    if not os.path.exists( path_file_flag ) : # check whether the flag exists
+    if not filesystem_operations( 'exists', path_file_flag ) : # check whether the flag exists
         index_mtx_10x = 0
         newfile = gzip.open( f"{path_folder_mtx_10x_output}matrix.mtx.gz.{index_mtx_10x}.gz", 'wb' )
         l_path_file_mtx_10x = [ f"{path_folder_mtx_10x_output}matrix.mtx.gz.{index_mtx_10x}.gz" ]
@@ -658,8 +632,8 @@ def MTX_10X_Barcode_add_prefix_or_suffix( path_file_barcodes_input, path_file_ba
     newfile.close( ) # close the output file
     # if the output file path was not given, replace the original file with modified file
     if flag_replace_input_file :
-        os.remove( path_file_barcodes_input )
-        os.rename( path_file_barcodes_output, path_file_barcodes_input )
+        filesystem_operations( 'rm', path_file_barcodes_input )
+        filesystem_operations( 'mv', path_file_barcodes_output, path_file_barcodes_input )
 def MTX_10X_Feature_add_prefix_or_suffix( path_file_features_input, path_file_features_output = None, id_feature_prefix = '', id_feature_suffix = '', name_feature_prefix = '', name_feature_suffix = '' ) :
     ''' # 2022-05-13 17:54:17 
     Add prefix or suffix to the id_feature and name_feature of a given 'features.tsv.gz' file
@@ -681,8 +655,8 @@ def MTX_10X_Feature_add_prefix_or_suffix( path_file_features_input, path_file_fe
     newfile.close( ) # close the output file
     # if the output file path was not given, replace the original file with modified file
     if flag_replace_input_file :
-        os.remove( path_file_features_input )
-        os.rename( path_file_features_output, path_file_features_input )
+        filesystem_operations( 'rm', path_file_features_input )
+        filesystem_operations( 'mv', path_file_features_output, path_file_features_input )
 def __MTX_10X_Combine__renumber_barcode_or_feature_index_mtx_10x__( path_file_input, path_folder_mtx_10x_output, flag_renumber_feature_index ) :
     '''
     internal function for MTX_10X_Combine
@@ -727,7 +701,7 @@ def MTX_10X_Combine( path_folder_mtx_10x_output, * l_path_folder_mtx_10x_input, 
     '''
     
     # create an output folder
-    os.makedirs( path_folder_mtx_10x_output, exist_ok = True ) 
+    filesystem_operations( 'mkdir', path_folder_mtx_10x_output, exist_ok = True ) 
 
     if not flag_low_memory_mode_because_there_is_no_shared_feature_between_mtxs and flag_low_memory_mode_because_there_is_no_shared_cell_between_mtxs is None :
         """ retrieve cell barcodes of all 10X matrices and check whether cell barcodes are not shared between matrices """
@@ -809,7 +783,7 @@ def MTX_10X_Combine( path_folder_mtx_10x_output, * l_path_folder_mtx_10x_input, 
         # compose inputs for multiprocessing
         df_input = pd.DataFrame( { 'path_folder_input_mtx_10x' : l_path_folder_mtx_10x_input, 'int_total_n_barcodes_of_previously_written_matrices' : ( l_int_total_n_barcodes_of_previously_written_matrices if flag_renumber_feature_index else l_int_total_n_features_of_previously_written_matrices ), 'index_mtx_10x' : np.arange( len( l_int_total_n_barcodes_of_previously_written_matrices ) if flag_renumber_feature_index else len( l_int_total_n_features_of_previously_written_matrices ) ) } )
         bk.Multiprocessing( df_input, __MTX_10X_Combine__renumber_barcode_or_feature_index_mtx_10x__, int_num_threads, global_arguments = [ path_folder_mtx_10x_output, flag_renumber_feature_index ] )
-#         os.remove( f'{path_folder_mtx_10x_output}dict_id_entry_to_index_entry.pickle' ) # remove pickle file
+#         filesystem_operations( 'rm', f'{path_folder_mtx_10x_output}dict_id_entry_to_index_entry.pickle' ) # remove pickle file
         
         """ combine parts and add the MTX file header to compose a combined mtx file """
         df_file = bk.GLOB_Retrive_Strings_in_Wildcards( f"{path_folder_mtx_10x_output}matrix.mtx.gz.*.gz" )
@@ -847,12 +821,12 @@ def __Combine_Dictionaries__( path_folder_mtx_10x_input, name_dict ) :
     """
     import collections
     
-    if os.path.exists( f'{path_folder_mtx_10x_input}{name_dict}.tsv.gz' ) :
+    if filesystem_operations( 'exists', f'{path_folder_mtx_10x_input}{name_dict}.tsv.gz' ) :
         ''' if an output file already exists, read the file and return the combined dictionary '''
         dict_combined = pd.read_csv( f'{path_folder_mtx_10x_input}{name_dict}.tsv.gz', sep = '\t', header = None, index_col = 0 ).iloc[ :, 0 ].to_dict( )
     else :
         ''' combine summarized results '''
-        l_path_file = glob.glob( f"{path_folder_mtx_10x_input}{name_dict}.*" )
+        l_path_file = filesystem_operations( 'glob', f"{path_folder_mtx_10x_input}{name_dict}.*" )
         try :
             counter = collections.Counter( pd.read_csv( l_path_file[ 0 ], sep = '\t', header = None, index_col = 0 ).iloc[ :, 0 ].to_dict( ) ) # initialize counter object with the dictionary from the first file
         except pd.errors.EmptyDataError :
@@ -866,7 +840,7 @@ def __Combine_Dictionaries__( path_folder_mtx_10x_input, name_dict ) :
         dict_combined = dict( counter ) # retrieve a combined dictionary
         '''remove temporary files '''
         for path_file in l_path_file :
-            os.remove( path_file )
+            filesystem_operations( 'rm', path_file )
         ''' save dictionary as a file '''
         pd.Series( dict_combined ).to_csv( f'{path_folder_mtx_10x_input}{name_dict}.tsv.gz', sep = '\t', header = None )
     return dict_combined # returns a combined dictionary
@@ -981,14 +955,14 @@ def MTX_10X_Summarize_Counts( path_folder_mtx_10x_input, verbose = False, int_nu
 
     # define flag and check whether the flag exists
     path_file_flag = f"{path_folder_mtx_10x_input}counts_summarized.flag"
-    if not os.path.exists( path_file_flag ) :
+    if not filesystem_operations( 'exists', path_file_flag ) :
         # define input file directories
         path_file_input_bc = f'{path_folder_mtx_10x_input}barcodes.tsv.gz'
         path_file_input_feature = f'{path_folder_mtx_10x_input}features.tsv.gz'
         path_file_input_mtx = f'{path_folder_mtx_10x_input}matrix.mtx.gz'
 
         # check whether all required files are present
-        if sum( list( not os.path.exists( path_folder ) for path_folder in [ path_file_input_bc, path_file_input_feature, path_file_input_mtx ] ) ) :
+        if sum( list( not filesystem_operations( 'exists', path_folder ) for path_folder in [ path_file_input_bc, path_file_input_feature, path_file_input_mtx ] ) ) :
             if verbose :
                 logging.info( f'required file(s) is not present at {path_folder_mtx_10x}' )
 
@@ -1072,7 +1046,7 @@ def MTX_10X_Retrieve_number_of_rows_columns_and_records( path_folder_mtx_10x_inp
         path_file_input_mtx = f'{path_folder_mtx_10x_input}matrix.mtx.gz'
     
         # check whether all required files are present
-        if sum( list( not os.path.exists( path_folder ) for path_folder in [ path_file_input_mtx ] ) ) :
+        if sum( list( not filesystem_operations( 'exists', path_folder ) for path_folder in [ path_file_input_mtx ] ) ) :
             return None
     
     # read the input matrix
@@ -1225,14 +1199,14 @@ def MTX_10X_Calculate_Average_Log10_Transformed_Normalized_Expr( path_folder_mtx
 
     # define flag and check whether the flag exists
     path_file_flag = f"{path_folder_mtx_10x_input}avg_expr_normalized_summarized.int_target_sum__{int_target_sum}.flag"
-    if not os.path.exists( path_file_flag ) :
+    if not filesystem_operations( 'exists', path_file_flag ) :
         # define input file directories
         path_file_input_bc = f'{path_folder_mtx_10x_input}barcodes.tsv.gz'
         path_file_input_feature = f'{path_folder_mtx_10x_input}features.tsv.gz'
         path_file_input_mtx = f'{path_folder_mtx_10x_input}matrix.mtx.gz'
 
         # check whether all required files are present
-        if sum( list( not os.path.exists( path_folder ) for path_folder in [ path_file_input_bc, path_file_input_feature, path_file_input_mtx ] ) ) :
+        if sum( list( not filesystem_operations( 'exists', path_folder ) for path_folder in [ path_file_input_bc, path_file_input_feature, path_file_input_mtx ] ) ) :
             if verbose :
                 logging.info( f'required file(s) is not present at {path_folder_mtx_10x}' )
 
@@ -1375,7 +1349,7 @@ def MTX_10X_Filter( path_folder_mtx_10x_input, path_folder_mtx_10x_output, min_c
             logging.info( '[MTX_10X_Filter] (error) no threshold is given or more thresholds for both cells and features are given. (Thresdholds for either cells or features can be given at a time.)' )
         return -1
     # create an output folder
-    os.makedirs( path_folder_mtx_10x_output, exist_ok = True )
+    filesystem_operations( 'mkdir', path_folder_mtx_10x_output, exist_ok = True )
 
     # define input file directories
     path_file_input_bc = f'{path_folder_mtx_10x_input}barcodes.tsv.gz'
@@ -1383,7 +1357,7 @@ def MTX_10X_Filter( path_folder_mtx_10x_input, path_folder_mtx_10x_output, min_c
     path_file_input_mtx = f'{path_folder_mtx_10x_input}matrix.mtx.gz'
 
     # check whether all required files are present
-    if sum( list( not os.path.exists( path_folder ) for path_folder in [ path_file_input_bc, path_file_input_feature, path_file_input_mtx ] ) ) :
+    if sum( list( not filesystem_operations( 'exists', path_folder ) for path_folder in [ path_file_input_bc, path_file_input_feature, path_file_input_mtx ] ) ) :
         if verbose :
             logging.info( f'required file(s) is not present at {path_folder_mtx_10x}' )
 
@@ -1475,7 +1449,7 @@ def MTX_10X_Filter( path_folder_mtx_10x_input, path_folder_mtx_10x_output, min_c
     path_file_header = f"{path_folder_mtx_10x_output}matrix.mtx.header.txt.gz"
     with gzip.open( path_file_header, 'wb' ) as newfile :
         newfile.write( f"%%MatrixMarket matrix coordinate integer general\n%\n{len( dict_id_row_previous_to_id_row_current )} {len( dict_id_column_previous_to_id_column_current )} {int_total_n_entries}\n".encode( ) )
-    OS_Run( [ 'cat', path_file_header ] + list( df_file.path.values ), path_file_stdout = f"{path_folder_mtx_10x_output}matrix.mtx.gz", stdout_binary = True, return_output = False ) # combine the output mtx files in the order # does not delete temporary files if 'flag_split_mtx' is True
+    bk.OS_Run( [ 'cat', path_file_header ] + list( df_file.path.values ), path_file_stdout = f"{path_folder_mtx_10x_output}matrix.mtx.gz", stdout_binary = True, return_output = False ) # combine the output mtx files in the order # does not delete temporary files if 'flag_split_mtx' is True
     
     # write a flag indicating that the current output directory contains split mtx files
     with open( f"{path_folder_mtx_10x_output}matrix.mtx.gz.split.flag", 'w' ) as file :
@@ -1539,7 +1513,7 @@ def __Get_path_essential_files__( path_folder_mtx_10x_input ) :
     path_file_input_mtx = f'{path_folder_mtx_10x_input}matrix.mtx.gz'
     # check whether input files exist
     for path_file in [ path_file_input_bc, path_file_input_feature, path_file_input_mtx ] :
-        if not os.path.exists( path_file ) :
+        if not filesystem_operations( 'exists', path_file ) :
             raise OSError( f'{path_file} does not exist' )
     return path_file_input_bc, path_file_input_feature, path_file_input_mtx 
 def Merge_Sort_Files( file_output, * l_iterator_decorated_file_input ) :
@@ -1600,7 +1574,7 @@ def __Merge_Sort_MTX_10X__( path_file_output, * l_path_file_input, flag_ramtx_so
     ''' delete input files once merge sort is completed if 'flag_delete_input_file_upon_completion' is True '''
     if flag_delete_input_file_upon_completion and isinstance( l_path_file_input[ 0 ], str ) : # if paths are given as input files
         for path_file in l_path_file_input :
-            os.remove( path_file )
+            filesystem_operations( 'rm', path_file )
 def __Merge_Sort_and_Index_MTX_10X__( path_file_output, * l_path_file_input, flag_ramtx_sorted_by_id_feature = True, flag_delete_input_file_upon_completion = False ) :
     """ # 2022-05-01 02:25:07 
     merge sort mtx files into a single mtx uncompressed file and index entries in the combined mtx file while writing the file
@@ -1673,7 +1647,7 @@ def __Merge_Sort_and_Index_MTX_10X__( path_file_output, * l_path_file_input, fla
     ''' delete input files once merge sort is completed if 'flag_delete_input_file_upon_completion' is True '''
     if flag_delete_input_file_upon_completion and isinstance( l_path_file_input[ 0 ], str ) : # if paths are given as input files
         for path_file in l_path_file_input :
-            os.remove( path_file )
+            filesystem_operations( 'rm', path_file )
 
 ''' methods for handling 10X matrix objects '''
 def Convert_df_count_to_MTX_10X( path_file_df_count, path_folder_mtx_10x_output, chunksize = 500000, flag_debugging = False, inplace = False ) :
@@ -1684,7 +1658,7 @@ def Convert_df_count_to_MTX_10X( path_file_df_count, path_folder_mtx_10x_output,
     '''
     # create a temporary output folder
     path_folder_temp = f'{path_folder_mtx_10x_output}temp_{bk.UUID( )}/' 
-    os.makedirs( path_folder_temp, exist_ok = True ) 
+    filesystem_operations( 'mkdir', path_folder_temp, exist_ok = True ) 
 
     # retrieve unique feature/barcode information from df_count
     DF_Deduplicate_without_loading_in_memory( path_file_df_count, f'{path_folder_temp}_features.tsv.gz', l_col_for_identifying_duplicates = [ 'feature', 'id_feature' ], str_delimiter = '\t' )
@@ -1718,9 +1692,9 @@ def Convert_df_count_to_MTX_10X( path_file_df_count, path_folder_mtx_10x_output,
 
     # export result files
     for name_file in [ 'features.tsv.gz', 'barcodes.tsv.gz', 'matrix.mtx.gz' ] :
-        os.rename( f"{path_folder_temp}{name_file}", f"{path_folder_mtx_10x_output}{name_file}" )
+        filesystem_operations( 'mv', f"{path_folder_temp}{name_file}", f"{path_folder_mtx_10x_output}{name_file}" )
     # delete temporary folder
-    shutil.rmtree( path_folder_temp )
+    filesystem_operations( 'rm', path_folder_temp )
             
 ''' method for compressing and decompressing blocks of data '''
 # settings
@@ -2100,6 +2074,8 @@ def tar_create( path_file_output, path_folder_input ) :
     'path_file_output' : output tar.gz file
     'path_folder_input' : input folder for creation of a tar.gz file
     '''
+    import tarfile 
+    
     with tarfile.open( path_file_output, "w:gz" ) as tar :
         tar.add( path_folder_input, arcname = os.path.basename( path_folder_input ) )
 def tar_extract( path_file_input, path_folder_output ) :
@@ -2109,10 +2085,30 @@ def tar_extract( path_file_input, path_folder_output ) :
     'path_file_output' : output tar.gz file
     'path_folder_input' : input folder for creation of a tar.gz file
     '''
+    import tarfile 
+    
     with tarfile.open( path_file_input, "r:gz" ) as tar :
         tar.extractall( path_folder_output )
 
 ''' methods for handling remote file '''
+def is_s3_url( url ) :
+    """ # 2022-12-02 18:23:18 
+    check whether the given url is s3uri (s3url)
+    """
+    # handle None value
+    if url is None :
+        return False
+    return "s3://" == url[ : 5 ] 
+def is_http_url( url ) :
+    """ # 2022-12-02 18:23:18 
+    check whether the given url is HTTP URL
+    """
+    return "https://" == url[ : 8 ] or "http://" == url[ : 7 ]
+def is_remote_url( url ) :
+    """ # 2022-12-02 18:31:45 
+    check whether a url is a remote resource
+    """
+    return is_s3_url( url ) or is_http_url( url )
 ''' remote files over HTTP '''
 def http_response_code( url ) :
     """ # 2022-08-05 22:27:27 
@@ -2127,7 +2123,7 @@ def http_response_code( url ) :
     except requests.ConnectionError:
         status_code = None
     return status_code
-def download_file( url, path_file_local ) :
+def http_download_file( url, path_file_local ) :
     """ # 2022-08-05 22:14:30 
     download file from the remote location to the local directory
     """
@@ -2137,7 +2133,95 @@ def download_file( url, path_file_local ) :
         with open( path_file_local, 'wb' ) as f :
             shutil.copyfileobj( r.raw, f )
 ''' remote files over AWS S3 '''
-            
+def s3_exists( s3url ) :
+    """ # 2022-12-02 18:15:49 
+    check whether a path/file exists in AWS S3
+    """
+    import s3fs
+    fs = s3fs.S3FileSystem( )
+    return fs.exists( s3url )
+def s3_download_file( s3url, path_file_local ) :
+    """ # 2022-12-02 18:15:44 
+    download file from the remote AWS S3 location to the local directory
+    """
+    import s3fs
+    fs = s3fs.S3FileSystem( )
+    fs.download( s3url, path_file_local )            
+def s3_rm( s3url, recursive = False, ** kwargs ) :
+    """ # 2022-12-03 23:48:26 
+    delete file (or an entire folder) from a AWS S3 location
+    """
+    import s3fs
+    fs = s3fs.S3FileSystem( )
+    fs.rm( s3url, recursive = recursive, ** kwargs ) # delete files
+    
+''' methods for handling file system '''
+def filesystem_operations( method : Literal[ 'exists', 'rm', 'glob', 'mkdir', 'mv', 'cp', 'isdir' ], path_src : str, path_dest : Union[ str, None ] = None, flag_recursive : bool = True, ** kwargs ) :
+    """ # 2022-12-04 00:57:45 
+    perform a file system operation (either Amazon S3 or local file system)
+    
+    method : Literal[ 
+        'exists', # check whether a file or folder exists, given through 'path_src' arguments
+        'rm', # remove file or folder, given through 'path_src' arguments
+        'glob', # retrieve path of files matching the glob pattern, given through 'path_src' arguments
+        'mkdir', # create a directory, given through 'path_src' arguments
+        'mv', # move file or folder , given through 'path_src' and 'path_dest' arguments
+        'cp', # copy file or folder , given through 'path_src' and 'path_dest' arguments
+        'isdir', # check whether the given input is a file or directory
+    ]
+    
+    """
+    if is_s3_url( path_src ) or is_s3_url( path_dest ) : # if at least one path is s3 locations
+        # %% Amazon s3 file system %%
+        # load the file system
+        import s3fs
+        fs = s3fs.S3FileSystem( )
+        if method == 'exists' :
+            return fs.exists( path_src, ** kwargs )
+        elif method == 'rm' :
+            fs.rm( path_src, recursive = flag_recursive, ** kwargs ) # delete files
+        elif method == 'glob' :
+            return list( 's3://' + e for e in fs.glob( path_src, ** kwargs ) ) # 's3://' prefix should be added
+        elif method == 'mkdir' :
+            fs.makedirs( path_src, exist_ok = True, ** kwargs )
+        elif method == 'mv' :
+            if not fs.exists( path_dest, ** kwargs ) : # avoid overwriting of the existing file
+                fs.mv( path_src, path_dest, recursive = flag_recursive, ** kwargs )
+            else :
+                return 'destionation file already exists, exiting'
+        elif method == 'cp' :
+            if is_s3_url( path_src ) and is_s3_url( path_dest ) : # copy from s3 to s3
+                fs.copy( path_src, path_dest, recursive = flag_recursive, ** kwargs )
+            elif is_s3_url( path_src ) : # copy from s3 to local
+                fs.get( path_src, path_dest, recursive = flag_recursive, ** kwargs )
+            elif is_s3_url( path_dest ) : # copy from local to s3
+                fs.put( path_src, path_dest, recursive = flag_recursive, ** kwargs )
+        elif method == 'isdir' :
+            return fs.isdir( path_src )
+    elif is_http_url( path_src ) : # for http, ignore the function call (not implemented)
+        return 'not implemented'
+    else :
+        # %% local file system %%
+        if method == 'exists' :
+            return os.path.exists( path_src )
+        elif method == 'rm' :
+            if flag_recursive and os.path.isdir( path_src ) : # when the recursive option is active
+                shutil.rmtree( path_src )
+            else :
+                os.remove( path_src )
+        elif method == 'glob' :
+            return glob.glob( path_src )
+        elif method == 'mkdir' :
+            os.makedirs( path_src, exist_ok = True )
+        elif method == 'mv' :
+            shutil.move( path_src, path_dest )
+        elif method == 'cp' :
+            if flag_recursive and os.path.isdir( path_src ) : # when the recursive option is active
+                shutil.copytree( path_src, path_dest )
+            else :
+                shutil.copyfile( path_src, path_dest )
+        elif method == 'isdir' :
+            return os.path.isdir( path_src )
             
 ''' memory-efficient methods for creating RAMtx/RamData object '''
 # latest 2022-07-28 11:31:12 
@@ -2460,7 +2544,7 @@ def concurrent_merge_sort_using_pipe_mtx( path_file_output = None, l_path_file =
     # delete input files if 'flag_delete_input_files' is True
     if flag_delete_input_files :
         for path_file in l_path_file :
-            os.remove( path_file )
+            filesystem_operations( 'rm', path_file )
     
     if path_file_output is not None : # when an output file is an another gzip file # return the path to the output file
         return path_file_output
@@ -2628,7 +2712,7 @@ def sort_mtx( path_file_gzip, path_file_gzip_sorted = None, int_num_records_in_a
     # create a temporary folder
     path_folder = path_file_gzip.rsplit( '/', 1 )[ 0 ] + '/'
     path_folder_temp = f"{path_folder}temp_{bk.UUID( )}/"
-    os.makedirs( path_folder_temp, exist_ok = True )
+    filesystem_operations( 'mkdir', path_folder_temp, exist_ok = True )
     
     # create and sort chunks
     def __detect_header_mtx( file ) :
@@ -2734,13 +2818,13 @@ def sort_mtx( path_file_gzip, path_file_gzip_sorted = None, int_num_records_in_a
         header = f"""%%MatrixMarket matrix coordinate integer general\n%\n{int_num_rows} {int_num_columns} {int_num_records}\n""" # compose a header
 
         # perform merge sorting preliminarily merge-sorted chunks into a single sorted output file
-        os.makedirs( path_file_gzip_sorted.rsplit( '/', 1 )[ 0 ], exist_ok = True ) # create an output folder
+        filesystem_operations( 'mkdir', path_file_gzip_sorted.rsplit( '/', 1 )[ 0 ], exist_ok = True ) # create an output folder
         concurrent_merge_sort_using_pipe_mtx( path_file_gzip_sorted, l_path_file_for_concurrent_merge_sorting, flag_mtx_sorted_by_id_feature = flag_mtx_sorted_by_id_feature, int_buffer_size = int_buffer_size, compresslevel = compresslevel, int_max_num_pipe_for_each_worker = int_max_num_input_files_for_each_merge_sort_worker, flag_dtype_is_float = flag_dtype_is_float, flag_return_processes = False, int_num_threads = int_num_threads_for_writing, flag_delete_input_files = True, header = header ) # write matrix market file header
     else : # if an output is a ramtx zarr object
         concurrent_merge_sort_using_pipe_mtx( l_path_file = l_path_file_for_concurrent_merge_sorting, flag_mtx_sorted_by_id_feature = flag_mtx_sorted_by_id_feature, int_buffer_size = int_buffer_size, compresslevel = compresslevel, int_max_num_pipe_for_each_worker = int_max_num_input_files_for_each_merge_sort_worker, flag_dtype_is_float = flag_dtype_is_float, flag_return_processes = False, int_num_threads = int_num_threads_for_writing, flag_delete_input_files = True, za_mtx = za_mtx, za_mtx_index = za_mtx_index ) # write ramtx zarr object
     
     # delete temp folder
-    shutil.rmtree( path_folder_temp )
+    filesystem_operations( 'rm', path_folder_temp )
 def create_zarr_from_mtx( path_file_input_mtx, path_folder_zarr, int_buffer_size = 1000, int_num_workers_for_writing_ramtx = 10, chunks_dense = ( 1000, 1000 ), dtype_mtx = np.float64 ) :
     """ # 2022-11-28 23:39:38 
     create dense ramtx (dense zarr object) from matrix sorted by barcodes.
@@ -2895,7 +2979,7 @@ def create_ramtx_from_mtx( path_folder_mtx_10x_input, path_folder_output, mode =
     """
     # check flag
     path_file_flag_completion = f"{path_folder_output}ramtx.completed.flag"
-    if os.path.exists( path_file_flag_completion ) : # exit if a flag indicating the pipeline was completed previously.
+    if filesystem_operations( 'exists', path_file_flag_completion ) : # exit if a flag indicating the pipeline was completed previously.
         return
     
     ''' prepare '''
@@ -2906,9 +2990,9 @@ def create_ramtx_from_mtx( path_folder_mtx_10x_input, path_folder_output, mode =
     # retrieve metadata from the input mtx file
     int_num_features, int_num_barcodes, int_num_records = MTX_10X_Retrieve_number_of_rows_columns_and_records( path_folder_mtx_10x_input ) # retrieve metadata of mtx
     # create an output directory
-    os.makedirs( path_folder_output, exist_ok = True )
+    filesystem_operations( 'mkdir', path_folder_output, exist_ok = True )
     path_folder_temp = f"{path_folder_output}temp_{bk.UUID( )}/"
-    os.makedirs( path_folder_temp, exist_ok = True )
+    filesystem_operations( 'mkdir', path_folder_temp, exist_ok = True )
     
     """
     construct RAMTx (Zarr) matrix
@@ -2941,7 +3025,7 @@ def create_ramtx_from_mtx( path_folder_mtx_10x_input, path_folder_output, mode =
                 
                 # create a folder to save a chunked string representations
                 path_folder_str_chunks = f'{path_folder_output}{name_axis}.str.chunks/'
-                os.makedirs( path_folder_str_chunks, exist_ok = True )
+                filesystem_operations( 'mkdir', path_folder_str_chunks, exist_ok = True )
                 za_str_chunks = zarr.group( path_folder_str_chunks )
                 za_str_chunks.attrs[ 'dict_metadata' ] = { 'int_num_entries' : int_num_entries, 'int_num_of_entries_in_a_chunk' : int_num_of_entries_in_a_chunk_metadata } # write essential metadata for str.chunks
                 
@@ -2979,7 +3063,7 @@ def create_ramtx_from_mtx( path_folder_mtx_10x_input, path_folder_output, mode =
     root.attrs[ 'dict_metadata' ] = dict_metadata
     
     # delete temp folder
-    shutil.rmtree( path_folder_temp )
+    filesystem_operations( 'rm', path_folder_temp )
     
     ''' write a flag indicating the export has been completed '''
     with open( path_file_flag_completion, 'w' ) as file :
@@ -3065,7 +3149,7 @@ def create_ramdata_from_mtx( path_folder_mtx_10x_input, path_folder_ramdata_outp
     # copy features/barcode ZarrDataFrame containing number/categorical data
     for name_axis in [ 'features', 'barcodes' ] :
         for str_suffix in [ '.str.chunks', '.str.zarr', '.num_and_cat.zdf' ] :
-            OS_Run( [ 'cp', '-r', f"{path_folder_ramdata_layer}{mode}/{name_axis}{str_suffix}", f"{path_folder_ramdata_output}{name_axis}{str_suffix}" ] )
+            bk.OS_Run( [ 'cp', '-r', f"{path_folder_ramdata_layer}{mode}/{name_axis}{str_suffix}", f"{path_folder_ramdata_output}{name_axis}{str_suffix}" ] )
             
     # write ramdata metadata 
     int_num_features, int_num_barcodes, int_num_records = MTX_10X_Retrieve_number_of_rows_columns_and_records( path_folder_mtx_10x_input ) # retrieve metadata of the input 10X mtx
@@ -3095,10 +3179,10 @@ def sort_mtx_10x( path_folder_mtx_input : str, path_folder_mtx_output : str, fla
     
     kwargs: keyworded arguments for 'sort_mtx'
     """
-    os.makedirs( path_folder_mtx_output, exist_ok = True ) # create output folder
+    filesystem_operations( 'mkdir', path_folder_mtx_output, exist_ok = True ) # create output folder
     # copy features and barcodes files
     for name_file in [ 'features.tsv.gz', 'barcodes.tsv.gz' ] :
-        shutil.copyfile( f"{path_folder_mtx_input}{name_file}", f"{path_folder_mtx_output}{name_file}" )
+        filesystem_operations( 'cp', f"{path_folder_mtx_input}{name_file}", f"{path_folder_mtx_output}{name_file}" )
     # sort matrix file
     sort_mtx( f"{path_folder_mtx_input}matrix.mtx.gz", path_file_gzip_sorted = f"{path_folder_mtx_output}matrix.mtx.gz", flag_mtx_sorted_by_id_feature = flag_mtx_sorted_by_id_feature, ** kwargs )
 
@@ -3211,7 +3295,7 @@ class AnnDataContainer( ) :
             args[ 'path' ] = f"{self.path_prefix_default}{name_adata}.h5ad"
         # check validity of the path if AnnDataObject was not given
         if 'adata' not in args :
-            if not os.path.exists( args[ 'path' ] ) :
+            if not filesystem_operations( 'exists', args[ 'path' ] ) :
                 raise FileNotFoundError( f"{args[ 'path' ]} does not exist, while AnnData object is not given" )
             args[ 'adata' ] = None # put a placeholder value
         
@@ -3269,8 +3353,8 @@ class AnnDataContainer( ) :
                 continue
             # remove file on disk if exists
             path_file = self._dict_name_adata_to_namespace[ name_adata ][ 'path' ]
-            if os.path.exists( path_file ) :
-                os.remove( path_file )
+            if filesystem_operations( 'exists', path_file ) :
+                filesystem_operations( 'rm', path_file )
             del self[ name_adata ] # delete element from the current object
     def update( self, * l_name_adata ) :
         """ # 2022-06-09 18:13:21 
@@ -3383,22 +3467,26 @@ class ShelveContainer( ) :
         return f"<shelve-backed namespace: {self.keys}>"
 
 ''' a class for serving zarr object from remote source in multiple forked processes '''
-def zarr_object_server( path_folder_zarr, pipe_receiver_input, pipe_sender_output, mode = 'r' ) :
+def zarr_object_server( path_folder_zarr, pipe_receiver_input, pipe_sender_output, mode = 'r', shape = None, chunks = None, dtype = np.int32, fill_value = 0 ) :
     """ # 2022-09-06 22:54:32 
     open a zarr object and serve various operations
     
     'mode' : zarr object mode
+    shape = None, chunks = None, dtype = None, fill_value = None # arguments for initializing the output zarr object when mode = 'w' and the output zarr object does not exist
     """
     # open a zarr object
-    za = zarr.open( path_folder_zarr, mode )
+    if mode == 'w' : # create a new zarr object
+        za = zarr.open( path_folder_zarr, mode, shape = shape, chunks = chunks, dtype = dtype, fill_value = fill_value )
+    else : # use existing zarr object
+        za = zarr.open( path_folder_zarr, mode )
     pipe_sender_output.send( ( za.shape, za.chunks, za.dtype, za.fill_value ) ) # send basic information about the zarr object
     
     while True :
         e = pipe_receiver_input.recv( )
         if e is None : # exit if None is received
             break
-        name_func, args = e # parse input
-        pipe_sender_output.send( getattr( za, name_func )( * args ) ) # return result
+        name_func, args, kwargs = e # parse input
+        pipe_sender_output.send( getattr( za, name_func )( * args, ** kwargs ) ) # return result
 class ZarrServer( ) :
     """ # 2022-09-06 21:53:54 
     This class is for serving zarr object in a spawned process for thread-safe operation
@@ -3406,10 +3494,11 @@ class ZarrServer( ) :
     'path_folder_zarr' : a path to a (remote) zarr object
     mode = 'r' # mode
     """
-    def __init__( self, path_folder_zarr, mode = 'r' ) :
+    def __init__( self, path_folder_zarr, mode = 'r', shape = None, chunks = None, dtype = np.int32, fill_value = 0 ) :
         """ # 2022-09-06 22:47:31 
         """
         # set attributes
+        self.is_zarr_server = True # indicate that current object is ZarrServer
         self._mode = mode
         self._path_folder_zarr = path_folder_zarr
         
@@ -3422,24 +3511,42 @@ class ZarrServer( ) :
         self._pipe_receiver_output = pipe_receiver_output
         
         # start the process hosting a zarr object
-        p = mpsp.Process( target = zarr_object_server, args = ( path_folder_zarr, pipe_receiver_input, pipe_sender_output, mode ) )
+        p = mpsp.Process( target = zarr_object_server, args = ( path_folder_zarr, pipe_receiver_input, pipe_sender_output, mode, shape, chunks, dtype, fill_value ) )
         p.start( )
         self._p = p
         
         # retrieve attributes of a zarr object
         self.shape, self.chunks, self.dtype, self.fill_value = self._pipe_receiver_output.recv( ) # set attributes
-    def get_coordinate_selection( self, * args ) :
-        self._pipe_sender_input.send( ( 'get_coordinate_selection', args ) ) # send input
+    def get_coordinate_selection( self, * args, ** kwargs ) :
+        self._pipe_sender_input.send( ( 'get_coordinate_selection', args, kwargs ) ) # send input
         return self._pipe_receiver_output.recv( ) # retrieve result and return
-    def get_basic_selection( self, * args ) :
-        self._pipe_sender_input.send( ( 'get_basic_selection', args ) ) # send input
+    def get_basic_selection( self, * args, ** kwargs ) :
+        self._pipe_sender_input.send( ( 'get_basic_selection', args, kwargs ) ) # send input
         return self._pipe_receiver_output.recv( ) # retrieve result and return
-    def get_orthogonal_selection( self, * args ) :
-        self._pipe_sender_input.send( ( 'get_orthogonal_selection', args ) ) # send input
+    def get_orthogonal_selection( self, * args, ** kwargs ) :
+        self._pipe_sender_input.send( ( 'get_orthogonal_selection', args, kwargs ) ) # send input
         return self._pipe_receiver_output.recv( ) # retrieve result and return
-    def get_mask_selection( self, * args ) :
-        self._pipe_sender_input.send( ( 'get_mask_selection', args ) ) # send input
+    def get_mask_selection( self, * args, ** kwargs ) :
+        self._pipe_sender_input.send( ( 'get_mask_selection', args, kwargs ) ) # send input
         return self._pipe_receiver_output.recv( ) # retrieve result and return
+    def set_coordinate_selection( self, * args, ** kwargs ) :
+        self._pipe_sender_input.send( ( 'set_coordinate_selection', args, kwargs ) ) # send input
+        return self._pipe_receiver_output.recv( ) # retrieve result and return
+    def set_basic_selection( self, * args, ** kwargs ) :
+        self._pipe_sender_input.send( ( 'set_basic_selection', args, kwargs ) ) # send input
+        return self._pipe_receiver_output.recv( ) # retrieve result and return
+    def set_orthogonal_selection( self, * args, ** kwargs ) :
+        self._pipe_sender_input.send( ( 'set_orthogonal_selection', args, kwargs ) ) # send input
+        return self._pipe_receiver_output.recv( ) # retrieve result and return
+    def set_mask_selection( self, * args, ** kwargs ) :
+        self._pipe_sender_input.send( ( 'set_mask_selection', args, kwargs ) ) # send input
+        return self._pipe_receiver_output.recv( ) # retrieve result and return
+    def __getitem__( self, args ) :
+        if isinstance( args, slice ) : # if an input argument is a slice object
+            return self.get_orthogonal_selection( args )
+    def __setitem__( self, args, values ) :
+        if isinstance( args, slice ) : # if an input argument is a slice object
+            return self.set_orthogonal_selection( * tuple( [ args, values ] ) )
     def terminate( self ) :
         """ # 2022-09-06 23:16:22 
         terminate the server
@@ -3601,7 +3708,7 @@ class ZarrDataFrame( ) :
         # open or initialize zdf and retrieve associated metadata
         if not zarr_exists( path_folder_zdf ) : # if the object does not exist, initialize ZarrDataFrame
             # create the output folder
-            os.makedirs( path_folder_zdf, exist_ok = True )
+            filesystem_operations( 'mkdir', path_folder_zdf, exist_ok = True )
             
             self._root = zarr.open( path_folder_zdf, mode = 'a' )
             self._dict_metadata = { 'version' : _version_, 'columns' : dict( ), 'int_num_rows_in_a_chunk' : int_num_rows_in_a_chunk, 'flag_enforce_name_col_with_only_valid_characters' : flag_enforce_name_col_with_only_valid_characters, 'flag_store_string_as_categorical' : flag_store_string_as_categorical, 'is_interleaved' : self.is_interleaved, 'is_combined' : self.is_combined } # to reduce the number of I/O operations from lookup, a metadata dictionary will be used to retrieve/update all the metadata
@@ -3686,7 +3793,7 @@ class ZarrDataFrame( ) :
         """ # 2022-09-21 08:48:28 
         return True if the ZDF is located remotely
         """
-        return 'http' == self._path_folder_zdf[ : len( 'http' ) ]
+        return is_remote_url( self._path_folder_zdf )
     @property
     def contains_remote( self ) :
         """ # 2022-09-21 08:48:33 
@@ -4549,8 +4656,8 @@ class ZarrDataFrame( ) :
                 path_folder_col_new = f"{self._path_folder_zdf}{name_col}_{bk.UUID( )}/" # compose the new output folder
                 za_new = zarr.open( path_folder_col_new, mode = 'w', shape = za.shape, chunks = za.chunks, dtype = dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object using the new dtype
                 za_new[ : ] = za[ : ] # copy the data 
-                shutil.rmtree( path_folder_col ) # delete the previous Zarr object
-                os.rename( path_folder_col_new, path_folder_col ) # replace the previous Zarr object with the new object
+                filesystem_operations( 'rm', path_folder_col ) # delete the previous Zarr object
+                filesystem_operations( 'mv', path_folder_col_new, path_folder_col ) # replace the previous Zarr object with the new object
                 za = zarr.open( path_folder_col, mode = 'a', synchronizer = zarr.ThreadSynchronizer( ) ) # open the new Zarr object
             
             # encode data
@@ -4618,7 +4725,7 @@ class ZarrDataFrame( ) :
             self._dict_metadata[ 'columns' ].pop( name_col )
             self._save_metadata_( ) # update metadata
             # delete the column from the disk ZarrDataFrame object
-            shutil.rmtree( f"{self._path_folder_zdf}{name_col}/" ) #             OS_Run( [ 'rm', '-rf', f"{self._path_folder_zdf}{name_col}/" ] )
+            filesystem_operations( 'rm', f"{self._path_folder_zdf}{name_col}/" )
     def __repr__( self ) :
         """ # 2022-07-20 23:00:15 
         """
@@ -4898,7 +5005,7 @@ class ZarrDataFrame( ) :
         path_folder_zarr = f"{self._path_folder_zdf}{name_col}/"
         
         # if lock already exists, exit
-        if os.path.exists( path_folder_lock ) :
+        if filesystem_operations( 'exists', path_folder_lock ) :
             if self.verbose :
                 logging.info( f'current column {name_col} appear to be used in another processes, exiting' )
             return None, None
@@ -4919,7 +5026,7 @@ class ZarrDataFrame( ) :
             """ # 2022-08-06 13:20:57 
             destroy the locks used for multiprocessing-enabled modification of a zarr object
             """
-            shutil.rmtree( path_folder_lock )
+            filesystem_operations( 'rm', path_folder_lock )
         return za, __delete_locks
     def rename_column( self, name_col_before : str, name_col_after : str ) :
         """ # 2022-11-15 00:19:15 
@@ -4940,7 +5047,7 @@ class ZarrDataFrame( ) :
                 return
             
             # rename folder containing column zarr object
-            os.rename( f"{self._path_folder_zdf}{name_col_before}/", f"{self._path_folder_zdf}{name_col_after}/" )
+            filesystem_operations( 'mv', f"{self._path_folder_zdf}{name_col_before}/", f"{self._path_folder_zdf}{name_col_after}/" )
             
             # remove previous column name and add new column name
             dict_metadata_description = self._dict_metadata[ 'columns' ].pop( name_col_before ) # remove the column and retrieve the desscription metadata
@@ -5158,7 +5265,7 @@ class RamDataAxis( ) :
 
                         # create a folder to save a chunked string representations
                         path_folder_str_chunks = f'{path_folder}{name_axis}.str.chunks/'
-                        os.makedirs( path_folder_str_chunks, exist_ok = True )
+                        filesystem_operations( 'mkdir', path_folder_str_chunks, exist_ok = True )
                         za_str_chunks = zarr.group( path_folder_str_chunks )
                         za_str_chunks.attrs[ 'dict_metadata' ] = { 'int_num_entries' : int_num_entries, 'int_num_of_entries_in_a_chunk' : int_num_entries_in_a_chunk } # write essential metadata for str.chunks
 
@@ -5230,7 +5337,7 @@ class RamDataAxis( ) :
 
                         # create a folder to save a chunked string representations (for web application)
                         path_folder_str_chunks = f'{path_folder}{name_axis}.str.chunks/'
-                        os.makedirs( path_folder_str_chunks, exist_ok = True )
+                        filesystem_operations( 'mkdir', path_folder_str_chunks, exist_ok = True )
                         za_str_chunks = zarr.group( path_folder_str_chunks )
                         za_str_chunks.attrs[ 'dict_metadata' ] = { 'int_num_entries' : int_num_entries, 'int_num_of_entries_in_a_chunk' : int_num_entries_in_a_chunk } # write essential metadata for str.chunks
 
@@ -5709,7 +5816,7 @@ class RamDataAxis( ) :
         assert self._path_folder != path_folder
         
         # create output folder
-        os.makedirs( path_folder, exist_ok = True )
+        filesystem_operations( 'mkdir', path_folder, exist_ok = True )
         
         '''
         # save metadata
@@ -5740,7 +5847,7 @@ class RamDataAxis( ) :
             if not ns[ 'flag_axis_initialized' ] : # if the axis has not been initialized
                 # create a folder to save a chunked string representations
                 path_folder_str_chunks = f'{path_folder}{name_axis}.str.chunks/'
-                os.makedirs( path_folder_str_chunks, exist_ok = True ) # create the output folder
+                filesystem_operations( 'mkdir', path_folder_str_chunks, exist_ok = True ) # create the output folder
                 za_str_chunks = zarr.group( path_folder_str_chunks )
                 ns[ 'path_folder_str_chunks' ] = path_folder_str_chunks
                 za_str_chunks.attrs[ 'dict_metadata' ] = { 'int_num_entries' : len( self ), 'int_num_of_entries_in_a_chunk' : self.int_num_entries_in_a_chunk } # write essential metadata for str.chunks
@@ -6218,17 +6325,21 @@ class RAMtx( ) :
         """ # 2022-09-03 17:17:32 
         return True if the RAMtx is located remotely
         """
-        return 'http' == self._path_folder_ramtx[ : len( 'http' ) ]     
-    def load_zarr_server( self ) :
+        return is_remote_url( self._path_folder_ramtx )
+    def get_fork_safe_version( self ) :
         """ # 2022-09-06 23:38:07 
+        return RAMtx object that are fork-safe.
         replace zarr objects with zarr_server objects if current RAMtx object is located remotely
         """
+        rtx_with_zarr_server = self # by default, current RAMtx object as-is
         # for remote zarr object, load the zarr object using the ZarrServer to avoid fork-not-safe error
-        if not self.is_combined :
-            rtx_with_zarr_server = RAMtx( rtx_template = self, flag_use_zarr_server = True )
-        else :
-            # load zarr server for each component RAMtx object
-            rtx_with_zarr_server = RAMtx( rtx_template = self, l_rtx = list( None if rtx is None else rtx.load_zarr_server( ) for rtx in self._l_rtx ) )
+        if self.contains_remote :
+            if not self.is_combined :
+                # for remote zarr object, load the zarr object using the ZarrServer to avoid fork-not-safe error
+                rtx_with_zarr_server = RAMtx( rtx_template = self, flag_use_zarr_server = True ) if self.is_remote else self
+            else :
+                # load zarr server for each component RAMtx object
+                rtx_with_zarr_server = RAMtx( rtx_template = self, l_rtx = list( None if rtx is None else rtx.get_fork_safe_version( ) for rtx in self._l_rtx ) )
         return rtx_with_zarr_server
     def destroy_zarr_server( self ) :
         """ # 2022-09-07 02:33:48 
@@ -6237,7 +6348,7 @@ class RAMtx( ) :
         # for remote zarr object, load the zarr object using the ZarrServer to avoid fork-not-safe error
         if not self.is_combined and self.is_remote  :
             if self.is_sparse :
-                # destroy Zarr object hosted in spawned process
+                # destroy Zarr object hosted in a spawned process
                 if hasattr( self._za_mtx_index, 'terminate' ) :
                     self._za_mtx_index.terminate( )
                 if hasattr( self._za_mtx, 'terminate' ) :
@@ -6296,7 +6407,7 @@ class RAMtx( ) :
         return ( None if self._flag_is_read_only else self._path_folder_ramtx ) if self._path_folder_ramtx_mask is None else self._path_folder_ramtx_mask
     @property
     def ba_active_entries( self ) :
-        """ # 2022-08-04 23:42:23 
+        """ # 2022-12-02 21:39:31 
         return a bitarray filter of the indexed axis where all the entries with valid count data is marked '1'
         """
         # retrieve axis of current ramtx
@@ -6312,11 +6423,15 @@ class RAMtx( ) :
             # try constructing the zarr object 
             path_folder_zarr = f"{self._path_folder_ramtx_modifiable}matrix.{axis}.active_entries.zarr/" # define zarr object path
             self.survey_number_of_records_for_each_entry( ) # survey the number of records for each entry using default settings
-            if not zarr_exists( path_folder_zarr ) : # if the zarr object still does not exists
-                # create a full bitarray mask as a fall back
-                ba = bitarray( self.len_axis_for_querying )
-                ba.setall( 1 )
-                return ba
+            if zarr_exists( path_folder_zarr ) : # if the zarr object is available, set 'flag_available' to True
+                flag_available = True
+                
+        if not flag_available : # if the zarr object still does not exists
+            logging.warning( f"'ba_active_entries' of axis '{axis}' for {self._path_folder_ramtx} RAMtx cannot be retrieved. as a fallback, a filter of all entries will be returned." )
+            # create a full bitarray mask as a fallback
+            ba = bitarray( self.len_axis_for_querying )
+            ba.setall( 1 )
+            return ba
             
         za = zarr.open( path_folder_zarr, mode = 'r', synchronizer = zarr.ThreadSynchronizer( ) ) # open zarr object of the current RAMtx object
         ba = BA.to_bitarray( za[ : ] ) # return the boolean array of active entries as a bitarray object
@@ -6344,7 +6459,7 @@ class RAMtx( ) :
                 break
         return path_folder if flag_res_available else None # if result is not available, returns None. if result is available, return the folder where the result reside
     def survey_number_of_records_for_each_entry( self, axes = [ 'barcodes', 'features' ], int_num_chunks_in_a_batch_for_index_of_sparse_matrix = 100, int_num_chunks_in_a_batch_for_axis_for_querying_dense = 1, int_total_number_of_values_in_a_batch_for_dense_matrix = None, int_size_chunk = 1000, flag_ignore_dense = False, int_num_threads = 20 ) :
-        """ # 2022-10-20 01:19:10 
+        """ # 2022-12-03 17:14:49 
         survey the number of records for each entry in the existing axis
         'axes' : a list of axes to use for surveying the number of records for each entry
         
@@ -6357,7 +6472,7 @@ class RAMtx( ) :
         'flag_ignore_dense' : if True, does not survey the dense ramtx.
         'int_num_threads' : the number of threads for surveying
         """
-        # handle combined mode
+        # handle combined mode - run 'survey_number_of_records_for_each_entry' in the components
         if self.is_combined :
             # %% COMBINED %%
             # drop the RAMtx object of the reference if combined and reference alignment modes are active
@@ -6450,11 +6565,17 @@ class RAMtx( ) :
                     int_pos_combined += ax_component.int_num_entries # update 'int_pos_combined'
             return
         
+        ''' prepare '''
+        # if current RAMtx object is located remotely, re-load zarr objects to avoid fork-non-safe runtime error (http/s3 zarr objects appears to be not fork-safe)
+        rtx_fork_safe = self.get_fork_safe_version( )
+        za_mtx_index, za_mtx = rtx_fork_safe.get_za( )
+        
         # for each axis 
         for axis in axes :  
             # check validity of the axis name
             if axis not in { 'barcodes', 'features' } :
                 continue
+                
             flag_axis_is_barcode = axis == 'barcodes'
             # skip if result is already available
             flag_res_already_available = False # initialize
@@ -6480,16 +6601,16 @@ class RAMtx( ) :
             # perform survey
             len_axis = self._int_num_barcodes if flag_axis_is_barcode else self._int_num_features # retrieve the length of the axis for querying
             
-            # open zarr objects
-            za = zarr.open( f'{self._path_folder_ramtx_modifiable}matrix.{axis}.number_of_records_for_each_entry.zarr/', mode = 'w', shape = ( len_axis, ), chunks = ( int_size_chunk, ), dtype = np.float64, synchronizer = zarr.ThreadSynchronizer( ) ) # open zarr object of the current RAMtx object
-            za_bool = zarr.open( f"{self._path_folder_ramtx_modifiable}matrix.{axis}.active_entries.zarr/", mode = 'w', shape = ( len_axis, ), chunks = ( int_size_chunk, ), dtype = bool, synchronizer = zarr.ThreadSynchronizer( ) ) # open zarr object of the current RAMtx object
-            
             # perform survey
             # start worker
             def __write_result( pipe_receiver ) :
-                """ # 2022-08-16 11:20:34 
+                """ # 2022-12-03 17:14:57 
                 write survey results as zarr objects
                 """
+                # create a zarr array object that is fork-safe (use ZarrServer if fork-safe zarr object is required, and use typical zarr object in other cases)
+                za = ZarrServer( f'{self._path_folder_ramtx_modifiable}matrix.{axis}.number_of_records_for_each_entry.zarr/', mode = 'w', shape = ( len_axis, ), chunks = ( int_size_chunk, ), dtype = np.float64 ) if self.is_remote else zarr.open( f'{self._path_folder_ramtx_modifiable}matrix.{axis}.number_of_records_for_each_entry.zarr/', mode = 'w', shape = ( len_axis, ), chunks = ( int_size_chunk, ), dtype = np.float64 )
+                za_bool = ZarrServer( f"{self._path_folder_ramtx_modifiable}matrix.{axis}.active_entries.zarr/", mode = 'w', shape = ( len_axis, ), chunks = ( int_size_chunk, ), dtype = bool ) if self.is_remote else zarr.open( f'{self._path_folder_ramtx_modifiable}matrix.{axis}.number_of_records_for_each_entry.zarr/', mode = 'w', shape = ( len_axis, ), chunks = ( int_size_chunk, ), dtype = np.float64 )
+
                 while True :
                     l_r = pipe_receiver.recv( )
                     if l_r is None :
@@ -6508,6 +6629,12 @@ class RAMtx( ) :
                     za.set_coordinate_selection( ( arr_coord_combined, ), arr_num_records_combined ) # save the number of records 
                     za_bool.set_coordinate_selection( ( arr_coord_combined, ), arr_num_records_combined > 0 ) # active entry is defined by finding entries with at least one count record
                     del arr_coord_combined, arr_num_records_combined
+                    
+                if self.is_remote :
+                    # %% REMOTE %%
+                    # if zarr server objects have been initialized, terminate the zarr servers
+                    za.terminate( )
+                    za_bool.terminate( )
             pipe_sender, pipe_receiver = mp.Pipe( )
             p = mp.Process( target = __write_result, args = ( pipe_receiver, ) )
             p.start( )
@@ -6517,10 +6644,10 @@ class RAMtx( ) :
                 """ %% Sparse matrix %% """
                 # surveying on the axis of the sparse matrix
                 int_num_entries_processed = 0
-                int_num_entries_to_retrieve = int( self._za_mtx_index.chunks[ 0 ] * int_num_chunks_in_a_batch_for_index_of_sparse_matrix )
+                int_num_entries_to_retrieve = int( za_mtx_index.chunks[ 0 ] * int_num_chunks_in_a_batch_for_index_of_sparse_matrix )
                 while int_num_entries_processed < len_axis :
                     sl = slice( int_num_entries_processed, min( len_axis, int_num_entries_processed + int_num_entries_to_retrieve ) )
-                    arr_num_records = self._za_mtx_index[ sl ][ :, 1 ] - self._za_mtx_index[ sl ][ :, 0 ] # retrieve the number of records
+                    arr_num_records = za_mtx_index[ sl ][ :, 1 ] - za_mtx_index[ sl ][ :, 0 ] # retrieve the number of records
                     int_num_entries_processed += int_num_entries_to_retrieve # update the position
                     # flush buffer
                     ns[ 'l_buffer' ].append( ( sl, arr_num_records ) )
@@ -6534,7 +6661,7 @@ class RAMtx( ) :
                 len_axis_secondary = self._int_num_features if flag_axis_is_barcode else self._int_num_barcodes # retrieve the length of the axis not for querying
                 
                 # retrieve chunk size for each axis
-                int_size_chunk_axis_for_querying, int_size_chunk_axis_not_for_querying = self._za_mtx.chunks[ 0 if flag_axis_is_barcode else 1 ], self._za_mtx.chunks[ 1 if flag_axis_is_barcode else 0 ] 
+                int_size_chunk_axis_for_querying, int_size_chunk_axis_not_for_querying = za_mtx.chunks[ 0 if flag_axis_is_barcode else 1 ], za_mtx.chunks[ 1 if flag_axis_is_barcode else 0 ] 
                 
                 # retrieve entries for each axis for batch and a subbatch
                 int_num_entries_in_a_batch_in_axis_for_querying = int_size_chunk_axis_for_querying * int_num_chunks_in_a_batch_for_axis_for_querying_dense
@@ -6566,7 +6693,7 @@ class RAMtx( ) :
                         arr_num_records = np.zeros( sl.stop - sl.start, dtype = np.int64 ) # initialize the list of the number of records for the entries in the current batch
                         while int_num_entries_processed_in_axis_not_for_querying < len_axis_secondary :
                             sl_secondary = slice( int_num_entries_processed_in_axis_not_for_querying, min( len_axis_secondary, int_num_entries_processed_in_axis_not_for_querying + int_num_entries_in_a_subbatch_in_axis_not_for_querying ) ) # retrieve a slice along the secondary axis
-                            arr_num_records += ( ( self._za_mtx.get_orthogonal_selection( ( sl, sl_secondary ) ).T if flag_axis_is_barcode else self._za_mtx.get_orthogonal_selection( ( sl_secondary, sl ) ) ) > 0 ).sum( axis = 0 ) # update 'arr_num_records'
+                            arr_num_records += ( ( za_mtx.get_orthogonal_selection( ( sl, sl_secondary ) ).T if flag_axis_is_barcode else za_mtx.get_orthogonal_selection( ( sl_secondary, sl ) ) ) > 0 ).sum( axis = 0 ) # update 'arr_num_records'
                             int_num_entries_processed_in_axis_not_for_querying += int_num_entries_in_a_subbatch_in_axis_not_for_querying # update the position
                         # send the result
                         pipe_sender_result.send( ( sl, arr_num_records ) )
@@ -6590,6 +6717,9 @@ class RAMtx( ) :
             # dismiss the worker
             pipe_sender.send( None )
             p.join( )
+        
+        # destroy zarr server
+        rtx_fork_safe.destroy_zarr_server( )
     def _save_metadata_( self ) :
         ''' # 2022-07-31 00:40:33 
         a method for saving metadata to the disk 
@@ -6710,7 +6840,7 @@ class RAMtx( ) :
             if self.is_combined : # for combined RAMtx
                 ram = self._ramdata # retrieve associated RamData
                 if ram is not None : # if ramdata exists
-                    if ram.is_combined and ram.int_index_component_reference is not None :
+                    if ram.is_combined and ram.int_index_component_reference is not None : # if reference component is active
                         self._l_rtx[ ram.int_index_component_reference ] = None # set the rtx object of the reference to None (ignore the data of reference)
             self._reference_dropped = True # set the attribute indicating the reference has been dropped
     def __getitem__( self, l_int_entry ) : 
@@ -6772,7 +6902,7 @@ class RAMtx( ) :
             l_int_entry = sorted( l_int_entry )
         
         """
-        retrieve data from RAMtx data structure
+        retrieve data from the Combined RAMtx data structure
         """
         # handle combined ramtx 
         if self.is_combined :
@@ -6795,6 +6925,9 @@ class RAMtx( ) :
                 l_arr_value.append( np.concatenate( dict_data[ int_entry ][ 'l_arr_value' ] ) )
             return l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying, l_arr_value
         
+        """
+        retrieve data from the RAMtx data structure (self.is_combined should be False)
+        """
         # retrieve flags for dtype conversions
         flag_change_dtype_of_values = za_mtx.dtype != self._dtype_of_values
         
@@ -6802,7 +6935,7 @@ class RAMtx( ) :
         # retrieve dictionaries for changing coordinates
         dict_change_int_entry_of_axis_for_querying, dict_change_int_entry_of_axis_not_for_querying = None, None # initialize the dictionaries
         if self._ramdata is not None : # if RAMtx has been attached to RamData, retrieve dictionaries that can be used to change coordinate
-            ram = self._ramdata._ramdata_composite if self.is_component else self._ramdata # retrieve ramdata from which view will be retrieved. if current RAMtx is component, use composite RamData. else, use RamData to which current RAMtx has been attached to.
+            ram = self._ramdata._ramdata_composite if self.is_component else self._ramdata # retrieve ramdata from which view will be retrieved. if current RAMtx is component, use view of the composite RamData. Else, use RamData to which current RAMtx has been attached to.
             if self.is_for_querying_features :
                 dict_change_int_entry_of_axis_for_querying = ram.ft.dict_change
                 dict_change_int_entry_of_axis_not_for_querying = ram.bc.dict_change
@@ -6830,7 +6963,7 @@ class RAMtx( ) :
         vchange_int_entry_component_of_axis_not_for_querying = np.vectorize( f_component ) if dict_change_int_entry_component_of_axis_not_for_querying is not None else None
         
         """ change component """
-        # retrieve dictionaries for changing coordinates for mapping components to combined data
+        # retrieve dictionaries for changing coordinates for changing components on a combined axis
         dict_change_int_entry_combined_axis_for_querying, dict_change_int_entry_combined_axis_not_for_querying = None, None # initialize the dictionaries 
         if self.is_component : # if RAMtx is component of combined RAMtx
             ram = self._ramdata._ramdata_composite if self.is_component else self._ramdata # retrieve ramdata from which view will be retrieved. if current RAMtx is component, use composite RamData. else, use RamData to which current RAMtx has been attached to.
@@ -6852,6 +6985,10 @@ class RAMtx( ) :
             """ # 2022-08-16 01:54:31 
             retrieve data as a worker in a worker process or in the main processs (in single-process mode)
             """
+            # if current RAMtx object is located remotely, re-load zarr objects to avoid fork-non-safe runtime error (http/s3 zarr objects appears to be not fork-safe)
+            rtx_fork_safe = self.get_fork_safe_version( )
+            za_mtx_index, za_mtx = rtx_fork_safe.get_za( )
+            
             ''' initialize '''
             # handle inputs
             l_int_entry = pipe_from_main_thread.recv( ) if flag_as_a_worker else pipe_from_main_thread  # receive work if 'flag_as_a_worker' is True or use 'pipe_from_main_thread' as a list of works
@@ -6881,6 +7018,15 @@ class RAMtx( ) :
                     # filter records using the mask
                     arr_int_entry_of_axis_not_for_querying = arr_int_entry_of_axis_not_for_querying[ arr_mask ]
                     arr_value = arr_value[ arr_mask ]
+                
+                """ # 2022-12-03 19:59:48 
+                coordinate conversion process
+                
+                local coordinates of the current component
+                    > global coordinates (on a combined axis) of the current component
+                    > global coordinates (on a combined axis) of the destination component (usually reference component)
+                    > apply view of the global coordinates (on a combined axis)
+                """
                 
                 # component > combined axis
                 if dict_change_int_entry_component_of_axis_for_querying is not None :
@@ -7043,6 +7189,9 @@ class RAMtx( ) :
 
             
             ''' return the retrieved data '''
+            # destroy zarr server
+            rtx_fork_safe.destroy_zarr_server( )
+            
             # compose a output value
             output = ( l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying, l_arr_value )
             # if 'flag_as_a_worker' is True, send the result or return the result
@@ -7351,16 +7500,17 @@ class RamDataLayer( ) :
             'verbose' : self.verbose, 
             'flag_debugging' : False, 
             'mode' : self._mode, 
-            'path_folder_ramtx_mask' : f'{self._path_folder_ramdata_layer_mask}{mode}/' if self._mask_available else None, 
             'flag_is_read_only' : self._flag_is_read_only,
             'l_rtx' : None,
         }
         # load ramtx
         for mode in self.modes : # iterate through each mode
+            # retrieve directory of the mask 
+            dict_kwargs[ 'path_folder_ramtx_mask' ] = f'{self._path_folder_ramdata_layer_mask}{mode}/' if self._mask_available else None
             if self.is_combined :
                 # %% COMBINED %%
                 dict_kwargs[ 'l_rtx' ] = list( None if layer is None else layer[ mode ] for layer in self._l_layer ) # retrieve list of rtx objects for the current mode
-            
+                
             if not hasattr( self, f"ramtx_{mode}" ) : # if the ramtx object of the current mode has not been load
                 if 'dense_for_querying_' in mode :
                     rtx = RAMtx( f'{self._path_folder_ramdata_layer}dense/', is_for_querying_features = mode.rsplit( 'dense_for_querying_', 1 )[ 1 ] == 'features', ** dict_kwargs ) # open dense ramtx in querying_features/querying_barcodes modes
@@ -7476,7 +7626,7 @@ class RamDataLayer( ) :
         """
         return iter( list( self[ mode ] for mode in self.modes if self[ mode ] ) ) # return ramtx object that has been loaded in the current layer
     def select_ramtx( self, ba_entry_bc, ba_entry_ft ) :
-        """ # 2022-07-31 11:46:33 
+        """ # 2022-12-03 22:36:57 
         select appropriate ramtx based on the queryed barcode and features, given as a bitarray filters 'ba_entry_bc', 'ba_entry_ft'
         """
         # count the number of valid queried entries
@@ -7486,7 +7636,7 @@ class RamDataLayer( ) :
         # detect and handle the cases when one of the axes is empty
         if int_num_entries_queried_bc == 0 or int_num_entries_queried_ft == 0 :
             if self.verbose :
-                logging.info( f"Warning: currently queried view is (barcode x features) {int_num_entries_queried_bc} x {int_num_entries_queried_ft}. please change the filter or queries in order to retrieve a valid data" )
+                logging.warning( f"currently queried view is (barcode x features) {int_num_entries_queried_bc} x {int_num_entries_queried_ft}. please change the filter or queries in order to retrieve a valid count data. For operations that do not require count data, ignore this warning." )
 
         # choose which ramtx object to use
         flag_use_ramtx_for_querying_feature = int_num_entries_queried_bc >= int_num_entries_queried_ft # select which axis to use. if there is more number of barcodes than features, use ramtx for querying 'features'
@@ -7504,6 +7654,7 @@ class RamDataLayer( ) :
         set_int_index_component_to_exclude : Union[ None, set ] = None # set of integer indices of the components to exclude.
             the intended usage of this argument is to exclude RAMtx of the component that will be used as a reference
         """
+        # handle combined RAMtx
         if self.is_combined  :
             # %% COMBINED %%
             # set default 'set_int_index_component_to_exclude'
@@ -7567,7 +7718,7 @@ class RamDataLayer( ) :
                 self._save_metadata_( ) # update metadata
                 
                 # delete a RAMtx
-                shutil.rmtree( f'{self._path_folder_ramdata_layer_mask}{mode}/' )
+                filesystem_operations( 'rm', f'{self._path_folder_ramdata_layer_mask}{mode}/' )
 ''' class for storing RamData '''
 class RamData( ) :
     """ # 2022-11-22 23:45:32 
@@ -7949,7 +8100,7 @@ class RamData( ) :
             if name_layer not in self.layers :
                 continue
             # delete an entire layer
-            shutil.rmtree( f"{self._path_folder_ramdata}{name_layer}/" )
+            filesystem_operations( 'rm', f"{self._path_folder_ramdata}{name_layer}/" )
             
             # remove the current layer from the metadata
             self.layers.remove( name_layer ) 
@@ -8202,7 +8353,7 @@ class RamData( ) :
         """ # 2022-09-03 17:17:32 
         return True if the RamData is located remotely
         """
-        return 'http' == self._path_folder_ramdata[ : len( 'http' ) ]
+        return is_remote_url( self._path_folder_ramdata )
     @property
     def contains_remote( self ) :
         """ # 2022-09-05 17:55:26 
@@ -8248,7 +8399,7 @@ class RamData( ) :
         path_folder = self._path_folder_ramdata_modifiable # retrieve path to the modifiable ramdata object
         if path_folder is not None : # if valid location is available (assumes it is a local directory)
             path_folder_temp = f"{path_folder}temp_{bk.UUID( )}/"
-            os.makedirs( path_folder_temp, exist_ok = True ) # create the temporary folder
+            filesystem_operations( 'mkdir', path_folder_temp, exist_ok = True ) # create the temporary folder
             return path_folder_temp # return the path to the temporary folder
     def summarize( self, name_layer : str, axis : Union[ int, str ], summarizing_func, l_name_col_summarized : Union[ list, None ] = None, str_prefix : Union[ str, None ] = None, str_suffix : str = '' ) :
         ''' # 2022-09-07 21:24:50 
@@ -8390,7 +8541,7 @@ class RamData( ) :
             summarize a given list of entries, and send summarized result through a pipe
             '''
             # retrieve fork-safe RAMtx
-            rtx_fork_safe = rtx.load_zarr_server( ) if rtx.contains_remote else rtx # load zarr_server (if RAMtx contains remote data source) to be thread-safe
+            rtx_fork_safe = rtx.get_fork_safe_version( ) if rtx.contains_remote else rtx # load zarr_server (if RAMtx contains remote data source) to be thread-safe
 
             while True :
                 batch = pipe_receiver_batch.recv( )
@@ -8442,7 +8593,7 @@ class RamData( ) :
         bk.Multiprocessing_Batch_Generator_and_Workers( rtx.batch_generator( ax.filter, int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, int_total_weight_for_each_batch = self.int_total_weight_for_each_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 )
         pbar.close( ) # close the progress bar
     def apply( self, name_layer, name_layer_new, func = None, mode_instructions = 'sparse_for_querying_features', path_folder_ramdata_output = None, dtype_of_row_and_col_indices = np.int32, dtype_of_value = np.float64, int_num_threads = None, flag_survey_weights = True, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = True, int_num_of_records_in_a_chunk_zarr_matrix = 20000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, chunks_dense = ( 2000, 1000 ), dtype_dense_mtx = np.float64, dtype_sparse_mtx = np.float64, dtype_sparse_mtx_index = np.float64 ) :
-        ''' # 2022-10-29 18:08:41 
+        ''' # 2022-12-04 14:47:39 
         this function apply a function and/or filters to the records of the given data, and create a new data object with 'name_layer_new' as its name.
         
         example usage: calculate normalized count data, perform log1p transformation, cell filtering, etc.                             
@@ -8581,7 +8732,7 @@ class RamData( ) :
         zarr_start_multiprocessing_write( )
         
         def RAMtx_Apply( self, rtx, func, flag_dense_ramtx_output, flag_sparse_ramtx_output, int_num_threads ) :
-            ''' # 2022-10-29 18:08:36 
+            ''' # 2022-12-04 14:47:34 
             inputs 
             =========
 
@@ -8593,25 +8744,25 @@ class RamData( ) :
             ns[ 'int_num_records_written_to_ramtx' ] = 0 # initlaize the total number of records written to ramtx object
             # create a temporary folder
             path_folder_temp = f'{path_folder_layer_new}temp_{bk.UUID( )}/'
-            os.makedirs( path_folder_temp, exist_ok = True )
+            filesystem_operations( 'mkdir', path_folder_temp, exist_ok = True )
             
             ''' initialize output ramtx objects '''
             """ %% DENSE %% """
             if flag_dense_ramtx_output : # if dense output is present
                 path_folder_ramtx_dense = f"{path_folder_layer_new}dense/"
-                os.makedirs( path_folder_ramtx_dense, exist_ok = True ) # create the output ramtx object folder
+                filesystem_operations( 'mkdir', path_folder_ramtx_dense, exist_ok = True ) # create the output ramtx object folder
                 path_folder_ramtx_dense_mtx = f"{path_folder_ramtx_dense}matrix.zarr/" # retrieve the folder path of the output RAMtx Zarr matrix object.
-                # assert not os.path.exists( path_folder_ramtx_dense_mtx ) # output zarr object should NOT exists!
+                # assert not filesystem_operations( 'exists', path_folder_ramtx_dense_mtx ) # output zarr object should NOT exists!
                 path_file_lock_mtx_dense = f'{path_folder_layer_new}lock_{bk.UUID( )}.sync' # define path to locks for parallel processing with multiple processes
                 za_mtx_dense = zarr.open( path_folder_ramtx_dense_mtx, mode = 'w', shape = ( rtx._int_num_barcodes, rtx._int_num_features ), chunks = chunks_dense, dtype = dtype_dense_mtx, synchronizer = zarr.ProcessSynchronizer( path_file_lock_mtx_dense ) ) # use the same chunk size of the current RAMtx
             """ %% SPARSE %% """
             if flag_sparse_ramtx_output : # if sparse output is present
                 mode_sparse = f"sparse_for_querying_{'features' if rtx.is_for_querying_features else 'barcodes'}"
                 path_folder_ramtx_sparse = f"{path_folder_layer_new}{mode_sparse}/"
-                os.makedirs( path_folder_ramtx_sparse, exist_ok = True ) # create the output ramtx object folder
+                filesystem_operations( 'mkdir', path_folder_ramtx_sparse, exist_ok = True ) # create the output ramtx object folder
                 path_folder_ramtx_sparse_mtx = f"{path_folder_ramtx_sparse}matrix.zarr/" # retrieve the folder path of the output RAMtx Zarr matrix object.
-                # assert not os.path.exists( path_folder_ramtx_sparse_mtx ) # output zarr object should NOT exists!
-                # assert not os.path.exists( f'{path_folder_ramtx_sparse}matrix.index.zarr' ) # output zarr object should NOT exists!
+                # assert not filesystem_operations( 'exists', path_folder_ramtx_sparse_mtx ) # output zarr object should NOT exists!
+                # assert not filesystem_operations( 'exists', f'{path_folder_ramtx_sparse}matrix.index.zarr' ) # output zarr object should NOT exists!
                 # define path to locks for parallel processing with multiple processes
                 za_mtx_sparse = zarr.open( path_folder_ramtx_sparse_mtx, mode = 'w', shape = ( rtx._int_num_records, 2 ), chunks = ( int_num_of_records_in_a_chunk_zarr_matrix, 2 ), dtype = dtype_sparse_mtx, synchronizer = zarr.ThreadSynchronizer( ) ) # use the same chunk size of the current RAMtx
                 za_mtx_sparse_index = zarr.open( f'{path_folder_ramtx_sparse}matrix.index.zarr', mode = 'w', shape = ( rtx.len_axis_for_querying, 2 ), chunks = ( int_num_of_entries_in_a_chunk_zarr_matrix_index, 2 ), dtype = dtype_sparse_mtx_index, synchronizer = zarr.ThreadSynchronizer( ) ) # use the same dtype and chunk size of the current RAMtx
@@ -8629,7 +8780,7 @@ class RamData( ) :
                 '''
                 str_uuid = bk.UUID( )
                 # retrieve fork-safe RAMtx
-                rtx_fork_safe = rtx.load_zarr_server( ) if rtx.contains_remote else rtx # load zarr_server (if RAMtx contains remote data source) to be thread-safe
+                rtx_fork_safe = rtx.get_fork_safe_version( ) if rtx.contains_remote else rtx # load zarr_server (if RAMtx contains remote data source) to be thread-safe
 
                 while True :
                     batch = pipe_receiver_batch.recv( )
@@ -8716,7 +8867,7 @@ class RamData( ) :
             if flag_sparse_ramtx_output :
                 ''' create a worker process for off-laoding works (mostly file I/O) asynchronously so that main process can delegate works to the working processes without being blocked during file I/O. '''
                 def post_processing_sparse_matrix_output( pipe_input, pipe_output ) :
-                    ''' # 2022-10-29 13:03:23 
+                    ''' # 2022-12-04 14:47:27 
                     post-process sparse matrix output
                     '''
                     # initialize
@@ -8739,10 +8890,17 @@ class RamData( ) :
                             za_mtx_sparse.resize( int_min_num_rows_required, 2 ) # resize the Zarr matrix so that data can be safely added to the matrix
 
                         # copy Zarr chunks to the sparse RAMtx Zarr matrix object
-                        os.chdir( path_folder_zarr_output ) # to reduce the length of file path, change directory to the output folder before retrieving file paths of the chunks
-                        for e in glob.glob( '*.0' ) : # to reduce the size of file paths returned by glob, use relative path to retrieve the list of chunk files of the Zarr matrix of the current batch
-                            index_chunk = int( e.split( '.0', 1 )[ 0 ] ) # retrieve the integer index of the chunk
-                            os.rename( e, path_folder_ramtx_sparse_mtx + str( index_chunk + int_num_chunks_written_to_ramtx ) + '.0' ) # simply rename the chunk to transfer stored values
+                        if not is_remote_url( path_folder_zarr_output ) :
+                            # %% Local File System %%
+                            os.chdir( path_folder_zarr_output ) # to reduce the length of file path, change directory to the output folder before retrieving file paths of the chunks
+                            for e in glob.glob( '*.0' ) : # to reduce the size of file paths returned by glob, use relative path to retrieve the list of chunk files of the Zarr matrix of the current batch
+                                index_chunk = int( e.split( '.0', 1 )[ 0 ] ) # retrieve the integer index of the chunk
+                                os.rename( e, path_folder_ramtx_sparse_mtx + str( index_chunk + int_num_chunks_written_to_ramtx ) + '.0' ) # simply rename the chunk to transfer stored values
+                        elif is_s3_url( path_folder_zarr_output ) :
+                            # %% Amazon S3 %%
+                            for e in filesystem_operations( 'glob', f'{path_folder_zarr_output}*.0' ) : # to reduce the size of file paths returned by glob, use relative path to retrieve the list of chunk files of the Zarr matrix of the current batch
+                                index_chunk = int( e.rsplit( '/', 1 )[ 1 ][ : - 2 ] ) # retrieve the integer index of the chunk
+                                filesystem_operations( 'mv', e, path_folder_ramtx_sparse_mtx + str( index_chunk + int_num_chunks_written_to_ramtx ) + '.0' ) # simply rename the chunk to transfer stored values
 
                         # retrieve index data of the current batch
                         arr_index = pd.read_csv( path_file_index_output, header = None, sep = '\t' ).values.astype( int ) # convert to integer dtype
@@ -8754,8 +8912,8 @@ class RamData( ) :
                         int_num_chunks_written_to_ramtx += int_num_chunks_written_for_a_batch
 
                         # delete temporary files and folders
-                        shutil.rmtree( path_folder_zarr_output )
-                        os.remove( path_file_index_output )
+                        filesystem_operations( 'rm', path_folder_zarr_output )
+                        filesystem_operations( 'rm', path_file_index_output )
                     ''' send output and indicate the post-processing has been completed '''
                     pipe_output.send( int_len_matrix )
                     return # exit
@@ -8808,7 +8966,7 @@ class RamData( ) :
             ''' export ramtx settings '''
             """ %% DENSE %% """
             if flag_dense_ramtx_output : # if dense output is present
-                shutil.rmtree( path_file_lock_mtx_dense ) # delete file system locks
+                filesystem_operations( 'rm', path_file_lock_mtx_dense ) # delete file system locks
                 root = zarr.group( path_folder_ramtx_dense )
                 root.attrs[ 'dict_metadata' ] = { 
                     'mode' : 'dense',
@@ -8840,7 +8998,7 @@ class RamData( ) :
                     za_mtx_sparse.resize( int_len_matrix, 2 ) # resize the Zarr matrix to according to the actual number of rows in the matrix
                     
             # remove temp folder once all operations have been completed
-            shutil.rmtree( path_folder_temp )
+            filesystem_operations( 'rm', path_folder_temp )
             return # exit
         
         # initialize the list arguments for running multiple processes
@@ -8985,7 +9143,7 @@ class RamData( ) :
             if self.verbose :
                 logging.info( f'the output RamData object directory is exactly same that of the current RamData object, exiting' )
         # create the RamData output folder
-        os.makedirs( path_folder_ramdata_output, exist_ok = True ) 
+        filesystem_operations( 'mkdir', path_folder_ramdata_output, exist_ok = True ) 
 
         # copy axes and associated metadata
         self.bc.save( path_folder_ramdata_output )
@@ -9211,7 +9369,7 @@ class RamData( ) :
 
         if flag_show_graph :
             plt.plot( arr_mean[ : : 10 ], arr_var[ : : 10 ], '.', alpha = 0.01 )
-            MATPLOTLIB_basic_configuration( x_scale = 'log', y_scale = 'log', x_label = 'mean', y_label = 'variance', title = f"mean-variance relationship\nin '{name_layer}'" )
+            bk.MATPLOTLIB_basic_configuration( x_scale = 'log', y_scale = 'log', x_label = 'mean', y_label = 'variance', title = f"mean-variance relationship\nin '{name_layer}'" )
             plt.show( )
             
         # learn mean-variance relationship for the data
@@ -9801,9 +9959,14 @@ class RamData( ) :
             check whether the model file exists in the given ramdata
             'flag_modifiable' : set this to True for checking whether a file exists in the modifiable path
             """
-            flag_is_http_path = 'http' == path_file[ : 4 ] # retrieve a flag indicating whether the path is remote path using http 
-            return http_response_code( path_file ) == 200 if flag_is_http_path else os.path.exists( path_file ) # check whether the file is downloadable or exists in the local file system
-
+            if is_remote_url( path_file ) :
+                if is_s3_url( path_file ) :
+                    return s3_exists( path_file ) # check whether s3 file exists
+                elif is_http_url( path_file ) :
+                    return http_response_code( path_file ) == 200 # check whether http file exists
+            else :
+                return filesystem_operations( 'exists', path_file ) # check whether the file exists in the local file system
+                       
         path_file = None # initialize the output value
         name_model_file = __get_name_file_of_a_model( name_model, type_model ) # get the name of the file containing the model
 
@@ -9835,7 +9998,7 @@ class RamData( ) :
         type_model : Literal[ 'ipca', 'pumap', 'hdbscan', 'knn_classifier', 'knn_embedder', 'knngraph', 'knnindex' ], 
         index_component : Union[ int, None ] = None,
     ) :
-        """ # 2022-09-18 16:53:53 
+        """ # 2022-12-02 19:09:43 
         load model from the current RamData
 
         name_model : str # the name of the model
@@ -9859,26 +10022,29 @@ class RamData( ) :
 
         # define a folder for storage of models
         path_folder_models = f"{self._path_folder_ramdata_modifiable}models/" # define a folder to save/load model
-        os.makedirs( path_folder_models, exist_ok = True )
+        filesystem_operations( 'mkdir', path_folder_models, exist_ok = True )
 
         # define internal functions
         def __search_and_download_model_file( name_model_file ) :
-            """ # 2022-08-05 22:36:37 
+            """ # 2022-12-02 19:09:39 
             check availability of models and download model file from the remote location where RamData is being hosted.
             """
             # define the paths of the model files
             path_file_dest = f"{path_folder_models}{name_model_file}" # local path
-            if os.path.exists( path_file_dest ) : # check whether the destination file already exists
+            if filesystem_operations( 'exists', path_file_dest ) : # check whether the destination file already exists
                 return 
             
             path_file_src = self.get_model_path( name_model, type_model, index_component = index_component )
             if path_file_src is None : # if source file is not available
                 return False 
             
-            if 'http' == path_file_src[ : 4 ] : # if the source file is hosted remotely (HTTP)
-                download_file( path_file_src, path_file_dest ) # download file
+            if is_remote_url( path_file_src ) :
+                if is_s3_url( path_file_src ) :
+                    s3_download_file( path_file_src, path_file_dest ) # download file from s3 object
+                elif is_http_url( path_file_src ) :
+                    http_download_file( path_file_src, path_file_dest ) # download file using HTTP
             else : # if the source file is available locally
-                shutil.copyfile( path_file_src, path_file_dest ) # or copy file
+                filesystem_operations( 'cp', path_file_src, path_file_dest ) # or copy file
         # load model
         if type_model in self._set_type_model_picklable : # handle picklable models
             # define path
@@ -9889,7 +10055,7 @@ class RamData( ) :
             __search_and_download_model_file( name_model_file )
 
             # exit if the file does not exists
-            if not os.path.exists( path_file_model ) :
+            if not filesystem_operations( 'exists', path_file_model ) :
                 return 
 
             model = bk.PICKLE_Read( path_file_model )
@@ -9905,11 +10071,11 @@ class RamData( ) :
             __search_and_download_model_file( name_model_file )
 
             # exit if the file does not exists
-            if not os.path.exists( path_file_model ) :
+            if not filesystem_operations( 'exists', path_file_model ) :
                 return 
 
             # extract tar.gz
-            if not os.path.exists( path_prefix_model ) : # if the model has not been extracted from the tar.gz archive
+            if not filesystem_operations( 'exists', path_prefix_model ) : # if the model has not been extracted from the tar.gz archive
                 tar_extract( path_file_model, path_folder_models ) # extract tar.gz file of pumap object
             model = pumap.load_ParametricUMAP( path_prefix_model ) # load pumap model
 
@@ -9928,11 +10094,11 @@ class RamData( ) :
             __search_and_download_model_file( name_model_file )
 
             # exit if the file does not exists
-            if not os.path.exists( path_file_model ) :
+            if not filesystem_operations( 'exists', path_file_model ) :
                 return 
 
             # extract tar.gz
-            if not os.path.exists( path_prefix_model ) : # if the model has not been extracted from the tar.gz archive
+            if not filesystem_operations( 'exists', path_prefix_model ) : # if the model has not been extracted from the tar.gz archive
                 tar_extract( path_file_model, path_folder_models ) # extract tar.gz file of pumap object
 
             model = bk.PICKLE_Read( f"{path_prefix_model}/metadata.pickle" ) # load metadata first
@@ -9958,7 +10124,7 @@ class RamData( ) :
         
         # define a folder for storage of models
         path_folder_models = f"{self._path_folder_ramdata_modifiable}models/" # define a folder to save/load model
-        os.makedirs( path_folder_models, exist_ok = True )
+        filesystem_operations( 'mkdir', path_folder_models, exist_ok = True )
         
         # save model
         if type_model in self._set_type_model_picklable : # handle picklable models
@@ -10021,7 +10187,7 @@ class RamData( ) :
         
         # define a folder for storage of models
         path_folder_models = f"{self._path_folder_ramdata_modifiable}models/" # define a folder to save/load model
-        os.makedirs( path_folder_models, exist_ok = True )
+        filesystem_operations( 'mkdir', path_folder_models, exist_ok = True )
         
         # save model
         if type_model in self._set_type_model_picklable : # handle picklable models 
@@ -10030,10 +10196,10 @@ class RamData( ) :
             path_prefix_model = f"{path_folder_models}{name_model}.{type_model}"
             path_file_model = path_prefix_model + '.tar.gz'
             # if an extracted folder exists, delete the folder
-            if os.path.exists( path_prefix_model ) :
-                shutil.rmtree( path_prefix_model )
+            if filesystem_operations( 'exists', path_prefix_model ) :
+                filesystem_operations( 'rm', path_prefix_model )
         int_file_size = os.path.getsize( path_file_model ) # retrieve file size of the saved model
-        os.remove( path_file_model )
+        filesystem_operations( 'rm', path_file_model )
         
         # update metadata
         del self._dict_metadata[ 'models' ][ type_model ][ name_model ] # delete model from the metadata
@@ -10196,7 +10362,7 @@ class RamData( ) :
             prepare data as a sparse matrix for the batch
             '''
             # retrieve fork-safe RAMtx
-            rtx_fork_safe = rtx.load_zarr_server( ) if rtx.contains_remote else rtx # load zarr_server (if RAMtx contains remote data source) to be thread-safe
+            rtx_fork_safe = rtx.get_fork_safe_version( ) if rtx.contains_remote else rtx # load zarr_server (if RAMtx contains remote data source) to be thread-safe
             
             while True :
                 batch = pipe_receiver_batch.recv( )
@@ -10341,7 +10507,7 @@ class RamData( ) :
             retrieve data and retrieve transformed PCA values for the batch
             '''
             # retrieve fork-safe RAMtx
-            rtx_fork_safe = rtx.load_zarr_server( ) if rtx.contains_remote else rtx # load zarr_server (if RAMtx contains remote data source) to be thread-safe
+            rtx_fork_safe = rtx.get_fork_safe_version( ) if rtx.contains_remote else rtx # load zarr_server (if RAMtx contains remote data source) to be thread-safe
             
             while True :
                 batch = pipe_receiver_batch.recv( )

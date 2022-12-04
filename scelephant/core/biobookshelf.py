@@ -3,12 +3,12 @@ import pandas as pd
 import os
 from io import StringIO # for converting a string to a file-like stream
 import time
-import multiprocessing as mp
-import collections
 import uuid 
 import glob
 import datetime
 import pickle
+import matplotlib.pyplot as plt
+from uuid import uuid4
 
 def PICKLE_Write( path_file, data_object ) :
     ''' write binary pickle file of a given data_object '''
@@ -26,6 +26,51 @@ def TIME_GET_timestamp( flag_human_readable = False ) :
     cur_time = datetime.datetime.now( ) # retrieve current time
     return cur_time.strftime( "%Y/%m/%d %H:%M" ) if flag_human_readable else cur_time.strftime("%Y%m%d_%H%M")
 
+def To_window_path_compatible_str( a_string ) :
+    '''
+        replace following characters to '_' so that a given string will be compatible for Window file system :
+    : (colon)    " (double quote)    / (forward slash)    \ (backslash)    | (vertical bar or pipe)    ? (question mark)    * (asterisk)
+        Also, replace new line character into '_'
+    '''
+    return a_string.replace( '\n', '_' ).replace( ':', '_' ).replace( '"', '_' ).replace( '/', '_' ).replace( '\\', '_' ).replace( '|', '_' ).replace( '?', '_' ).replace( '*', '_' )
+
+def MATPLOTLIB_savefig( title, dpi = 200, folder = None, close_fig = True, format = '.png' ) :
+    if '.' not in format :
+        format = '.' + format
+    plt.savefig( folder + To_window_path_compatible_str( title ) + format, dpi = 200, bbox_inches = 'tight' ) # prevent x or y labels from cutting off
+    if close_fig :
+        plt.close( )
+
+def MATPLOTLIB_basic_configuration( font_size = None, font_size_axes_title = None, font_size_axes_label = None, font_size_xtick = None, font_size_ytick = None, font_size_legend = None, font_size_figure_title = None, x_label = None, y_label = None, title = None, x_scale = None, y_scale = None, show_grid = True, show_legend = False, savefig = False, y_lim = None, x_lim = None, save_file_name = None, folder = None, format = '.png', show_colorbar = False ) :
+    ''' A basic function for confiquring a matplotlib plot '''
+    # set font sizes
+    if font_size is not None : plt.rc( 'font', size = 20 ) # controls default text sizes
+    if font_size_axes_title is not None : plt.rc( 'axes', titlesize = 20 ) # fontsize of the axes title   
+    if font_size_axes_label is not None : plt.rc( 'axes', labelsize = 20 ) # fontsize of the x and y labels
+    if font_size_xtick is not None : plt.rc( 'xtick', labelsize = 20 ) # fontsize of the x tick labels  
+    if font_size_ytick is not None : plt.rc( 'ytick', labelsize = 20 ) # fontsize of the y tick labels  
+    if font_size_legend is not None : plt.rc( 'legend', fontsize = 20 ) # legend fontsize              
+    if font_size_figure_title is not None : plt.rc( 'figure', titlesize = 50 ) # fontsize of the figure title  
+    if x_label is not None : plt.xlabel( x_label )
+    if y_label is not None : plt.ylabel( y_label )
+    if title is not None : plt.title( title )
+    if x_scale is not None : plt.xscale( x_scale )
+    if y_scale is not None : plt.yscale( y_scale )
+    if x_lim is not None :
+        if isinstance( x_lim, ( tuple, list ) ) : plt.xlim( left = x_lim[ 0 ], right = x_lim[ 1 ] )
+        elif isinstance( x_lim, dict ) : plt.xlim( **x_lim )
+    if y_lim is not None :
+        if isinstance( y_lim, ( tuple, list ) ) : plt.ylim( bottom = y_lim[ 0 ], top = y_lim[ 1 ] )
+        elif isinstance( y_lim, dict ) : plt.ylim( **y_lim )
+    plt.grid( show_grid )
+    if show_legend : plt.legend( )
+    if savefig :
+        if save_file_name is None : # if 'save_file_name' is not given 
+            if title is None : title = 'Unnamed Plot_' + TIME_GET_timestamp( ) # if title is not given, put a default title to save a plot
+            MATPLOTLIB_savefig( title = title, folder = folder, format = format )
+        else : MATPLOTLIB_savefig( title = save_file_name, folder = folder, format = format )
+    if show_colorbar : plt.colorbar( )
+MPL_basic_configuration = MATPLOTLIB_basic_configuration
 
 class Map( object ):
     def __init__(self, dict_a2b ):
@@ -51,7 +96,44 @@ def DICTIONARY_Build_from_arr( arr, order_index_entry = True, index_start = 0 ) 
 
 def UUID( ) :
     ''' return a 128bit universal unique identifier '''
-    return uuid.uuid4( ).hex
+    return uuid4( ).hex
+
+def OS_Run( l_args, path_file_stdout = None, path_file_stderr = None, return_output = True, remove_default_output_files = True, stdout_binary = False ) :
+    """ # 2021-03-30 19:41:16 
+    Run a process and save stdout and stderr as a file.
+    
+    'return_output' : return the output as dictionary of strings
+    'remove_default_output_files' : remove default stdout and stderr files containing the output of the process when 'path_file_stdout' and 'path_file_stderr' were not given.
+    'stdout_binary' : set this flag to True if stdout is binary.
+    """
+    from subprocess import call as subprocess_call
+    
+    uuid_process = UUID( ) # set uuid of the process
+    # define default stdout and stdin files and set approproate flags
+    flag_path_file_stdout_was_given = path_file_stdout is not None
+    flag_path_file_stderr_was_given = path_file_stderr is not None
+    
+    # default stdout/stderr files will be written to the current working directory
+    path_cwd = os.getcwd( )
+    if not flag_path_file_stdout_was_given :
+        path_file_stdout = f'{path_cwd}/{uuid_process}.out.txt'
+    if not flag_path_file_stderr_was_given :
+        path_file_stderr = f'{path_cwd}/{uuid_process}.err.txt'
+    
+    with open( path_file_stdout, 'w+b' if stdout_binary else 'w+' ) as fout : # excute and read std output and std errors of a process
+        with open( path_file_stderr, 'w+' ) as ferr :
+            out = subprocess_call( l_args, stdout = fout, stderr = ferr )
+            fout.seek( 0 )
+            stdout = fout.read( )
+            ferr.seek( 0 ) 
+            stderr = ferr.read( )
+    # remove default output files
+    if not flag_path_file_stdout_was_given :
+        os.remove( path_file_stdout )
+    if not flag_path_file_stderr_was_given :
+        os.remove( path_file_stderr )
+            
+    return { 'stdout' : stdout, 'stderr' : stderr } if return_output else None
 
 def LIST_Split( l = None, n_split = 0, return_slice = False, flag_contiguous_chunk = False, arr_weight_for_load_balancing = None, return_split_arr_weight = False ) :
     """ # 2022-05-26 10:14:31 
@@ -261,6 +343,9 @@ def Multiprocessing_Batch_Generator_and_Workers( gen_batch, process_batch, post_
     'int_num_threads' : the number of threads(actually processes) including the main process. For example, when 'int_num_threads' is 3, 2 worker processes will be used. one thread is reserved for batch generation.
     'int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop' : number of seconds to wait for each loop before checking which running processes has been completed
     """
+    from collections import deque as collections_deque
+    from multiprocessing import Pipe, Process
+    
     def __batch_generating_worker( gen_batch, l_pipe_sender_input, l_pipe_receiver_output, pipe_sender_output_to_main_process ) :
         """ # 2022-09-06 15:16:29 
         define a worker for generating batch and distributing batches across the workers, receives results across the workers, and send result back to the main process
@@ -268,7 +353,7 @@ def Multiprocessing_Batch_Generator_and_Workers( gen_batch, process_batch, post_
         # hard coded setting
         int_max_num_batches_in_a_queue_for_each_worker = 2
         
-        q_batch = collections.deque( ) # initialize queue of batchs
+        q_batch = collections_deque( ) # initialize queue of batchs
         int_num_batch_processing_workers = len( l_pipe_sender_input )
         flag_batch_generation_completed = False # flag indicating whether generating batchs for the current input sam file was completed
         arr_num_batch_being_processed = np.zeros( int_num_batch_processing_workers, dtype = int ) # retrieve the number of batches currently being processed in each worker. if this number becomes 0, assumes the worker is available
@@ -310,12 +395,12 @@ def Multiprocessing_Batch_Generator_and_Workers( gen_batch, process_batch, post_
         
     int_num_batch_processing_workers = max( 1, int_num_threads - 2 ) # retrieve the number of workers for processing batches # minimum number of worker is 1
     # compose pipes
-    l_pipes_input = list( mp.Pipe( ) for i in range( int_num_batch_processing_workers ) )
-    l_pipes_output = list( mp.Pipe( ) for i in range( int_num_batch_processing_workers ) )
-    pipe_sender_output_to_main_process, pipe_receiver_output_to_main_process = mp.Pipe( )
+    l_pipes_input = list( Pipe( ) for i in range( int_num_batch_processing_workers ) )
+    l_pipes_output = list( Pipe( ) for i in range( int_num_batch_processing_workers ) )
+    pipe_sender_output_to_main_process, pipe_receiver_output_to_main_process = Pipe( )
     # compose workers
-    l_batch_processing_workers = list( mp.Process( target = process_batch, args = ( l_pipes_input[ i ][ 1 ], l_pipes_output[ i ][ 0 ] ) ) for i in range( int_num_batch_processing_workers ) ) # compose a list of batch processing workers
-    p_batch_generating_worker = mp.Process( target = __batch_generating_worker, args = ( gen_batch, list( s for s, r in l_pipes_input ), list( r for s, r in l_pipes_output ), pipe_sender_output_to_main_process ) )
+    l_batch_processing_workers = list( Process( target = process_batch, args = ( l_pipes_input[ i ][ 1 ], l_pipes_output[ i ][ 0 ] ) ) for i in range( int_num_batch_processing_workers ) ) # compose a list of batch processing workers
+    p_batch_generating_worker = Process( target = __batch_generating_worker, args = ( gen_batch, list( s for s, r in l_pipes_input ), list( r for s, r in l_pipes_output ), pipe_sender_output_to_main_process ) )
     # start workers
     for p in l_batch_processing_workers :
         p.start( )
@@ -340,6 +425,8 @@ def Multiprocessing( arr, Function, n_threads = 12, path_temp = '/tmp/', Functio
     'col_split_load' : a name of column or a list of column names (or integer index of column or list of integer indices of columns if 'arr' is not a dataframe) for grouping given inputs when spliting the inputs into 'n_threads' number of dataframes. Each unique tuple in the column(s) will be present in only one of split dataframes.
     'n_threads' : if 'n_threads' is 1, does not use multiprocessing module, but simply run the function with the given input. This behavior is for enabiling using functions running Multiprocessing in another function using Multiprocessing, since multiprocessing.Pool module does not allow nested pooling.
     """
+    from multiprocessing import Pool
+    
     if isinstance( arr, ( list ) ) : # if a list is given, convert the list into a numpy array
         arr = np.array( arr )
     str_uuid = UUID( ) # create a identifier for making temporary files
@@ -393,7 +480,7 @@ def Multiprocessing( arr, Function, n_threads = 12, path_temp = '/tmp/', Functio
                 l_path_file.append( path_file_temp )
 
     if n_threads > 1 :
-        with mp.Pool( n_threads ) as p : 
+        with Pool( n_threads ) as p : 
             l = p.starmap( Function, list( [ path_file ] + list( global_arguments ) for path_file in l_path_file ) ) # use multiple process to run the given function
     else :
         ''' if n_threads == 1, does not use multiprocessing module '''
