@@ -1,10 +1,10 @@
 # # %% CORE %% 
 # # import internal modules
-# from . import BA
-# from . import biobookshelf as bk
+from . import BA
+from . import biobookshelf as bk
 
-from biobookshelf import BA
-import biobookshelf as bk
+# from biobookshelf import BA
+# import biobookshelf as bk
 
 from typing import Union, List, Literal
 import os
@@ -45,7 +45,7 @@ logging.basicConfig( format = '[SC-Elephant] %(asctime)s - %(message)s', level =
 # define version
 _version_ = '0.0.9'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-12-02 00:14:13 '
+_last_modified_time_ = '2022-12-05 13:24:48'
 
 """ # 2022-07-21 10:35:42  realease note
 
@@ -248,7 +248,21 @@ dependency on biobookshelf was dropped by migrating necessary functions to scele
 also, heavy packages (tensorflow, pynndescent, etc.) will not be loaded by default
 
 # 2022-12-03 11:42:43 
-RAMtx.survey_number_of_records_for_each_entry 
+an error in the RAMtx.survey_number_of_records_for_each_entry method was detected and corrected
+
+# 2022-12-05 13:25:20 
+support for Amazon S3 was added. currently adding ZDF metadata columns, deleting columns, updating metadata are supported and tested. supports for RamData.summarize and RamData.apply was added, too, but not yet tested.
+added methods in ZarrDataFrame to add and update 'dict_col_metadata_description' of the column metadata to annotate columns better
+
+# 2022-12-05 22:59:31 
+methods for file-system operations independent of the file system (local, Amazon S3 file system, or other file systems) were implemented.
+It appears Amazon S3 file system access using the S3FS package is not fork-safe. In order to access and modify files in the forked process, a FileSystemServer class was implemented. 
+    For more consistent interactions and API structures, ZarrServer class was also modified so that it can perform zarr operations in either a spawned process or the current process.
+
+# 2022-12-07 20:22:44 
+To read and write zarr meta information in forked processes, ZarrMetadataServer was implemented.
+RamData.apply support was added to Amazon S3 file system.
+RamData.rename_layer method was adeed
 
 ##### Future implementations #####
 # 2022-12-01 20:48:47 
@@ -2155,8 +2169,8 @@ def s3_rm( s3url, recursive = False, ** kwargs ) :
     fs = s3fs.S3FileSystem( )
     fs.rm( s3url, recursive = recursive, ** kwargs ) # delete files
     
-''' methods for handling file system '''
-def filesystem_operations( method : Literal[ 'exists', 'rm', 'glob', 'mkdir', 'mv', 'cp', 'isdir' ], path_src : str, path_dest : Union[ str, None ] = None, flag_recursive : bool = True, ** kwargs ) :
+''' method and class for handling file system '''
+def filesystem_operations( method : Literal[ 'exists', 'rm', 'glob', 'mkdir', 'mv', 'cp', 'isdir' ], path_src : str, path_dest : Union[ str, None ] = None, flag_recursive : bool = True, dict_kwargs_credentials_s3 : dict = dict( ), ** kwargs ) :
     """ # 2022-12-04 00:57:45 
     perform a file system operation (either Amazon S3 or local file system)
     
@@ -2170,36 +2184,48 @@ def filesystem_operations( method : Literal[ 'exists', 'rm', 'glob', 'mkdir', 'm
         'isdir', # check whether the given input is a file or directory
     ]
     
+    kwargs : 
+        exist_ok : for 'mkdir' operation
+        
+    dict_kwargs_credentials_s3 : dict = dict( ) # the credentials for the Amazon S3 file system as keyworded arguments
+    
     """
     if is_s3_url( path_src ) or is_s3_url( path_dest ) : # if at least one path is s3 locations
         # %% Amazon s3 file system %%
         # load the file system
         import s3fs
-        fs = s3fs.S3FileSystem( )
+        fs = s3fs.S3FileSystem( ** dict_kwargs_credentials_s3 )
         if method == 'exists' :
             return fs.exists( path_src, ** kwargs )
         elif method == 'rm' :
-            fs.rm( path_src, recursive = flag_recursive, ** kwargs ) # delete files
+            return fs.rm( path_src, recursive = flag_recursive, ** kwargs ) # delete files
         elif method == 'glob' :
             return list( 's3://' + e for e in fs.glob( path_src, ** kwargs ) ) # 's3://' prefix should be added
         elif method == 'mkdir' :
-            fs.makedirs( path_src, exist_ok = True, ** kwargs )
+            # use default 'exist_ok' value
+            if 'exist_ok' not in kwargs :
+                kwargs[ 'exist_ok' ] = True
+            return fs.makedirs( path_src, ** kwargs )
         elif method == 'mv' :
             if not fs.exists( path_dest, ** kwargs ) : # avoid overwriting of the existing file
-                fs.mv( path_src, path_dest, recursive = flag_recursive, ** kwargs )
+                return fs.mv( path_src, path_dest, recursive = flag_recursive, ** kwargs )
             else :
                 return 'destionation file already exists, exiting'
         elif method == 'cp' :
             if is_s3_url( path_src ) and is_s3_url( path_dest ) : # copy from s3 to s3
-                fs.copy( path_src, path_dest, recursive = flag_recursive, ** kwargs )
+                return fs.copy( path_src, path_dest, recursive = flag_recursive, ** kwargs )
             elif is_s3_url( path_src ) : # copy from s3 to local
-                fs.get( path_src, path_dest, recursive = flag_recursive, ** kwargs )
+                return fs.get( path_src, path_dest, recursive = flag_recursive, ** kwargs )
             elif is_s3_url( path_dest ) : # copy from local to s3
-                fs.put( path_src, path_dest, recursive = flag_recursive, ** kwargs )
+                return fs.put( path_src, path_dest, recursive = flag_recursive, ** kwargs )
         elif method == 'isdir' :
             return fs.isdir( path_src )
-    elif is_http_url( path_src ) : # for http, ignore the function call (not implemented)
-        return 'not implemented'
+    elif is_http_url( path_src ) : # for http
+        # %% HTTP server %%
+        if method == 'exists' :
+            return http_response_code( path_src ) == 200 # check whether http file (not tested for directory) exists 
+        else :
+            return 'not implemented'
     else :
         # %% local file system %%
         if method == 'exists' :
@@ -2212,7 +2238,10 @@ def filesystem_operations( method : Literal[ 'exists', 'rm', 'glob', 'mkdir', 'm
         elif method == 'glob' :
             return glob.glob( path_src )
         elif method == 'mkdir' :
-            os.makedirs( path_src, exist_ok = True )
+            # use default 'exist_ok' value
+            if 'exist_ok' not in kwargs :
+                kwargs[ 'exist_ok' ] = True
+            os.makedirs( path_src, exist_ok = kwargs[ 'exist_ok' ] )
         elif method == 'mv' :
             shutil.move( path_src, path_dest )
         elif method == 'cp' :
@@ -2222,7 +2251,163 @@ def filesystem_operations( method : Literal[ 'exists', 'rm', 'glob', 'mkdir', 'm
                 shutil.copyfile( path_src, path_dest )
         elif method == 'isdir' :
             return os.path.isdir( path_src )
-            
+def filesystem_server( pipe_receiver_input, pipe_sender_output, dict_kwargs_credentials_s3 : dict = dict( ) ) :
+    """ # 2022-12-05 18:49:06 
+    This function is for serving file-system operations in a spawned process for fork-safe operation
+    
+    dict_kwargs_credentials_s3 : dict = dict( ) # the credentials for the Amazon S3 file system as keyworded arguments
+    """
+    def __filesystem_operations( method : Literal[ 'exists', 'rm', 'glob', 'mkdir', 'mv', 'cp', 'isdir' ], path_src : str, path_dest : Union[ str, None ] = None, flag_recursive : bool = True, dict_kwargs_credentials_s3 : dict = dict( ), ** kwargs ) :
+        """ # 2022-12-04 00:57:45 
+        perform a file system operation (either Amazon S3 or local file system)
+
+        method : Literal[ 
+            'exists', # check whether a file or folder exists, given through 'path_src' arguments
+            'rm', # remove file or folder, given through 'path_src' arguments
+            'glob', # retrieve path of files matching the glob pattern, given through 'path_src' arguments
+            'mkdir', # create a directory, given through 'path_src' arguments
+            'mv', # move file or folder , given through 'path_src' and 'path_dest' arguments
+            'cp', # copy file or folder , given through 'path_src' and 'path_dest' arguments
+            'isdir', # check whether the given input is a file or directory
+        ]
+
+        kwargs : 
+            exist_ok : for 'mkdir' operation
+
+        dict_kwargs_credentials_s3 : dict = dict( ) # the credentials for the Amazon S3 file system as keyworded arguments
+
+        """
+        if is_s3_url( path_src ) or is_s3_url( path_dest ) : # if at least one path is s3 locations
+            # %% Amazon s3 file system %%
+            # load the file system
+            import s3fs
+            fs = s3fs.S3FileSystem( ** dict_kwargs_credentials_s3 )
+            if method == 'exists' :
+                return fs.exists( path_src, ** kwargs )
+            elif method == 'rm' :
+                return fs.rm( path_src, recursive = flag_recursive, ** kwargs ) # delete files
+            elif method == 'glob' :
+                return list( 's3://' + e for e in fs.glob( path_src, ** kwargs ) ) # 's3://' prefix should be added
+            elif method == 'mkdir' :
+                # use default 'exist_ok' value
+                if 'exist_ok' not in kwargs :
+                    kwargs[ 'exist_ok' ] = True
+                return fs.makedirs( path_src, ** kwargs )
+            elif method == 'mv' :
+                if not fs.exists( path_dest, ** kwargs ) : # avoid overwriting of the existing file
+                    return fs.mv( path_src, path_dest, recursive = flag_recursive, ** kwargs )
+                else :
+                    return 'destionation file already exists, exiting'
+            elif method == 'cp' :
+                if is_s3_url( path_src ) and is_s3_url( path_dest ) : # copy from s3 to s3
+                    return fs.copy( path_src, path_dest, recursive = flag_recursive, ** kwargs )
+                elif is_s3_url( path_src ) : # copy from s3 to local
+                    return fs.get( path_src, path_dest, recursive = flag_recursive, ** kwargs )
+                elif is_s3_url( path_dest ) : # copy from local to s3
+                    return fs.put( path_src, path_dest, recursive = flag_recursive, ** kwargs )
+            elif method == 'isdir' :
+                return fs.isdir( path_src )
+        elif is_http_url( path_src ) : # for http
+            # %% HTTP server %%
+            if method == 'exists' :
+                return http_response_code( path_src ) == 200 # check whether http file (not tested for directory) exists 
+            else :
+                return 'not implemented'
+        else :
+            # %% local file system %%
+            if method == 'exists' :
+                return os.path.exists( path_src )
+            elif method == 'rm' :
+                if flag_recursive and os.path.isdir( path_src ) : # when the recursive option is active
+                    shutil.rmtree( path_src )
+                else :
+                    os.remove( path_src )
+            elif method == 'glob' :
+                return glob.glob( path_src )
+            elif method == 'mkdir' :
+                # use default 'exist_ok' value
+                if 'exist_ok' not in kwargs :
+                    kwargs[ 'exist_ok' ] = True
+                os.makedirs( path_src, exist_ok = kwargs[ 'exist_ok' ] )
+            elif method == 'mv' :
+                shutil.move( path_src, path_dest )
+            elif method == 'cp' :
+                if flag_recursive and os.path.isdir( path_src ) : # when the recursive option is active
+                    shutil.copytree( path_src, path_dest )
+                else :
+                    shutil.copyfile( path_src, path_dest )
+            elif method == 'isdir' :
+                return os.path.isdir( path_src )
+    while True :
+        e = pipe_receiver_input.recv( )
+        if e is None : # exit if None is received
+            break
+        args, kwargs = e # parse input
+        pipe_sender_output.send( __filesystem_operations( * args, ** kwargs ) ) # return result
+class FileSystemServer( ) :
+    """ # 2022-12-05 18:49:02 
+    This class is for serving file-system operations ('filesystem_operations' function) in a spawned process or the current process for fork-safe operation
+    
+    dict_kwargs_credentials_s3 : dict = dict( ) # the credentials for the Amazon S3 file system as keyworded arguments
+    
+    flag_spawn : bool = True # if True, spawn a new process for file system operations. if False, perform file system operations in the current process. 
+        (both are blocking and synchronous. the difference is that file system operations that are not fork-safe can be performed in forked process by spawning a new process)
+    """
+    def __init__( self, flag_spawn : bool = True, dict_kwargs_credentials_s3 : dict = dict( ) ) :
+        """ # 2022-12-05 18:48:59 
+        """
+        # set read-only attributes
+        self._flag_spawn = True # indicate that a process has been spawned
+        
+        if self.flag_spawn :
+            # %% PROCESS SPAWNING %%
+            # create pipes for interactions
+            mpsp = mp.get_context( 'spawn' )
+            pipe_sender_input, pipe_receiver_input  = mpsp.Pipe( )
+            pipe_sender_output, pipe_receiver_output = mpsp.Pipe( )
+
+            self._pipe_sender_input = pipe_sender_input
+            self._pipe_receiver_output = pipe_receiver_output
+
+            # start the process for file-system operations
+            p = mpsp.Process( target = filesystem_server, args = ( pipe_receiver_input, pipe_sender_output, dict_kwargs_credentials_s3 ) )
+            p.start( )
+            self._p = p
+    @property
+    def flag_spawn( self ) :
+        """ # 2022-12-05 22:26:33 
+        return a flag indicating whether a process has been spawned and interacting with the current object or not.
+        """
+        return self._flag_spawn
+    def filesystem_operations( self, * args, ** kwargs ) :
+        """ # 2022-12-05 22:34:49 
+        a wrapper of 'filesystem_operations' function
+        """
+        if self.flag_spawn :
+            # %% PROCESS SPAWNING %%
+            self._pipe_sender_input.send( ( args, kwargs ) ) # send input
+            return self._pipe_receiver_output.recv( ) # retrieve result and return
+        else :
+            # run file system operations in the current process
+            return filesystem_operations( * args, ** kwargs )
+    def terminate( self ) :
+        """ # 2022-09-06 23:16:22 
+        terminate the server
+        """
+        if self.flag_spawn :
+            # %% PROCESS SPAWNING %%
+            self._pipe_sender_input.send( None )
+            self._p.join( ) # wait until the process join the main process
+    def __enter__( self ) :
+        """ # 2022-12-08 02:00:08 
+        """
+        return self
+    def __exit__( self ) :
+        """ # 2022-12-08 02:00:08 
+        terminate the spawned process when exiting the context
+        """
+        self.terminate( )
+        
 ''' memory-efficient methods for creating RAMtx/RamData object '''
 # latest 2022-07-28 11:31:12 
 # implementation using pipe (~3 times more efficient)
@@ -3187,15 +3372,30 @@ def sort_mtx_10x( path_folder_mtx_input : str, path_folder_mtx_output : str, fla
     sort_mtx( f"{path_folder_mtx_input}matrix.mtx.gz", path_file_gzip_sorted = f"{path_folder_mtx_output}matrix.mtx.gz", flag_mtx_sorted_by_id_feature = flag_mtx_sorted_by_id_feature, ** kwargs )
 
 ''' utility functions for handling zarr '''
-def zarr_exists( path_folder_zarr ) :
+def zarr_exists( path_folder_zarr, filesystemserver : Union[ None, FileSystemServer ] = None ) :
     """ # 2022-07-20 01:06:09 
-    check whether the given zarr object path exists
+    check whether the given zarr object path exists.
+    
+    filesystemserver
     """
-    try : 
-        zarr.open( path_folder_zarr, 'r' )
-        flag_zarr_exists = True
-    except :
-        flag_zarr_exists = False
+    if filesystemserver is not None and isinstance( filesystemserver, FileSystemServer ) :
+        # if a filesystemserver has been given, use the FileSystemServer object to check whether a zarr object exist in the given directory
+        fs = filesystemserver
+        # check whether a zarr group exists. if a zarr group exists, return the result (True)
+        flag_zarr_group_exists = fs.filesystem_operations( 'exists', f"{path_folder_zarr}.zgroup" )
+        if flag_zarr_group_exists :
+            return True
+        # check whether a zarr array exists. if a zarr array exists, return the result (True)
+        flag_zarr_array_exists = fs.filesystem_operations( 'exists', f"{path_folder_zarr}.zarray" )
+        return flag_zarr_array_exists
+    else :
+        # when file system server is not available, use the Zarr module as a fall back
+        import zarr
+        try : 
+            zarr.open( path_folder_zarr, 'r' )
+            flag_zarr_exists = True
+        except :
+            flag_zarr_exists = False
     return flag_zarr_exists
 def zarr_copy( path_folder_zarr_source, path_folder_zarr_sink, int_num_chunks_per_batch = 1000 ) :
     """ # 2022-07-22 01:45:17 
@@ -3467,92 +3667,323 @@ class ShelveContainer( ) :
         return f"<shelve-backed namespace: {self.keys}>"
 
 ''' a class for serving zarr object from remote source in multiple forked processes '''
-def zarr_object_server( path_folder_zarr, pipe_receiver_input, pipe_sender_output, mode = 'r', shape = None, chunks = None, dtype = np.int32, fill_value = 0 ) :
-    """ # 2022-09-06 22:54:32 
+def zarr_object_server( path_folder_zarr : str, pipe_receiver_input, pipe_sender_output, mode : str = 'r', shape = None, chunks = None, dtype = np.int32, fill_value = 0, path_process_synchronizer : Union[ str, None ] = None ) :
+    """ # 2022-12-07 00:32:22 
     open a zarr object and serve various operations
     
     'mode' : zarr object mode
     shape = None, chunks = None, dtype = None, fill_value = None # arguments for initializing the output zarr object when mode = 'w' and the output zarr object does not exist
+    path_process_synchronizer : Union[ str, None ] = None # path to the process synchronizer. if None is given, does not use any synchronizer
     """
     # open a zarr object
+    ps_za = None if path_process_synchronizer is None else zarr.ProcessSynchronizer( path_process_synchronizer ) # initialize process synchronizer (likely based on a local file system)
     if mode == 'w' : # create a new zarr object
-        za = zarr.open( path_folder_zarr, mode, shape = shape, chunks = chunks, dtype = dtype, fill_value = fill_value )
+        za = zarr.open( path_folder_zarr, mode, shape = shape, chunks = chunks, dtype = dtype, fill_value = fill_value, synchronizer = ps_za )
     else : # use existing zarr object
-        za = zarr.open( path_folder_zarr, mode )
+        za = zarr.open( path_folder_zarr, mode, synchronizer = ps_za )
     pipe_sender_output.send( ( za.shape, za.chunks, za.dtype, za.fill_value ) ) # send basic information about the zarr object
     
     while True :
         e = pipe_receiver_input.recv( )
         if e is None : # exit if None is received
             break
-        name_func, args, kwargs = e # parse input
-        pipe_sender_output.send( getattr( za, name_func )( * args, ** kwargs ) ) # return result
+        name_func, args, kwargs = e # parse the input
+        if name_func == '__getitem__' :
+            pipe_sender_output.send( getattr( za, name_func )( args ) ) # perform the '__getitem__' operation
+        elif name_func == '__setitem__' :
+            pipe_sender_output.send( getattr( za, name_func )( args, kwargs ) ) # perform the '__setitem__' operation # for '__setitem__' operation, 'kwargs' represents 'values'
+        else :
+            pipe_sender_output.send( getattr( za, name_func )( * args, ** kwargs ) ) # perform other operations, and return the result
 class ZarrServer( ) :
-    """ # 2022-09-06 21:53:54 
-    This class is for serving zarr object in a spawned process for thread-safe operation
+    """ # 2022-12-06 02:03:25 
+    This class is for serving zarr object in a spawned process or the current process for thread-safe operation.
+    API functions calls mimic those of a zarr object for seamless replacement of a zarr object
     
-    'path_folder_zarr' : a path to a (remote) zarr object
-    mode = 'r' # mode
-    """
-    def __init__( self, path_folder_zarr, mode = 'r', shape = None, chunks = None, dtype = np.int32, fill_value = 0 ) :
-        """ # 2022-09-06 22:47:31 
+    path_folder_zarr : str # a path to a (remote) zarr object
+    mode : str = 'r' # mode
+    
+    flag_spawn : bool = True # if True, spawn a new process for zarr operations. if False, perform zarr operations in the current process. 
+        (both are blocking and synchronous. the difference is that zarr operations that are not fork-safe can be performed in forked process by spawning a new process and interacting with the process using pipes)
+        
+    path_process_synchronizer : Union[ str, None ] = None # path to the process synchronizer. if None is given, does not use any synchronizer
+
+    """ 
+    def __init__( self, path_folder_zarr, mode = 'r', shape = None, chunks = None, dtype = np.int32, fill_value = 0, flag_spawn : bool = True, path_process_synchronizer : Union[ str, None ] = None ) :
+        """ # 2022-12-05 22:43:32 
         """
+        # set read-only attributes
+        self._flag_spawn = flag_spawn # indicate that a process has been spawned
+        
         # set attributes
         self.is_zarr_server = True # indicate that current object is ZarrServer
         self._mode = mode
         self._path_folder_zarr = path_folder_zarr
+        self._path_process_synchronizer = path_process_synchronizer
         
-        # create pipes for interactions
-        mpsp = mp.get_context( 'spawn' )
-        pipe_sender_input, pipe_receiver_input  = mpsp.Pipe( )
-        pipe_sender_output, pipe_receiver_output = mpsp.Pipe( )
-        
-        self._pipe_sender_input = pipe_sender_input
-        self._pipe_receiver_output = pipe_receiver_output
-        
-        # start the process hosting a zarr object
-        p = mpsp.Process( target = zarr_object_server, args = ( path_folder_zarr, pipe_receiver_input, pipe_sender_output, mode, shape, chunks, dtype, fill_value ) )
-        p.start( )
-        self._p = p
-        
-        # retrieve attributes of a zarr object
-        self.shape, self.chunks, self.dtype, self.fill_value = self._pipe_receiver_output.recv( ) # set attributes
+        if self.flag_spawn :
+            # %% PROCESS SPAWNING %%
+            # create pipes for interactions
+            mpsp = mp.get_context( 'spawn' )
+            pipe_sender_input, pipe_receiver_input  = mpsp.Pipe( )
+            pipe_sender_output, pipe_receiver_output = mpsp.Pipe( )
+
+            self._pipe_sender_input = pipe_sender_input
+            self._pipe_receiver_output = pipe_receiver_output
+
+            # start the process hosting a zarr object
+            p = mpsp.Process( target = zarr_object_server, args = ( path_folder_zarr, pipe_receiver_input, pipe_sender_output, mode, shape, chunks, dtype, fill_value, path_process_synchronizer ) )
+            p.start( )
+            self._p = p
+
+            # retrieve attributes of a zarr object
+            self.shape, self.chunks, self.dtype, self.fill_value = self._pipe_receiver_output.recv( ) # set attributes
+        else :
+            # open a zarr object
+            if mode == 'w' : # create a new zarr object
+                za = zarr.open( path_folder_zarr, mode, shape = shape, chunks = chunks, dtype = dtype, fill_value = fill_value )
+            else : # use existing zarr object
+                za = zarr.open( path_folder_zarr, mode )
+            self._za = za # set the zarr object as an attribute
+            # retrieve attributes of a zarr object
+            self.shape, self.chunks, self.dtype, self.fill_value = self._za.shape, self._za.chunks, self._za.dtype, self._za.fill_value
+    @property
+    def flag_spawn( self ) :
+        """ # 2022-12-05 22:26:33 
+        return a flag indicating whether a process has been spawned and interacting with the current object or not.
+        """
+        return self._flag_spawn
+    @property
+    def path_process_synchronizer( self ) :
+        """ # 2022-12-07 00:19:29 
+        return a path of the folder used for process synchronization
+        """
+        return self._path_process_synchronizer
     def get_coordinate_selection( self, * args, ** kwargs ) :
-        self._pipe_sender_input.send( ( 'get_coordinate_selection', args, kwargs ) ) # send input
-        return self._pipe_receiver_output.recv( ) # retrieve result and return
+        """ # 2022-12-05 22:55:58 
+        a (possibly) fork-safe wrapper of the 'get_coordinate_selection' zarr operation using a spawned process.
+        """
+        if self.flag_spawn :
+            # %% PROCESS SPAWNING %%
+            self._pipe_sender_input.send( ( 'get_coordinate_selection', args, kwargs ) ) # send input
+            return self._pipe_receiver_output.recv( ) # retrieve result and return
+        else :
+            # run a zarr operation in the current process
+            return self._za.get_coordinate_selection( * args, ** kwargs )
     def get_basic_selection( self, * args, ** kwargs ) :
-        self._pipe_sender_input.send( ( 'get_basic_selection', args, kwargs ) ) # send input
-        return self._pipe_receiver_output.recv( ) # retrieve result and return
+        """ # 2022-12-05 22:55:58 
+        a (possibly) fork-safe wrapper of the 'get_basic_selection' zarr operation using a spawned process.
+        """
+        if self.flag_spawn :
+            # %% PROCESS SPAWNING %%
+            self._pipe_sender_input.send( ( 'get_basic_selection', args, kwargs ) ) # send input
+            return self._pipe_receiver_output.recv( ) # retrieve result and return
+        else :
+            # run a zarr operation in the current process
+            return self._za.get_basic_selection( * args, ** kwargs )
     def get_orthogonal_selection( self, * args, ** kwargs ) :
-        self._pipe_sender_input.send( ( 'get_orthogonal_selection', args, kwargs ) ) # send input
-        return self._pipe_receiver_output.recv( ) # retrieve result and return
+        """ # 2022-12-05 22:55:58 
+        a (possibly) fork-safe wrapper of the 'get_orthogonal_selection' zarr operation using a spawned process.
+        """
+        if self.flag_spawn :
+            # %% PROCESS SPAWNING %%
+            self._pipe_sender_input.send( ( 'get_orthogonal_selection', args, kwargs ) ) # send input
+            return self._pipe_receiver_output.recv( ) # retrieve result and return
+        else :
+            # run a zarr operation in the current process
+            return self._za.get_orthogonal_selection( * args, ** kwargs )
     def get_mask_selection( self, * args, ** kwargs ) :
-        self._pipe_sender_input.send( ( 'get_mask_selection', args, kwargs ) ) # send input
-        return self._pipe_receiver_output.recv( ) # retrieve result and return
+        """ # 2022-12-05 22:55:58 
+        a (possibly) fork-safe wrapper of the 'get_mask_selection' zarr operation using a spawned process.
+        """
+        if self.flag_spawn :
+            # %% PROCESS SPAWNING %%
+            self._pipe_sender_input.send( ( 'get_mask_selection', args, kwargs ) ) # send input
+            return self._pipe_receiver_output.recv( ) # retrieve result and return
+        else :
+            # run a zarr operation in the current process
+            return self._za.get_mask_selection( * args, ** kwargs )
     def set_coordinate_selection( self, * args, ** kwargs ) :
-        self._pipe_sender_input.send( ( 'set_coordinate_selection', args, kwargs ) ) # send input
-        return self._pipe_receiver_output.recv( ) # retrieve result and return
+        """ # 2022-12-05 22:55:58 
+        a (possibly) fork-safe wrapper of the 'set_coordinate_selection' zarr operation using a spawned process.
+        """
+        if self.flag_spawn :
+            # %% PROCESS SPAWNING %%
+            self._pipe_sender_input.send( ( 'set_coordinate_selection', args, kwargs ) ) # send input
+            return self._pipe_receiver_output.recv( ) # retrieve result and return
+        else :
+            # run a zarr operation in the current process
+            return self._za.set_coordinate_selection( * args, ** kwargs )
     def set_basic_selection( self, * args, ** kwargs ) :
-        self._pipe_sender_input.send( ( 'set_basic_selection', args, kwargs ) ) # send input
-        return self._pipe_receiver_output.recv( ) # retrieve result and return
+        """ # 2022-12-05 22:55:58 
+        a (possibly) fork-safe wrapper of the 'set_basic_selection' zarr operation using a spawned process.
+        """
+        if self.flag_spawn :
+            # %% PROCESS SPAWNING %%
+            self._pipe_sender_input.send( ( 'set_basic_selection', args, kwargs ) ) # send input
+            return self._pipe_receiver_output.recv( ) # retrieve result and return
+        else :
+            # run a zarr operation in the current process
+            return self._za.set_basic_selection( * args, ** kwargs )
     def set_orthogonal_selection( self, * args, ** kwargs ) :
-        self._pipe_sender_input.send( ( 'set_orthogonal_selection', args, kwargs ) ) # send input
-        return self._pipe_receiver_output.recv( ) # retrieve result and return
+        """ # 2022-12-05 22:55:58 
+        a (possibly) fork-safe wrapper of the 'set_orthogonal_selection' zarr operation using a spawned process.
+        """
+        if self.flag_spawn :
+            # %% PROCESS SPAWNING %%
+            self._pipe_sender_input.send( ( 'set_orthogonal_selection', args, kwargs ) ) # send input
+            return self._pipe_receiver_output.recv( ) # retrieve result and return
+        else :
+            # run a zarr operation in the current process
+            return self._za.set_orthogonal_selection( * args, ** kwargs )
     def set_mask_selection( self, * args, ** kwargs ) :
-        self._pipe_sender_input.send( ( 'set_mask_selection', args, kwargs ) ) # send input
-        return self._pipe_receiver_output.recv( ) # retrieve result and return
+        """ # 2022-12-05 22:55:58 
+        a (possibly) fork-safe wrapper of the 'set_mask_selection' zarr operation using a spawned process.
+        """
+        if self.flag_spawn :
+            # %% PROCESS SPAWNING %%
+            self._pipe_sender_input.send( ( 'set_mask_selection', args, kwargs ) ) # send input
+            return self._pipe_receiver_output.recv( ) # retrieve result and return
+        else :
+            # run a zarr operation in the current process
+            return self._za.set_mask_selection( * args, ** kwargs )
+    def resize( self, * args, ** kwargs ) :
+        """ # 2022-12-05 22:55:58 
+        a (possibly) fork-safe wrapper of the 'resize' zarr operation using a spawned process.
+        """
+        if self.flag_spawn :
+            # %% PROCESS SPAWNING %%
+            self._pipe_sender_input.send( ( 'resize', args, kwargs ) ) # send input
+            return self._pipe_receiver_output.recv( ) # retrieve result and return
+        else :
+            # run a zarr operation in the current process
+            return self._za.resize( * args, ** kwargs )
     def __getitem__( self, args ) :
-        if isinstance( args, slice ) : # if an input argument is a slice object
-            return self.get_orthogonal_selection( args )
+        """ # 2022-12-05 22:55:58 
+        a (possibly) fork-safe wrapper of the '__getitem__' zarr operation using a spawned process.
+        """
+        if self.flag_spawn :
+            # %% PROCESS SPAWNING %%
+            self._pipe_sender_input.send( ( '__getitem__', args, None ) ) # send input # no 'kwargs' arguments
+            return self._pipe_receiver_output.recv( ) # retrieve result and return
+        else :
+            return self._za.__getitem__( args )
     def __setitem__( self, args, values ) :
-        if isinstance( args, slice ) : # if an input argument is a slice object
-            return self.set_orthogonal_selection( * tuple( [ args, values ] ) )
+        """ # 2022-12-05 22:55:58 
+        a (possibly) fork-safe wrapper of the '__setitem__' zarr operation using a spawned process.
+        """
+        if self.flag_spawn :
+            # %% PROCESS SPAWNING %%
+            self._pipe_sender_input.send( ( '__setitem__', args, values ) ) # send input # put 'values' in the place for 'kwargs'
+            return self._pipe_receiver_output.recv( ) # retrieve result and return
+        else :
+            return self._za.__setitem__( args, values )
     def terminate( self ) :
         """ # 2022-09-06 23:16:22 
         terminate the server
         """
-        self._pipe_sender_input.send( None )
-        self._p.join( ) # wait until the process join the main process
+        if self.flag_spawn :
+            # %% PROCESS SPAWNING %%
+            self._pipe_sender_input.send( None )
+            self._p.join( ) # wait until the process join the main process
+    def __enter__( self ) :
+        """ # 2022-12-08 02:00:08 
+        """
+        return self
+    def __exit__( self ) :
+        """ # 2022-12-08 02:00:08 
+        terminate the spawned process when exiting the context
+        """
+        self.terminate( )
+def zarr_metadata_server( pipe_receiver_input, pipe_sender_output ) :
+    """ # 2022-12-07 18:19:13 
+    a function for getting and setting zarr object metadata dictionaries
+    """
+    import zarr
+    while True :
+        ins = pipe_receiver_input.recv( )
+        if ins is None : # exit if None is received
+            break
+        method, path_folder_zarr, key, value = ins # parse the input
+        
+        outs = None # set default output
+        if method == 'set_metadata' :
+            zarr.open( path_folder_zarr ).attrs[ key ] = value
+        elif method == 'get_metadata' :
+            outs = zarr.open( path_folder_zarr ).attrs[ key ]
+        pipe_sender_output.send( outs ) # return the result
+class ZarrMetadataServer( ) :
+    """ # 2022-12-07 18:57:38 
+    This class is for getting and setting zarr object metadata in a spawned process or the current process for thread-safe operation.
+    API functions calls mimic those of a zarr object for seamless replacement of a zarr object
+    
+    flag_spawn : bool = True # if True, spawn a new process for zarr operations. if False, perform zarr operations in the current process. 
+        (both are blocking and synchronous. the difference is that zarr operations that are not fork-safe can be performed in forked process by spawning a new process and interacting with the process using pipes)
+    """ 
+    def __init__( self, flag_spawn : bool = True ) :
+        """ # 2022-12-07 18:55:04 
+        """
+        # set read-only attributes
+        self._flag_spawn = flag_spawn # indicate that a process has been spawned
+        
+        if self.flag_spawn :
+            # %% PROCESS SPAWNING %%
+            # create pipes for interactions
+            mpsp = mp.get_context( 'spawn' )
+            pipe_sender_input, pipe_receiver_input  = mpsp.Pipe( )
+            pipe_sender_output, pipe_receiver_output = mpsp.Pipe( )
+
+            self._pipe_sender_input = pipe_sender_input
+            self._pipe_receiver_output = pipe_receiver_output
+
+            # start the process hosting a zarr object
+            p = mpsp.Process( target = zarr_metadata_server, args = ( pipe_receiver_input, pipe_sender_output ) )
+            p.start( )
+            self._p = p
+    @property
+    def flag_spawn( self ) :
+        """ # 2022-12-05 22:26:33 
+        return a flag indicating whether a process has been spawned and interacting with the current object or not.
+        """
+        return self._flag_spawn
+    def get_metadata( self, path_folder_zarr : str, key : str ) :
+        """ # 2022-12-07 18:59:43 
+        a (possibly) fork-safe method for getting zarr group metadata
+        """
+        if self.flag_spawn :
+            # %% PROCESS SPAWNING %%
+            self._pipe_sender_input.send( ( 'get_metadata', path_folder_zarr, key, None ) ) # send input
+            return self._pipe_receiver_output.recv( ) # retrieve result and return
+        else :
+            # run a zarr operation in the current process
+            return zarr.open( path_folder_zarr ).attrs[ key ]
+    def set_metadata( self, path_folder_zarr : str, key : str, value ) :
+        """ # 2022-12-07 18:59:43 
+        a (possibly) fork-safe method for setting zarr group metadata
+        """
+        if self.flag_spawn :
+            # %% PROCESS SPAWNING %%
+            self._pipe_sender_input.send( ( 'set_metadata', path_folder_zarr, key, value ) ) # send input
+            return self._pipe_receiver_output.recv( ) # retrieve result and return
+        else :
+            # run a zarr operation in the current process
+            zarr.open( path_folder_zarr ).attrs[ key ] = value
+    def terminate( self ) :
+        """ # 2022-09-06 23:16:22 
+        terminate the server
+        """
+        if self.flag_spawn :
+            # %% PROCESS SPAWNING %%
+            self._pipe_sender_input.send( None )
+            self._p.join( ) # wait until the process join the main process
+    def __enter__( self ) :
+        """ # 2022-12-08 02:00:08 
+        """
+        return self
+    def __exit__( self ) :
+        """ # 2022-12-08 02:00:08 
+        terminate the spawned process when exiting the context
+        """
+        self.terminate( )
 ''' a class for Zarr-based DataFrame object '''
 class ZarrDataFrame( ) :
     """ # 2022-11-14 23:49:26 
@@ -3912,7 +4343,7 @@ class ZarrDataFrame( ) :
                     for zdf in self._l_zdf :
                         zdf.filter = ba_filter[ int_pos : int_pos + zdf._n_rows_unfiltered ] # apply a subset of filter
                         int_pos += zdf._n_rows_unfiltered # update 'int_pos'
-    def get_column_metadata( self, name_col ) :
+    def get_column_metadata( self, name_col : str ) :
         """ # 2022-08-02 11:21:24 
         get metadata of a given column
         """
@@ -3925,6 +4356,48 @@ class ZarrDataFrame( ) :
             za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'r' ) # read data from the Zarr object
             dict_col_metadata = za.attrs[ 'dict_col_metadata' ] # retrieve metadata of the current column
             return dict_col_metadata
+    def get_column_metadata_description( self, name_col : str ) :
+        """ # 2022-12-05 12:00:53 
+        retrieve description metadata of a given column.
+        """
+        if name_col in self : # if the column exists in the current ZDF
+            return self.metadata[ 'columns' ][ name_col ] # return description metadata
+    def update_column_metadata_description( self, name_col : str, dict_col_metadata_description_to_be_updated : Union[ None, dict ] = None ) :
+        """ # 2022-12-05 11:59:50 
+        update description metadata of a given column.
+        
+        dict_col_metadata_description_to_be_updated : Union[ None, dict ] = None # description about the column to be updated. Set to None or an empty dictionary will not update the description metadata
+        
+        (internally, ZDF metadata and individual column metadata will be modified)
+        """
+        if name_col in self : # if the column exists in the current ZDF
+            if isinstance( dict_col_metadata_description_to_be_updated, dict ) : # if 'dict_col_metadata_description_to_be_updated' is a dictionary update the description metadata
+                # update 'dict_col_metadata_description'
+                dict_col_metadata_description = self.get_column_metadata_description( name_col )
+                if not isinstance( dict_col_metadata_description, None ) : # if 'dict_col_metadata_description' is not dictionary, initialize the new 'dict_col_metadata_description' dictionary
+                    dict_col_metadata_description = dict( )
+                dict_col_metadata_description.update( dict_col_metadata_description_to_be_updated ) # update the metadata of a ZDF
+                # set updated 'dict_col_metadata_description'
+                self.metadata[ 'columns' ][ name_col ] = dict_col_metadata_description # update the metadata of a ZDF
+                self._save_metadata_( ) # save metadata of the current ZDF object
+                dict_metadata = self.get_column_metadata( name_col ) # retrieve the column metadata
+                dict_metadata[ 'dict_col_metadata_description' ] = dict_col_metadata_description # set 'dict_col_metadata_description'
+                self._set_column_metadata( name_col, dict_metadata ) # save metadata to the storage
+    def set_column_metadata_description( self, name_col : str, dict_col_metadata_description : Union[ None, dict ] = None ) :
+        """ # 2022-12-05 12:08:35 
+        set description metadata of a given column
+        
+        dict_col_metadata_description_to_be_updated : Union[ None, dict ] = None # description about the column to be updated. Set to None or an empty dictionary to delete a description about the column
+        
+        (internally, ZDF metadata and individual column metadata will be modified)
+        """
+        if name_col in self : # if the column exists in the current ZDF
+            # set 'dict_col_metadata_description'
+            self.metadata[ 'columns' ][ name_col ] = dict_col_metadata_description # update the metadata of a ZDF
+            self._save_metadata_( ) # save metadata of the current ZDF object
+            dict_metadata = self.get_column_metadata( name_col ) # retrieve the column metadata
+            dict_metadata[ 'dict_col_metadata_description' ] = dict_col_metadata_description # set 'dict_col_metadata_description'
+            self._set_column_metadata( name_col, dict_metadata ) # save metadata to the storage
     def lazy_load( self, queries, flag_mode_write : bool = False, name_col_sink : Union[ str, None ] = None, path_column_sink : Union[ str, None ] = None, path_column_source : Union[ str, None ] = None, l_path_column_source : Union[ list, None ] = None, name_col_availability : Union[ None, str ] = None, flag_retrieve_from_all_interleaved_components : bool = False ) -> None :
         """ # 2022-09-16 16:18:36 
         perform lazy-loading of a given column using the column containing availability values.
@@ -4107,7 +4580,7 @@ class ZarrDataFrame( ) :
         else :
             # save metadata of availability column
             self._set_column_metadata( name_col_availability, dict_col_metadata_availbility ) # save metadata
-    def _set_column_metadata( self, name_col, dict_col_metadata ) :
+    def _set_column_metadata( self, name_col : str, dict_col_metadata : dict ) :
         """ # 2022-08-22 12:36:13 
         a semi-private method for setting metadata of a given column (metadata is supposed to be read-only)
         """
@@ -4119,7 +4592,7 @@ class ZarrDataFrame( ) :
             # read metadata
             za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'a' ) # read data from the Zarr object
             za.attrs[ 'dict_col_metadata' ] = dict_col_metadata # retrieve metadata of the current column
-    def _get_column_path( self, name_col ) :
+    def _get_column_path( self, name_col : str ) :
         """ # 2022-08-26 10:34:35 
         if 'name_col' column exists in the current ZDF object, return the path of the column. the columns in mask, or component ZarrDataFrame will be found and retrieved.
         
@@ -4190,7 +4663,7 @@ class ZarrDataFrame( ) :
 #         if self.verbose :
 #             logging.info( f'[ZarrDataFrame] a column for quering integer indices was written' )
         return self[ '__index__', queries ] # return integer indices of the queries
-    def initialize_column( self, name_col, dtype = np.float64, shape_not_primary_axis = ( ), chunks = ( ), categorical_values = None, fill_value = 0, dict_metadata_description : dict = dict( ), zdf_template = None, name_col_template : Union[ str, None ] = None, path_col_template : Union[ str, None ] = None ) : 
+    def initialize_column( self, name_col : str, dtype = np.float64, shape_not_primary_axis = ( ), chunks = ( ), categorical_values = None, fill_value = 0, dict_metadata_description : dict = dict( ), zdf_template = None, name_col_template : Union[ str, None ] = None, path_col_template : Union[ str, None ] = None ) : 
         """ # 2022-11-15 00:14:23 
         initialize columns with a given shape and given dtype
         'dtype' : initialize the column with this 'dtype'
@@ -4762,7 +5235,7 @@ class ZarrDataFrame( ) :
         if self._mask is not None : # if mask is available :
             columns = columns.union( set( self._mask._dict_metadata[ 'columns' ] ) ) # return the column names of the current ZDF and the mask ZDF
         return columns
-    def __contains__( self, name_col ) :
+    def __contains__( self, name_col : str ) :
         """ # 2022-08-25 17:33:22 
         check whether a column name exists in the given ZarrDataFrame
         """
@@ -4957,14 +5430,16 @@ class ZarrDataFrame( ) :
                 dict_data[ int_index_row ] = val
             del values
             self.dict[ name_col ] = dict_data # add column loaded as a dictionary to the cache    
-    def get_zarr( self, name_col : str, flag_return_as_zarr_server : Union[ None, bool ] = None ) :
-        """ # 2022-09-21 09:07:14 
-        get read-only zarr object of a column. return zarr-server (always read fork-safe, regardless of zarr implementation) if current zdf contains remote zdf component or current zdf is remotely located.
+    def get_zarr( self, name_col : str, flag_spawn : Union[ None, bool ] = None ) :
+        """ # 2022-12-05 23:45:38 
+        get read-only zarr object of a column. return zarr-server with a spawned process (always read fork-safe, regardless of zarr implementation) if current zdf contains remote zdf component or current zdf is remotely located.
         when zarr server is returned, the zarr server should be disabled before being garbage collected, or it will cause runtime error (due to an interrupted interprocess communication)
+        
+        flag_spawn : Union[ None, bool ] = None # use a spawned process for zarr operation. by default, use a spawned process for objects stored remotely.
         """
         # handle inputs
-        if flag_return_as_zarr_server is None :
-            flag_return_as_zarr_server = self.contains_remote # set default 'flag_return_as_zarr_server'. return zarr server if current zdf contains remote 
+        if flag_spawn is None :
+            flag_spawn = self.contains_remote # set default 'flag_spawn'. return zarr server if current zdf contains remote 
         
         # the column should exist
         if name_col not in self :
@@ -4976,13 +5451,13 @@ class ZarrDataFrame( ) :
             if name_col not in self._mask : # if the column is not available in the mask, copy the column from the source to the mask
                 zarr_copy( f"{self._path_folder_zdf}{name_col}/", f"{self._mask._path_folder_zdf}{name_col}/" ) # copy zarr object from the source to the mask
                 self._mask._add_column( name_col ) # manually add column label to the mask
-            return self._mask.get_zarr( name_col, flag_return_as_zarr_server = flag_return_as_zarr_server ) # return the result of the mask object
+            return self._mask.get_zarr( name_col, flag_spawn = flag_spawn ) # return the result of the mask object
                 
         # define path
         path_folder_zarr = f"{self._path_folder_zdf}{name_col}/"
         
-        # open zarr object or zarr server
-        za = ZarrServer( path_folder_zarr, 'r' ) if flag_return_as_zarr_server else zarr.open( path_folder_zarr, 'r', synchronizer = zarr.ThreadSynchronizer( ) )
+        # open a zarr server
+        za = ZarrServer( path_folder_zarr, 'r', flag_spawn = flag_spawn )
         return za # return zarr object
     def get_zarr_with_lock( self, name_col : str ) :
         """ # 2022-08-06 11:29:58 
@@ -6015,25 +6490,30 @@ class RamDataAxis( ) :
         """
         if name_col_filter in self.meta : # if a given column name exists in the current metadata ZarrDataFrame
             self.filter = self.meta[ name_col_filter, : ] # retrieve filter from the storage and apply the filter to the axis
-    def save_filter( self, name_col_filter : str ) :
-        """ # 2022-08-06 22:37:49 
+    def save_filter( self, name_col_filter : str, dict_col_metadata_description : Union[ None, dict ] = { 'intended_function' : 'filter' } ) :
+        """ # 2022-12-05 11:57:32 
         save current filter using the filter to the metadata with 'name_col_filter' column name. if a filter is not active, the metadata will not be updated.
         
         'name_col_filter' : name of the column of the metadata ZarrDataFrame that will contain the filter
+        'dict_col_metadata_description' : description about the column. Set to None to omit a description about the column
         """
         if name_col_filter is not None : # if a given filter name is valid
             self.meta[ name_col_filter, : ] = BA.to_array( self.ba_active_entries ) # save filter to the storage # when a filter is not active, save filter of all active entries of the RAMtx
-    def change_or_save_filter( self, name_col_filter : str ) :
-        """ # 2022-08-06 22:36:48 
+        # update description metadata for the column
+        if dict_col_metadata_description is not None : # if valid 'dict_col_metadata_description' has been given
+            self.meta.set_column_metadata_description( name_col_filter, dict_col_metadata_description ) # update description metadata for the column
+    def change_or_save_filter( self, name_col_filter : str, dict_col_metadata_description : Union[ None, dict ] = { 'intended_function' : 'filter' } ) :
+        """ # 2022-12-05 11:49:14 
         change filter to 'name_col_filter' if 'name_col_filter' exists in the metadata, or save the currently active entries (filter) to the metadata using the name 'name_col_filter'
         
         'name_col_filter' : name of the column of the metadata ZarrDataFrame that will contain the filter
+        'dict_col_metadata_description' : description about the column. Set to None to omit a description about the column
         """
         if name_col_filter is not None : # if valid 'name_col_filter' has been given
             if name_col_filter in self.meta : 
                 self.change_filter( name_col_filter ) # change filter to 'name_col_filter' if 'name_col_filter' exists in the metadata
             else :
-                self.save_filter( name_col_filter ) # save the currently active entries (filter) to the metadata using the name 'name_col_filter'
+                self.save_filter( name_col_filter, dict_col_metadata_description = dict_col_metadata_description ) # save the currently active entries (filter) to the metadata ZDF using the name 'name_col_filter'
     def subsample( self, float_prop_subsampling : float = 1 ) :
         """ # 2022-07-16 17:12:19 
         subsample active entries in the current filter (or all the active entries with valid data) using the proportion of subsampling ratio 'float_prop_subsampling'
@@ -6159,7 +6639,7 @@ class RamDataAxis( ) :
 ''' a class for RAMtx '''
 ''' a class for accessing Zarr-backed count matrix data (RAMtx, Random-Access matrix) '''
 class RAMtx( ) :
-    """ # 2022-10-20 01:19:18 
+    """ # 2022-12-05 23:57:27 
     This class represent a random-access mtx format for memory-efficient exploration of extremely large single-cell transcriptomics/genomics data.
     This class use a count matrix data stored in a random read-access compatible format, called RAMtx, enabling exploration of a count matrix with hundreds of millions cells with hundreds of millions of features.
     Also, the RAMtx format is supports multi-processing, and provide convenient interface for parallel processing of single-cell data
@@ -6191,8 +6671,8 @@ class RAMtx( ) :
     'path_folder_ramtx_mask' : a local (local file system) path to the mask of the RAMtx object that allows modifications to be written without modifying the source. if a valid local path to a mask is given, all modifications will be written to the mask
     'is_for_querying_features' : a flag for indicating whether the current RAMtx will be used for querying features. for sparse matrix, this attribute will be fixed. However, for dense matrix, this atrribute can be changed any time.
     'int_total_number_of_values_in_a_batch_for_dense_matrix' : the total number of values that will be loaded in dense format for each minibatch (subbatch) when retrieving sparse data from the dense matrix using multiple number of processes. this setting can be changed later
-    'rtx_template' : a RAMtx object to use as a template (copy arguments except for 'l_rtx', 'rtx_template', 'flag_use_zarr_server') 
-    'flag_use_zarr_server' : if True, use zarr server instead of zarr object to retrieve records. useful when a given zarr object is not fork-safe
+    'rtx_template' : a RAMtx object to use as a template (copy arguments except for 'l_rtx', 'rtx_template', 'flag_spawn') 
+    'flag_spawn' : if True, use zarr server with a spawned process to perform zarr operations. When multiprocessing using forked processes is used, zarr operations that are not fork-safe should be performed within a spawned process.
     
     === arguments for combined RAMtx === 
     'l_rtx' : list of component RAMtx object for the 'combined' mode. to disable 'combined' mode, set this argument to None
@@ -6205,7 +6685,7 @@ class RAMtx( ) :
     dict_index_mapping_from_combined_to_dest_component_ft : mapping dictionary-like object.
     dict_index_mapping_from_combined_to_dest_component_bc : mapping dictionary-like object.
     """
-    def __init__( self, path_folder_ramtx = None, l_rtx : Union[ list, tuple, None ] = None, dict_index_mapping_from_component_to_combined_bc : Union[ dict, None ] = None, dict_index_mapping_from_component_to_combined_ft : Union[ dict, None ] = None, dict_index_mapping_from_combined_to_component_bc : Union[ dict, None ] = None, dict_index_mapping_from_combined_to_component_ft : Union[ dict, None ] = None, ramdata = None, dtype_of_feature_and_barcode_indices = np.uint32, dtype_of_values = np.float64, int_num_cpus : int = 1, verbose : bool = False, flag_debugging : bool = False, mode : str = 'a', flag_is_read_only : bool = False, path_folder_ramtx_mask : Union[ str, None ] = None, is_for_querying_features : bool = True, int_total_number_of_values_in_a_batch_for_dense_matrix : int = 10000000, rtx_template = None, flag_use_zarr_server = False ) :
+    def __init__( self, path_folder_ramtx = None, l_rtx : Union[ list, tuple, None ] = None, dict_index_mapping_from_component_to_combined_bc : Union[ dict, None ] = None, dict_index_mapping_from_component_to_combined_ft : Union[ dict, None ] = None, dict_index_mapping_from_combined_to_component_bc : Union[ dict, None ] = None, dict_index_mapping_from_combined_to_component_ft : Union[ dict, None ] = None, ramdata = None, dtype_of_feature_and_barcode_indices = np.uint32, dtype_of_values = np.float64, int_num_cpus : int = 1, verbose : bool = False, flag_debugging : bool = False, mode : str = 'a', flag_is_read_only : bool = False, path_folder_ramtx_mask : Union[ str, None ] = None, is_for_querying_features : bool = True, int_total_number_of_values_in_a_batch_for_dense_matrix : int = 10000000, rtx_template = None, flag_spawn = False ) :
         """ # 2022-07-31 00:49:59 
         """
         if rtx_template is not None : # when template has been given, copy attributes and metadata
@@ -6227,6 +6707,9 @@ class RAMtx( ) :
             self._is_for_querying_features = rtx_template._is_for_querying_features
             self.int_total_number_of_values_in_a_batch_for_dense_matrix = rtx_template.int_total_number_of_values_in_a_batch_for_dense_matrix
             
+            # set read-only attributes
+            self._flag_spawn = flag_spawn
+            
             # set metadata (avoid further zarr operation)
             self._root = rtx_template._root
             self._dict_metadata = rtx_template._dict_metadata
@@ -6247,6 +6730,8 @@ class RAMtx( ) :
             self._path_folder_ramtx_mask = path_folder_ramtx_mask
             self.int_total_number_of_values_in_a_batch_for_dense_matrix = int_total_number_of_values_in_a_batch_for_dense_matrix
             self._l_rtx = l_rtx
+            # set read-only attributes
+            self._flag_spawn = flag_spawn
             # mapping dictionaries
             self._dict_index_mapping_from_component_to_combined_bc = dict_index_mapping_from_component_to_combined_bc
             self._dict_index_mapping_from_component_to_combined_ft = dict_index_mapping_from_component_to_combined_ft
@@ -6290,23 +6775,31 @@ class RAMtx( ) :
         self.ba_filter_features = self._ramdata.ft.filter if self._ramdata is not None else None
         self.ba_filter_barcodes = self._ramdata.bc.filter if self._ramdata is not None else None
 
-        # load zarr objects and settings required for RAMtx operations
+        # load zarr objects, a file system server, and settings required for RAMtx operations
         if not self.is_combined :
             # open zarr objects
             self._is_sparse = self.mode != 'dense' # retrieve a flag indicating whether ramtx is dense
             if self.is_sparse :
                 self._is_for_querying_features = self._dict_metadata[ 'flag_ramtx_sorted_by_id_feature' ] # for sparse matrix, this attribute is fixed
                 # open Zarr object containing matrix and matrix indices
-                self._za_mtx_index = ZarrServer( f'{self._path_folder_ramtx}matrix.index.zarr', 'r' ) if flag_use_zarr_server else zarr.open( f'{self._path_folder_ramtx}matrix.index.zarr', 'r', synchronizer = zarr.ThreadSynchronizer( ) )
-                self._za_mtx = ZarrServer( f'{self._path_folder_ramtx}matrix.zarr', 'r' ) if flag_use_zarr_server else zarr.open( f'{self._path_folder_ramtx}matrix.zarr', 'r', synchronizer = zarr.ThreadSynchronizer( ) )
+                self._za_mtx_index = ZarrServer( f'{self._path_folder_ramtx}matrix.index.zarr', 'r', flag_spawn = flag_spawn )
+                self._za_mtx = ZarrServer( f'{self._path_folder_ramtx}matrix.zarr', 'r', flag_spawn = flag_spawn )
             else : # dense matrix
                 self.is_for_querying_features = is_for_querying_features # set this attribute
-                self._za_mtx = ZarrServer( f'{self._path_folder_ramtx}matrix.zarr', 'r' ) if flag_use_zarr_server else zarr.open( f'{self._path_folder_ramtx}matrix.zarr', 'r', synchronizer = zarr.ThreadSynchronizer( ) )
+                self._za_mtx = ZarrServer( f'{self._path_folder_ramtx}matrix.zarr', 'r', flag_spawn = flag_spawn )
         else :
             # %% COMBINED %%
             self._is_sparse = None
             self._za_mtx = None
             self._is_for_querying_features = list( rtx for rtx in l_rtx if rtx is not None )[ 0 ].is_for_querying_features # use 'is_for_querying_features' of the first valid RAMtx component
+        # attach a file system server
+        self.fs = FileSystemServer( flag_spawn = flag_spawn )
+    @property
+    def flag_spawn( self ) :
+        """ # 2022-12-06 02:37:31 
+        return a flag indicating spawning should be used for operations that might not be fork-safe
+        """
+        return self._flag_spawn
     @property
     def contains_remote( self ) :
         """ # 2022-09-05 17:55:26 
@@ -6327,7 +6820,7 @@ class RAMtx( ) :
         """
         return is_remote_url( self._path_folder_ramtx )
     def get_fork_safe_version( self ) :
-        """ # 2022-09-06 23:38:07 
+        """ # 2022-12-05 23:57:20 
         return RAMtx object that are fork-safe.
         replace zarr objects with zarr_server objects if current RAMtx object is located remotely
         """
@@ -6335,18 +6828,20 @@ class RAMtx( ) :
         # for remote zarr object, load the zarr object using the ZarrServer to avoid fork-not-safe error
         if self.contains_remote :
             if not self.is_combined :
-                # for remote zarr object, load the zarr object using the ZarrServer to avoid fork-not-safe error
-                rtx_with_zarr_server = RAMtx( rtx_template = self, flag_use_zarr_server = True ) if self.is_remote else self
+                # for remote zarr object, load the zarr object in a spawned process using the ZarrServer to avoid fork-not-safe error
+                rtx_with_zarr_server = RAMtx( rtx_template = self, flag_spawn = True ) if self.is_remote else self
             else :
                 # load zarr server for each component RAMtx object
                 rtx_with_zarr_server = RAMtx( rtx_template = self, l_rtx = list( None if rtx is None else rtx.get_fork_safe_version( ) for rtx in self._l_rtx ) )
         return rtx_with_zarr_server
-    def destroy_zarr_server( self ) :
-        """ # 2022-09-07 02:33:48 
+    def terminate_spawned_processes( self ) :
+        """ # 2022-12-04 15:54:45 
         destroy zarr server objects if they exists in the current RAMtx
         """
+        # terminate the file system server
+        self.fs.terminate( )
         # for remote zarr object, load the zarr object using the ZarrServer to avoid fork-not-safe error
-        if not self.is_combined and self.is_remote  :
+        if not self.is_combined and self.is_remote : # if current RAMtx is remotely located
             if self.is_sparse :
                 # destroy Zarr object hosted in a spawned process
                 if hasattr( self._za_mtx_index, 'terminate' ) :
@@ -6356,11 +6851,22 @@ class RAMtx( ) :
             else : # dense matrix
                 if hasattr( self._za_mtx, 'terminate' ) :
                     self._za_mtx.terminate( )
-        else :
+        elif self.is_combined :
+            # %% COMBINED %%
             # destroy zarr server for each component RAMtx object
             for rtx in self._l_rtx :
                 if rtx is not None :
-                    rtx.destroy_zarr_server( )
+                    rtx.terminate_spawned_processes( )
+    def __enter__( self ) :
+        """ # 2022-12-08 02:00:08 
+        return a (copy of) RAMtx object that is safe to use in a forked process
+        """
+        return self
+    def __exit__( self ) :
+        """ # 2022-12-08 02:00:08 
+        return a (copy of) RAMtx object that is safe to use in a forked process
+        """
+        self.terminate( )
     def get_za( self ) :
         """ # 2022-09-05 11:11:05 
         get zarr objects for operating RAMtx matrix.  the primary function of this function is to retrieve a zarr objects hosted in a thread-safe spawned process when the source is remotely located (http)
@@ -6410,20 +6916,23 @@ class RAMtx( ) :
         """ # 2022-12-02 21:39:31 
         return a bitarray filter of the indexed axis where all the entries with valid count data is marked '1'
         """
+        # initialize 
+        flag_spawn = self.flag_spawn
+        
         # retrieve axis of current ramtx
         axis = 'features' if self.is_for_querying_features else 'barcodes'
         
         # skip if result is already available
         flag_available = False # initialize
         for path_folder in [ self._path_folder_ramtx, self._path_folder_ramtx_modifiable ] :
-            if path_folder is not None and zarr_exists( f'{path_folder}matrix.{axis}.active_entries.zarr/' ) :
+            if path_folder is not None and zarr_exists( f'{path_folder}matrix.{axis}.active_entries.zarr/', filesystemserver = self.fs ) : 
                 path_folder_zarr = f"{path_folder}matrix.{axis}.active_entries.zarr/" # define an existing zarr object path
                 flag_available = True
         if not flag_available and self._path_folder_ramtx_modifiable is not None : # if zarr object does not exists and modifiable ramtx path is available
             # try constructing the zarr object 
             path_folder_zarr = f"{self._path_folder_ramtx_modifiable}matrix.{axis}.active_entries.zarr/" # define zarr object path
             self.survey_number_of_records_for_each_entry( ) # survey the number of records for each entry using default settings
-            if zarr_exists( path_folder_zarr ) : # if the zarr object is available, set 'flag_available' to True
+            if zarr_exists( path_folder_zarr, filesystemserver = self.fs ) : # if the zarr object is available, set 'flag_available' to True
                 flag_available = True
                 
         if not flag_available : # if the zarr object still does not exists
@@ -6433,7 +6942,7 @@ class RAMtx( ) :
             ba.setall( 1 )
             return ba
             
-        za = zarr.open( path_folder_zarr, mode = 'r', synchronizer = zarr.ThreadSynchronizer( ) ) # open zarr object of the current RAMtx object
+        za = ZarrServer( path_folder_zarr, mode = 'r', flag_spawn = flag_spawn ) # open zarr object of the current RAMtx object
         ba = BA.to_bitarray( za[ : ] ) # return the boolean array of active entries as a bitarray object
 
         # if metadata of the number of active entries is not available, update the metadata
@@ -6444,6 +6953,8 @@ class RAMtx( ) :
             self._dict_metadata[ 'n_active_entries' ] = self._n_active_entries 
             self._save_metadata_( )
 
+        # terminate the spawned processes
+        za.terminate( )
         # return the mask
         return ba
     def _get_path_folder_number_of_records_for_each_entry( self, axis : Literal[ 'barcodes', 'features' ] ) :
@@ -6454,12 +6965,12 @@ class RAMtx( ) :
         # skip if result is already available
         flag_res_available = False # initialize
         for path_folder in [ self._path_folder_ramtx, self._path_folder_ramtx_modifiable ] :
-            if path_folder is not None and zarr_exists( f'{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/' ) :
+            if path_folder is not None and zarr_exists( f'{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/', filesystemserver = self.fs ) :
                 flag_res_available = True
                 break
         return path_folder if flag_res_available else None # if result is not available, returns None. if result is available, return the folder where the result reside
     def survey_number_of_records_for_each_entry( self, axes = [ 'barcodes', 'features' ], int_num_chunks_in_a_batch_for_index_of_sparse_matrix = 100, int_num_chunks_in_a_batch_for_axis_for_querying_dense = 1, int_total_number_of_values_in_a_batch_for_dense_matrix = None, int_size_chunk = 1000, flag_ignore_dense = False, int_num_threads = 20 ) :
-        """ # 2022-12-03 17:14:49 
+        """ # 2022-12-06 19:18:44 
         survey the number of records for each entry in the existing axis
         'axes' : a list of axes to use for surveying the number of records for each entry
         
@@ -6472,6 +6983,9 @@ class RAMtx( ) :
         'flag_ignore_dense' : if True, does not survey the dense ramtx.
         'int_num_threads' : the number of threads for surveying
         """
+        # initialize
+        flag_spawn = self.flag_spawn
+        
         # handle combined mode - run 'survey_number_of_records_for_each_entry' in the components
         if self.is_combined :
             # %% COMBINED %%
@@ -6505,8 +7019,8 @@ class RAMtx( ) :
             int_num_entries_in_a_batch = int_num_chunks_in_a_batch_for_index_of_sparse_matrix * int_size_chunk # retrieve the number of entries in a batch
             
             # open zarr objects
-            za = zarr.open( f'{self._path_folder_ramtx_modifiable}matrix.{axis}.number_of_records_for_each_entry.zarr/', mode = 'w', shape = ( len_axis, ), chunks = ( int_size_chunk, ), dtype = np.float64, synchronizer = zarr.ThreadSynchronizer( ) ) # open zarr object of the current RAMtx object
-            za_bool = zarr.open( f"{self._path_folder_ramtx_modifiable}matrix.{axis}.active_entries.zarr/", mode = 'w', shape = ( len_axis, ), chunks = ( int_size_chunk, ), dtype = bool, synchronizer = zarr.ThreadSynchronizer( ) ) # open zarr object of the current RAMtx object
+            za = ZarrServer( f'{self._path_folder_ramtx_modifiable}matrix.{axis}.number_of_records_for_each_entry.zarr/', mode = 'w', shape = ( len_axis, ), chunks = ( int_size_chunk, ), dtype = np.float64, flag_spawn = flag_spawn ) # open zarr object of the current RAMtx object
+            za_bool = ZarrServer( f"{self._path_folder_ramtx_modifiable}matrix.{axis}.active_entries.zarr/", mode = 'w', shape = ( len_axis, ), chunks = ( int_size_chunk, ), dtype = bool, flag_spawn = flag_spawn ) # open zarr object of the current RAMtx object
             if flag_is_interleaved :
                 # %% COMBINED - INTERLEAVED %%
                 int_pos = 0
@@ -6523,8 +7037,8 @@ class RAMtx( ) :
                         # open zarr objects of the current component RAMtx 
                         path_folder = rtx._get_path_folder_number_of_records_for_each_entry( axis = axis ) 
                         assert path_folder is not None # the ramtx object should have the summary result for the current axis
-                        za_component = zarr.open( f'{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/', mode = 'r' ) 
-                        za_bool_component = zarr.open( f"{path_folder}matrix.{axis}.active_entries.zarr/", mode = 'r' ) # open zarr object of the current RAMtx object
+                        za_component = ZarrServer( f'{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/', mode = 'r', flag_spawn = flag_spawn ) 
+                        za_bool_component = ZarrServer( f"{path_folder}matrix.{axis}.active_entries.zarr/", mode = 'r', flag_spawn = flag_spawn ) # open zarr object of the current RAMtx object
 
                         # retrieve coordinate for the current batch for the current component
                         l_int_entry_combined_batch, l_int_entry_component_batch = [ ], [ ] # initialize list of entries for a batch
@@ -6537,6 +7051,9 @@ class RAMtx( ) :
                         if len( l_int_entry_combined_batch ) > 0 :
                             arr_num_records[ l_int_entry_combined_batch ] += za_component.get_coordinate_selection( l_int_entry_component_batch )
                             arr_num_active[ l_int_entry_combined_batch ] += za_bool_component.get_coordinate_selection( l_int_entry_component_batch )
+                        # terminate spawned processes
+                        za_component.terminate( )
+                        za_bool_component.terminate( )
                     # write result for the batch
                     za[ st_batch : en_batch ] = arr_num_records
                     za_bool[ st_batch : en_batch ] = arr_num_active
@@ -6550,8 +7067,8 @@ class RAMtx( ) :
                         # open zarr objects of the current component RAMtx 
                         path_folder = rtx._get_path_folder_number_of_records_for_each_entry( axis = axis ) 
                         assert path_folder is not None # the ramtx object should have the summary result for the current axis
-                        za_component = zarr.open( f'{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/', mode = 'r' ) 
-                        za_bool_component = zarr.open( f"{path_folder}matrix.{axis}.active_entries.zarr/", mode = 'r' ) # open zarr object of the current RAMtx object
+                        za_component = ZarrServer( f'{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/', mode = 'r', flag_spawn = flag_spawn ) 
+                        za_bool_component = ZarrServer( f"{path_folder}matrix.{axis}.active_entries.zarr/", mode = 'r', flag_spawn = flag_spawn ) # open zarr object of the current RAMtx object
                         
                         while int_pos_component < ax_component.int_num_entries :
                             st_component, en_component = int_pos_component, min( ax_component.int_num_entries, int_pos_component + int_num_entries_in_a_batch )
@@ -6562,7 +7079,13 @@ class RAMtx( ) :
                             za_bool[ int_pos_combined + st_component : int_pos_combined + en_component ] = za_bool_component[ st_component : en_component ]
                             
                             int_pos_component += int_num_entries_in_a_batch # update 'int_pos_component'
+                        # terminate spawned processes
+                        za_component.terminate( )
+                        za_bool_component.terminate( )
                     int_pos_combined += ax_component.int_num_entries # update 'int_pos_combined'
+            # terminate spawned processes
+            za.terminate( )
+            za_bool.terminate( )
             return
         
         ''' prepare '''
@@ -6580,7 +7103,7 @@ class RAMtx( ) :
             # skip if result is already available
             flag_res_already_available = False # initialize
             for path_folder in [ self._path_folder_ramtx, self._path_folder_ramtx_modifiable ] :
-                if path_folder is not None and zarr_exists( f'{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/' ) :
+                if path_folder is not None and zarr_exists( f'{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/', filesystemserver = self.fs ) :
                     flag_res_already_available = True
                     break
             if flag_res_already_available :
@@ -6608,8 +7131,8 @@ class RAMtx( ) :
                 write survey results as zarr objects
                 """
                 # create a zarr array object that is fork-safe (use ZarrServer if fork-safe zarr object is required, and use typical zarr object in other cases)
-                za = ZarrServer( f'{self._path_folder_ramtx_modifiable}matrix.{axis}.number_of_records_for_each_entry.zarr/', mode = 'w', shape = ( len_axis, ), chunks = ( int_size_chunk, ), dtype = np.float64 ) if self.is_remote else zarr.open( f'{self._path_folder_ramtx_modifiable}matrix.{axis}.number_of_records_for_each_entry.zarr/', mode = 'w', shape = ( len_axis, ), chunks = ( int_size_chunk, ), dtype = np.float64 )
-                za_bool = ZarrServer( f"{self._path_folder_ramtx_modifiable}matrix.{axis}.active_entries.zarr/", mode = 'w', shape = ( len_axis, ), chunks = ( int_size_chunk, ), dtype = bool ) if self.is_remote else zarr.open( f'{self._path_folder_ramtx_modifiable}matrix.{axis}.number_of_records_for_each_entry.zarr/', mode = 'w', shape = ( len_axis, ), chunks = ( int_size_chunk, ), dtype = np.float64 )
+                za = ZarrServer( f'{self._path_folder_ramtx_modifiable}matrix.{axis}.number_of_records_for_each_entry.zarr/', mode = 'w', shape = ( len_axis, ), chunks = ( int_size_chunk, ), dtype = np.float64, flag_spawn = self.is_remote )
+                za_bool = ZarrServer( f"{self._path_folder_ramtx_modifiable}matrix.{axis}.active_entries.zarr/", mode = 'w', shape = ( len_axis, ), chunks = ( int_size_chunk, ), dtype = bool, flag_spawn = self.is_remote )
 
                 while True :
                     l_r = pipe_receiver.recv( )
@@ -6630,11 +7153,9 @@ class RAMtx( ) :
                     za_bool.set_coordinate_selection( ( arr_coord_combined, ), arr_num_records_combined > 0 ) # active entry is defined by finding entries with at least one count record
                     del arr_coord_combined, arr_num_records_combined
                     
-                if self.is_remote :
-                    # %% REMOTE %%
-                    # if zarr server objects have been initialized, terminate the zarr servers
-                    za.terminate( )
-                    za_bool.terminate( )
+                # terminate the zarr servers
+                za.terminate( )
+                za_bool.terminate( )
             pipe_sender, pipe_receiver = mp.Pipe( )
             p = mp.Process( target = __write_result, args = ( pipe_receiver, ) )
             p.start( )
@@ -6719,7 +7240,7 @@ class RAMtx( ) :
             p.join( )
         
         # destroy zarr server
-        rtx_fork_safe.destroy_zarr_server( )
+        rtx_fork_safe.terminate_spawned_processes( )
     def _save_metadata_( self ) :
         ''' # 2022-07-31 00:40:33 
         a method for saving metadata to the disk 
@@ -7190,7 +7711,7 @@ class RAMtx( ) :
             
             ''' return the retrieved data '''
             # destroy zarr server
-            rtx_fork_safe.destroy_zarr_server( )
+            rtx_fork_safe.terminate_spawned_processes( )
             
             # compose a output value
             output = ( l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying, l_arr_value )
@@ -7289,12 +7810,16 @@ class RAMtx( ) :
         n_bc, n_ft = ( self._int_num_barcodes, self._int_num_features ) if self._ramdata is None else ( len( self._ramdata.bc ), len( self._ramdata.ft ) ) # detect whether the current RAMtx has been attached to a RamData and retrieve the number of barcodes and features accordingly
         X = scipy.sparse.csr_matrix( scipy.sparse.coo_matrix( ( arr_value, ( arr_int_barcode, arr_int_feature ) ), shape = ( n_bc, n_ft ) ) ) # convert count data to a sparse matrix
         return X # return the composed sparse matrix 
-    def get_total_num_records( self, ba = None, int_num_entries_for_each_weight_calculation_batch = 1000, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = True ) :
+    def get_total_num_records( self, ba = None, int_num_entries_for_each_weight_calculation_batch = 1000, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = True, flag_spawn : Union[ bool, None ] = None ) :
         """ # 2022-08-07 01:38:02 
         get total number of records in the current RAMtx for the given entries ('ba' filter).
         this function is mainly for the estimation of the total number of records to process for displaying progress information in the progress bar.
+        
+        flag_spawn : bool = False # a flag indicating spawning should be used for operations that might not be fork-safe. By default, current object's 'flag_spawn' attribute will be used.
         """
         # set defaule arguments
+        if flag_spawn is None :
+            flag_spawn = self.flag_spawn
         if ba is None :
             ba = self.ba_filter_axis_for_querying # if None is given, ba_filter of the currently indexed axis will be used.
             if ba is None : # if filter is not set or the current RAMtx has not been attached to a RamData object, use the active entries
@@ -7307,10 +7832,11 @@ class RAMtx( ) :
         axis = 'features' if self.is_for_querying_features else 'barcodes' # retrieve axis of current ramtx
         flag_weight_available = False # initialize
         for path_folder in [ self._path_folder_ramtx, self._path_folder_ramtx_modifiable ] :
-            if path_folder is not None and zarr_exists( f'{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/' ) :
+            if path_folder is not None and zarr_exists( f'{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/', self.fs ) :
                 path_folder_zarr_weight = f"{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/" # define an existing zarr object path
                 flag_weight_available = True
-                za_weight = zarr.open( path_folder_zarr_weight ) # open zarr object containing weights if available
+                za_weight = ZarrServer( path_folder_zarr_weight, 'r', flag_spawn = flag_spawn ) # open zarr object containing weights if available
+                break
         
         def __update_total_num_records( ) :
             """ # 2022-08-05 00:56:12 
@@ -7333,9 +7859,12 @@ class RAMtx( ) :
                 __update_total_num_records( ) # update total number of records
         if len( ns[ 'l_int_entry_for_weight_calculation_batch' ] ) > 0 : # if there is remaining entries to be processed
             __update_total_num_records( )
+        # terminate a spawned process (if exists)
+        if flag_weight_available :
+            za_weight.terminate( )
         return int( ns[ 'int_num_records' ] ) # return the total number of records
-    def batch_generator( self, ba = None, int_num_entries_for_each_weight_calculation_batch = 1000, int_total_weight_for_each_batch = 10000000, int_chunk_size_for_checking_boundary = None, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = False ) :
-        ''' # 2022-08-05 23:37:03 
+    def batch_generator( self, ba = None, int_num_entries_for_each_weight_calculation_batch = 1000, int_total_weight_for_each_batch = 10000000, int_chunk_size_for_checking_boundary = None, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = False, flag_spawn : Union[ bool, None ] = None ) :
+        ''' # 2022-12-06 02:51:11 
         generate batches of list of integer indices of the active entries in the given bitarray 'ba'. 
         Each bach has the following characteristics:
             monotonous: active entries in a batch are in an increasing order
@@ -7345,8 +7874,11 @@ class RAMtx( ) :
         'int_chunk_size_for_checking_boundary' : if this argument is given, each batch will respect the chunk boundary of the given chunk size so that different batches share the same 'chunk'. setting this argument will override 'int_total_weight_for_each_batch' argument
         'int_total_weight_for_each_batch' : total number of records in a batch. 
         'flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx' : when iterating through a dense matrix, interpret the length of the axis not for querying as the total number of records for every entry in the axis for querying. This will be more useful for restricting the memory usage when analysing dense RAMtx matrix.
+        flag_spawn : bool = False # a flag indicating spawning should be used for operations that might not be fork-safe. By default, current object's 'flag_spawn' attribute will be used.
         '''
         # set defaule arguments
+        if flag_spawn is None :
+            flag_spawn = self.flag_spawn
         if ba is None :
             ba = self.ba_filter_axis_for_querying # if None is given, ba_filter of the currently indexed axis will be used.
             if ba is None : # if filter is not set or the current RAMtx has not been attached to a RamData object, use the active entries
@@ -7359,10 +7891,11 @@ class RAMtx( ) :
         axis = 'features' if self.is_for_querying_features else 'barcodes' # retrieve axis of current ramtx
         flag_weight_available = False # initialize
         for path_folder in [ self._path_folder_ramtx, self._path_folder_ramtx_modifiable ] :
-            if path_folder is not None and zarr_exists( f'{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/' ) :
+            if path_folder is not None and zarr_exists( f'{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/', filesystemserver = self.fs ) :
                 path_folder_zarr_weight = f"{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/" # define an existing zarr object path
                 flag_weight_available = True
-                za_weight = zarr.open( path_folder_zarr_weight ) # open zarr object containing weights if available
+                za_weight = ZarrServer( path_folder_zarr_weight, 'r', flag_spawn = flag_spawn ) # open zarr object containing weights if available (open a fork-safe version if 'flag_spawn')
+                break
         
         def __compose_batch( ) :
             """ # 2022-08-05 23:34:28 
@@ -7422,6 +7955,10 @@ class RAMtx( ) :
         # return the remaining int_entries as the last batch (if available)
         if len( ns[ 'l_int_entry_current_batch' ] ) > 0 :
             yield __compose_batch( ) # return a batch
+        
+        # terminate a spawned process (if exists)
+        if flag_weight_available :
+            za_weight.terminate( )
 ''' a class for representing a layer of RamData '''
 class RamDataLayer( ) :
     """ # 2022-09-01 01:24:07 
@@ -7510,7 +8047,6 @@ class RamDataLayer( ) :
             if self.is_combined :
                 # %% COMBINED %%
                 dict_kwargs[ 'l_rtx' ] = list( None if layer is None else layer[ mode ] for layer in self._l_layer ) # retrieve list of rtx objects for the current mode
-                
             if not hasattr( self, f"ramtx_{mode}" ) : # if the ramtx object of the current mode has not been load
                 if 'dense_for_querying_' in mode :
                     rtx = RAMtx( f'{self._path_folder_ramdata_layer}dense/', is_for_querying_features = mode.rsplit( 'dense_for_querying_', 1 )[ 1 ] == 'features', ** dict_kwargs ) # open dense ramtx in querying_features/querying_barcodes modes
@@ -7719,9 +8255,15 @@ class RamDataLayer( ) :
                 
                 # delete a RAMtx
                 filesystem_operations( 'rm', f'{self._path_folder_ramdata_layer_mask}{mode}/' )
+    def terminate_spawned_processes( self ) :
+        """ # 2022-12-06 19:22:22 
+        terminate spawned processes from the RAMtx object containined in the current layer
+        """
+        for rtx in self : # for each RAMtx object
+            rtx.terminate_spawned_processes( ) # terminate spawned processes from the RAMtx object
 ''' class for storing RamData '''
 class RamData( ) :
-    """ # 2022-11-22 23:45:32 
+    """ # 2022-12-06 23:40:57 
     This class provides frameworks for single-cell transcriptomic/genomic data analysis, utilizing RAMtx data structures, which is backed by Zarr persistant arrays.
     Extreme lazy loading strategies used by this class allows efficient parallelization of analysis of single cell data with minimal memory footprint, loading only essential data required for analysis. 
     
@@ -7749,6 +8291,9 @@ class RamData( ) :
 
         === Reference-based analysis ===
         int_index_component_reference : Union[ int, None ] = None # if an integer is given and 'combined' mode is being used, use the component as the default reference component
+
+    === Amazon S3/other file remote system ===
+    path_folder_temp : Union[ str, None ] = '/tmp/' # a temporary folder where the temporary output files will be saved and processed before being uploaded to the remote location, which makes the file system operations more efficient. if None is given, current working directory will be used.
 
     === AnnDataContainer ===
     flag_load_anndata_container : bool = False # load anndata container to load/save anndata objects stored in the curren RamData object
@@ -7781,6 +8326,7 @@ class RamData( ) :
         flag_load_anndata_container : bool = False,
         flag_enforce_name_adata_with_only_valid_characters : bool = True, 
         int_index_component_reference : Union[ int, None ] = None,
+        path_folder_temp : Union[ str, None ] = '/tmp/',
         verbose : bool = True, 
         flag_debugging : bool = False
     ) :
@@ -7792,6 +8338,10 @@ class RamData( ) :
         self._set_type_model_keras_model = { 'deep_learning.keras.classifier', 'deep_learning.keras.embedder' } # model containing keras model. keras model can be retrieved from the 'dict_model' using 'dl_model' as a key
         
         ''' modifiable settings '''
+        # default settings
+        if path_folder_temp is None :
+            path_folder_temp = f'{os.getcwd( )}/temp_{bk.UUID( )}/' # define a temporary directory in the current working directory by default
+        self._path_folder_temp = path_folder_temp # set path of the temporary folder as an attribute
         # handle input object paths
         if path_folder_ramdata[ - 1 ] != '/' : # add '/' at the end of path to indicate it is a directory
             path_folder_ramdata += '/'
@@ -7869,7 +8419,7 @@ class RamData( ) :
         if name_layer is not None : # if given name of the layer is valid
             self.layer = name_layer
         
-        # initialize databases
+        # initialize utility databases
         if self._path_folder_ramdata_local is not None : # retrieve ramdata object in the local file system, and if the object is available, load/initialize anndatacontainer and shelvecontainer in the local file system
             if flag_load_anndata_container :
                 # set AnnDataContainer attribute for containing various AnnData objects associated with the current RamData
@@ -8014,6 +8564,73 @@ class RamData( ) :
                 self._root.attrs[ 'dict_metadata' ] = self._dict_metadata # update metadata
                 self._dict_metadata[ 'layers' ] = temp # revert to set
     @property
+    def int_num_cpus_for_fetching_data( self ) :
+        """ # 2022-07-21 23:32:24 
+        """
+        return self._int_num_cpus_for_fetching_data
+    @int_num_cpus_for_fetching_data.setter
+    def int_num_cpus_for_fetching_data( self, val ) :
+        """ # 2022-07-21 23:32:35 
+        """
+        self._int_num_cpus_for_fetching_data = max( 1, int( val ) ) # set an integer value
+        if self.layer is not None :
+            self.layer.int_num_cpus = self._int_num_cpus_for_fetching_data # update 'int_num_cpus' attributes of RAMtxs
+    """ <Methods handling Paths> """
+    @property
+    def is_remote( self ) :
+        """ # 2022-09-03 17:17:32 
+        return True if the RamData is located remotely
+        """
+        return is_remote_url( self._path_folder_ramdata )
+    @property
+    def contains_remote( self ) :
+        """ # 2022-09-05 17:55:26 
+        return True if current RamData is in remote location or contains component RamData hosted remotely
+        """
+        # if current ramdata is in remote location, return True
+        if self.is_remote :
+            return True
+        # if current ramdata is in combined mode, survey its component and identify ramdata located remotely
+        if self.is_combined :
+            for ram in self._l_ramdata :
+                if ram is not None and ram.is_remote :
+                    return True
+    @property
+    def _path_folder_ramdata_modifiable( self ) :
+        """ # 2022-07-21 00:07:23 
+        return path of the ramdata that is modifiable based on the current RamData settings.
+        if mask is given, path to the mask will be returned.
+        if current ramdata location cannot be modified and no mask has been given, None will be returned.
+        """
+        if self._path_folder_ramdata_mask is not None : # if mask is given, use the mask (mask should be modifiable)
+            return self._path_folder_ramdata_mask
+        elif not self._flag_is_read_only : # if current object can be modified, create temp folder inside the current object
+            return self._path_folder_ramdata
+        else :
+            return None
+    @property
+    def _path_folder_ramdata_local( self ) :
+        """ # 2022-07-21 02:08:55 
+        return path of the ramdata that is in the local file system based on the current RamData settings.
+        if mask is given, path to the mask will be returned, since mask is assumed to be present in the local file system.
+        """
+        if self._path_folder_ramdata_mask is not None : # if mask is given, use the mask, since mask is assumed to be present in the local file system.
+            return self._path_folder_ramdata_mask
+        elif '://' not in self._path_folder_ramdata : # if current object appears to be in the local file system, use the current object
+            return self._path_folder_ramdata
+        else :
+            return None
+    @property
+    def path_folder_temp( self ) :
+        """ # 2022-12-06 23:41:31 
+        return the path to the temporary folder
+        """
+        return self._path_folder_temp
+    """ </Methods handling Paths> """
+    """ <Methods for Locking> """
+    """ </Methods for Locking> """
+    """ <Layer Methods> """
+    @property
     def layers( self ) :
         ''' # 2022-06-24 00:14:45 
         return a set of available layers
@@ -8040,18 +8657,6 @@ class RamData( ) :
         yield each 'name_layer' upon iteration '''
         return iter( self.layers )
     @property
-    def int_num_cpus_for_fetching_data( self ) :
-        """ # 2022-07-21 23:32:24 
-        """
-        return self._int_num_cpus_for_fetching_data
-    @int_num_cpus_for_fetching_data.setter
-    def int_num_cpus_for_fetching_data( self, val ) :
-        """ # 2022-07-21 23:32:35 
-        """
-        self._int_num_cpus_for_fetching_data = max( 1, int( val ) ) # set an integer value
-        if self.layer is not None :
-            self.layer.int_num_cpus = self._int_num_cpus_for_fetching_data # update 'int_num_cpus' attributes of RAMtxs
-    @property
     def layer( self ) :
         """ # 2022-06-24 00:16:56 
         retrieve the name of layer from the layer object if it has been loaded.
@@ -8066,6 +8671,7 @@ class RamData( ) :
         if name_layer is None :
             # unload layer if None is given
             if hasattr( self, '_layer' ) :
+                self._layer.terminate_spawned_processes( ) # terminate spawned processes of the previous layer
                 delattr( self, '_layer' )
         else :
             # check 'name_layer' is valid
@@ -8073,7 +8679,12 @@ class RamData( ) :
                 raise KeyError( f"(RamData.layer) '{name_layer}' data does not exists in the current RamData" )
 
             if self.layer is None or name_layer != self.layer.name : # if no layer has been loaded or new layer name has been given, load the new layer
-                if name_layer not in self.layers_excluding_components : # load the layer from the component RamData objects
+                # terminate spawned processes of the previous layer
+                if hasattr( self, '_layer' ) :
+                    self._layer.terminate_spawned_processes( ) 
+                
+                # load the layer from the collection of the component RamData objects
+                if name_layer not in self.layers_excluding_components : 
                     # load layer from components and compose 'l_layer'
                     l_layer = [ ]
                     for ram in self._l_ramdata :
@@ -8088,6 +8699,34 @@ class RamData( ) :
                     self._layer = RamDataLayer( self._path_folder_ramdata, name_layer, ramdata = self, dtype_of_feature_and_barcode_indices = self._dtype_of_feature_and_barcode_indices, dtype_of_values = self._dtype_of_values, int_num_cpus = self._int_num_cpus_for_fetching_data, verbose = self.verbose, mode = self._mode, path_folder_ramdata_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only )
                 if self.verbose :
                     logging.info( f"(RamData.layer) '{name_layer}' layer has been loaded" )
+    def rename_layer( self, name_layer_current : str, name_layer_new : str, flag_allow_copying : bool = False ) :
+        """ # 2022-12-08 02:52:39 
+        rename a layer
+        
+        name_layer_current : str # the name of the previous layer
+        name_layer_new : str # the name of the new layer
+        flag_allow_copying : bool = False # for some storage systems, folder and directory cannot be renamed, and an entire folder should be copied and deleted in order to 'change' a folder name. in order to allow copying of an entire folder for renaming operations, set this flag to True
+        """
+        # check validity of inputs
+        # check if the current layer name exists
+        if name_layer_current not in self.layers : 
+            return
+        # check if the new layer name already exists in the current object
+        if name_layer_new in self.layers : 
+            return
+        # rename layer
+        # handle exceptions
+        if is_s3_url( self._path_folder_ramdata_modifiable ) :
+            logging.warning( 'the modifiable storage location of the current RamData is Amazon S3, which does not support folder renaming. renaming a folder in Amazon S3 involves copying and deleting of an entire directory.' )
+            if not flag_allow_copying :
+                return
+        # perform a moving operation
+        filesystem_operations( 'mv', f"{self._path_folder_ramdata_modifiable}{name_layer_current}", f"{self._path_folder_ramdata_modifiable}{name_layer_new}" ) # rename the folder containing the a layer
+        
+        # update metadata
+        self.self.metadata[ 'layers' ].remove( name_layer_current )
+        self.self.metadata[ 'layers' ].add( name_layer_new )
+        self._save_metadata_( )
     def delete_layer( self, * l_name_layer ) :
         """ # 2022-08-24 19:25:25 
         delete a given list of layers from the current RamData
@@ -8105,6 +8744,7 @@ class RamData( ) :
             # remove the current layer from the metadata
             self.layers.remove( name_layer ) 
             self._save_metadata_( )
+    """ </Layer Methods> """
     def __repr__( self ) :
         """ # 2022-07-20 00:38:24 
         display RamData
@@ -8348,59 +8988,7 @@ class RamData( ) :
     def save( self, * l_name_adata ) :
         ''' wrapper of AnnDataContainer.save '''
         self.ad.update( * l_name_adata )
-    @property
-    def is_remote( self ) :
-        """ # 2022-09-03 17:17:32 
-        return True if the RamData is located remotely
-        """
-        return is_remote_url( self._path_folder_ramdata )
-    @property
-    def contains_remote( self ) :
-        """ # 2022-09-05 17:55:26 
-        return True if current RamData is in remote location or contains component RamData hosted remotely
-        """
-        # if current ramdata is in remote location, return True
-        if self.is_remote :
-            return True
-        # if current ramdata is in combined mode, survey its component and identify ramdata located remotely
-        if self.is_combined :
-            for ram in self._l_ramdata :
-                if ram is not None and ram.is_remote :
-                    return True
-    @property
-    def _path_folder_ramdata_modifiable( self ) :
-        """ # 2022-07-21 00:07:23 
-        return path of the ramdata that is modifiable based on the current RamData settings.
-        if mask is given, path to the mask will be returned.
-        if current ramdata location cannot be modified and no mask has been given, None will be returned.
-        """
-        if self._path_folder_ramdata_mask is not None : # if mask is given, use the mask (mask should be modifiable)
-            return self._path_folder_ramdata_mask
-        elif not self._flag_is_read_only : # if current object can be modified, create temp folder inside the current object
-            return self._path_folder_ramdata
-        else :
-            return None
-    @property
-    def _path_folder_ramdata_local( self ) :
-        """ # 2022-07-21 02:08:55 
-        return path of the ramdata that is in the local file system based on the current RamData settings.
-        if mask is given, path to the mask will be returned, since mask is assumed to be present in the local file system.
-        """
-        if self._path_folder_ramdata_mask is not None : # if mask is given, use the mask, since mask is assumed to be present in the local file system.
-            return self._path_folder_ramdata_mask
-        elif '://' not in self._path_folder_ramdata : # if current object appears to be in the local file system, use the current object
-            return self._path_folder_ramdata
-        else :
-            return None
-    def create_temp_folder( self ) :
-        """ # 2022-07-20 23:36:34 
-        create temporary folder and return the path to the temporary folder
-        """
-        path_folder = self._path_folder_ramdata_modifiable # retrieve path to the modifiable ramdata object
-        if path_folder is not None : # if valid location is available (assumes it is a local directory)
-            path_folder_temp = f"{path_folder}temp_{bk.UUID( )}/"
-            filesystem_operations( 'mkdir', path_folder_temp, exist_ok = True ) # create the temporary folder
-            return path_folder_temp # return the path to the temporary folder
+    """ <CORE METHODS> """
     def summarize( self, name_layer : str, axis : Union[ int, str ], summarizing_func, l_name_col_summarized : Union[ list, None ] = None, str_prefix : Union[ str, None ] = None, str_suffix : str = '' ) :
         ''' # 2022-09-07 21:24:50 
         this function summarize entries of the given axis (0 = barcode, 1 = feature) using the given function
@@ -8412,8 +9000,8 @@ class RamData( ) :
         =========
         'name_layer' : name of the data in the given RamData object to summarize
         'axis': int or str. 
-               0, 'bc', 'barcode' or 'barcodes' for applying a given summarizing function for barcodes
-               1, 'ft', 'feature' or 'features' for applying a given summarizing function for features
+               0, 'b', 'bc', 'barcode' or 'barcodes' for applying a given summarizing function for barcodes
+               1, 'f', 'ft', 'feature' or 'features' for applying a given summarizing function for features
         'summarizing_func' : function object. a function that takes a RAMtx output and return a dictionary containing 'name_of_summarized_data' as key and 'value_of_summarized_data' as value. the resulting summarized outputs will be added as metadata of the given Axis (self.bc.meta or self.ft.meta)
         
                     summarizing_func( self, int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value ) -> dictionary containing 'key' as summarized metric name and 'value' as a summarized value for the entry. if None is returned, the summary result for the entry will be skipped.
@@ -8461,14 +9049,14 @@ class RamData( ) :
             if self.verbose :
                 logging.info( f"[ERROR] [RamData.summarize] invalid argument 'name_layer' : '{name_layer}' does not exist." )
             return -1 
-        if axis not in { 0, 'barcode', 1, 'feature', 'barcodes', 'features', 'bc', 'ft' } :
+        if axis not in { 0, 'barcode', 1, 'feature', 'barcodes', 'features', 'bc', 'ft', 'b', 'f' } :
             if self.verbose :
                 logging.info( f"[ERROR] [RamData.summarize] invalid argument 'axis' : '{name_layer}' is invalid." )
             return -1 
         # set layer
         self.layer = name_layer
         # handle inputs
-        flag_summarizing_barcode = axis in { 0, 'barcode', 'barcodes', 'bc' } # retrieve a flag indicating whether the data is summarized for each barcode or not
+        flag_summarizing_barcode = axis in { 0, 'barcode', 'barcodes', 'bc', 'b' } # retrieve a flag indicating whether the data is summarized for each barcode or not
         # set default 'str_prefix' for new column names
         if not isinstance( str_prefix, str ) :
             str_prefix = f"{name_layer}_"
@@ -8574,7 +9162,7 @@ class RamData( ) :
                 
             # destroy zarr servers
             if rtx_fork_safe.contains_remote :
-                rtx_fork_safe.destroy_zarr_server( )
+                rtx_fork_safe.terminate_spawned_processes( )
         # initialize the progress bar
         pbar = progress_bar( total = rtx.get_total_num_records( int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ) )
         def post_process_batch( res ) :
@@ -8593,7 +9181,7 @@ class RamData( ) :
         bk.Multiprocessing_Batch_Generator_and_Workers( rtx.batch_generator( ax.filter, int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, int_total_weight_for_each_batch = self.int_total_weight_for_each_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 )
         pbar.close( ) # close the progress bar
     def apply( self, name_layer, name_layer_new, func = None, mode_instructions = 'sparse_for_querying_features', path_folder_ramdata_output = None, dtype_of_row_and_col_indices = np.int32, dtype_of_value = np.float64, int_num_threads = None, flag_survey_weights = True, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = True, int_num_of_records_in_a_chunk_zarr_matrix = 20000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, chunks_dense = ( 2000, 1000 ), dtype_dense_mtx = np.float64, dtype_sparse_mtx = np.float64, dtype_sparse_mtx_index = np.float64 ) :
-        ''' # 2022-12-04 14:47:39 
+        ''' # 2022-12-08 03:15:39 
         this function apply a function and/or filters to the records of the given data, and create a new data object with 'name_layer_new' as its name.
         
         example usage: calculate normalized count data, perform log1p transformation, cell filtering, etc.                             
@@ -8657,6 +9245,8 @@ class RamData( ) :
                     'dense_for_querying_barcodes' > 'sparse_for_querying_barcodes'
                     
                 in summary, (1) up to three operations will be performed, to construct three ramtx modes of the resulting layer, (2) the instructions at the front has higher priority, and (3) querying axis of dense can be specified or skipped (in those cases, default will be used)
+                
+                Of note, output to 'Dense' format can be slow for remote file systems (e.g. Amazon S3), since writing the dense Zarr array will rely on a file-locking using a directory on the remote file system by default. Therefore, providing the path to store file-system based lock is highly recommended for creating a 'dense' matrix output.
         
         'int_num_threads' : the number of CPUs to use. by default, the number of CPUs set by the RamData attribute 'int_num_cpus' will be used.
         'flag_survey_weights' : survey the weights of the output RAMtx objects
@@ -8732,40 +9322,45 @@ class RamData( ) :
         zarr_start_multiprocessing_write( )
         
         def RAMtx_Apply( self, rtx, func, flag_dense_ramtx_output, flag_sparse_ramtx_output, int_num_threads ) :
-            ''' # 2022-12-04 14:47:34 
+            ''' # 2022-12-08 03:15:33 
             inputs 
             =========
 
             'rtx': an input RAMtx object
             '''
             ''' prepare '''
+            # initialize
+            flag_spawn = rtx.contains_remote # retrieve a flag whether to use a spawned process for operations that are not potentially not fork-safe (but less performant)
+            rtx_fork_safe = rtx.get_fork_safe_version( ) # retrieve a fork-safe version of a RAMtx
+            fs = FileSystemServer( flag_spawn = flag_spawn ) # initialize a filesystem server
+            zms = ZarrMetadataServer( flag_spawn = flag_spawn ) # initialize zarr metadata server
+            
             ax = self.ft if rtx.is_for_querying_features else self.bc # retrieve appropriate axis
             ns = dict( ) # create a namespace that can safely shared between different scopes of the functions
             ns[ 'int_num_records_written_to_ramtx' ] = 0 # initlaize the total number of records written to ramtx object
             # create a temporary folder
-            path_folder_temp = f'{path_folder_layer_new}temp_{bk.UUID( )}/'
-            filesystem_operations( 'mkdir', path_folder_temp, exist_ok = True )
-            
+            path_folder_temp = f"{self.path_folder_temp}tmp{bk.UUID( )}/" # retrieve temporary folder specific to the current run
+            fs.filesystem_operations( 'mkdir', path_folder_temp, exist_ok = True )
             ''' initialize output ramtx objects '''
             """ %% DENSE %% """
             if flag_dense_ramtx_output : # if dense output is present
                 path_folder_ramtx_dense = f"{path_folder_layer_new}dense/"
-                filesystem_operations( 'mkdir', path_folder_ramtx_dense, exist_ok = True ) # create the output ramtx object folder
+                fs.filesystem_operations( 'mkdir', path_folder_ramtx_dense, exist_ok = True ) # create the output ramtx object folder
                 path_folder_ramtx_dense_mtx = f"{path_folder_ramtx_dense}matrix.zarr/" # retrieve the folder path of the output RAMtx Zarr matrix object.
-                # assert not filesystem_operations( 'exists', path_folder_ramtx_dense_mtx ) # output zarr object should NOT exists!
-                path_file_lock_mtx_dense = f'{path_folder_layer_new}lock_{bk.UUID( )}.sync' # define path to locks for parallel processing with multiple processes
-                za_mtx_dense = zarr.open( path_folder_ramtx_dense_mtx, mode = 'w', shape = ( rtx._int_num_barcodes, rtx._int_num_features ), chunks = chunks_dense, dtype = dtype_dense_mtx, synchronizer = zarr.ProcessSynchronizer( path_file_lock_mtx_dense ) ) # use the same chunk size of the current RAMtx
+                # assert not fs.filesystem_operations( 'exists', path_folder_ramtx_dense_mtx ) # output zarr object should NOT exists!
+                path_file_lock_mtx_dense = f'{path_folder_temp}lock_{bk.UUID( )}.sync' # define path to locks for parallel processing with multiple processes
+                za_mtx_dense = ZarrServer( path_folder_ramtx_dense_mtx, mode = 'w', shape = ( rtx._int_num_barcodes, rtx._int_num_features ), chunks = chunks_dense, dtype = dtype_dense_mtx, path_process_synchronizer = path_file_lock_mtx_dense, flag_spawn = flag_spawn ) # use the same chunk size of the current RAMtx # initialize the output zarr object
             """ %% SPARSE %% """
             if flag_sparse_ramtx_output : # if sparse output is present
                 mode_sparse = f"sparse_for_querying_{'features' if rtx.is_for_querying_features else 'barcodes'}"
                 path_folder_ramtx_sparse = f"{path_folder_layer_new}{mode_sparse}/"
-                filesystem_operations( 'mkdir', path_folder_ramtx_sparse, exist_ok = True ) # create the output ramtx object folder
+                fs.filesystem_operations( 'mkdir', path_folder_ramtx_sparse, exist_ok = True ) # create the output ramtx object folder
                 path_folder_ramtx_sparse_mtx = f"{path_folder_ramtx_sparse}matrix.zarr/" # retrieve the folder path of the output RAMtx Zarr matrix object.
-                # assert not filesystem_operations( 'exists', path_folder_ramtx_sparse_mtx ) # output zarr object should NOT exists!
-                # assert not filesystem_operations( 'exists', f'{path_folder_ramtx_sparse}matrix.index.zarr' ) # output zarr object should NOT exists!
-                # define path to locks for parallel processing with multiple processes
-                za_mtx_sparse = zarr.open( path_folder_ramtx_sparse_mtx, mode = 'w', shape = ( rtx._int_num_records, 2 ), chunks = ( int_num_of_records_in_a_chunk_zarr_matrix, 2 ), dtype = dtype_sparse_mtx, synchronizer = zarr.ThreadSynchronizer( ) ) # use the same chunk size of the current RAMtx
-                za_mtx_sparse_index = zarr.open( f'{path_folder_ramtx_sparse}matrix.index.zarr', mode = 'w', shape = ( rtx.len_axis_for_querying, 2 ), chunks = ( int_num_of_entries_in_a_chunk_zarr_matrix_index, 2 ), dtype = dtype_sparse_mtx_index, synchronizer = zarr.ThreadSynchronizer( ) ) # use the same dtype and chunk size of the current RAMtx
+                # assert not fs.filesystem_operations( 'exists', path_folder_ramtx_sparse_mtx ) # output zarr object should NOT exists!
+                # assert not fs.filesystem_operations( 'exists', f'{path_folder_ramtx_sparse}matrix.index.zarr' ) # output zarr object should NOT exists!
+                # open fork-safe zarr objects (initialize zarr objects)
+                za_mtx_sparse = ZarrServer( path_folder_ramtx_sparse_mtx, mode = 'w', shape = ( rtx._int_num_records, 2 ), chunks = ( int_num_of_records_in_a_chunk_zarr_matrix, 2 ), dtype = dtype_sparse_mtx, flag_spawn = flag_spawn ) # use the same chunk size of the current RAMtx
+                za_mtx_sparse_index = ZarrServer( f'{path_folder_ramtx_sparse}matrix.index.zarr', mode = 'w', shape = ( rtx.len_axis_for_querying, 2 ), chunks = ( int_num_of_entries_in_a_chunk_zarr_matrix_index, 2 ), dtype = dtype_sparse_mtx_index, flag_spawn = flag_spawn ) # use the same dtype and chunk size of the current RAMtx
                 
                 int_num_records_in_a_chunk_of_mtx_sparse = za_mtx_sparse.chunks[ 0 ] # retrieve the number of records in a chunk of output zarr matrix
                 
@@ -8780,7 +9375,11 @@ class RamData( ) :
                 '''
                 str_uuid = bk.UUID( )
                 # retrieve fork-safe RAMtx
-                rtx_fork_safe = rtx.get_fork_safe_version( ) if rtx.contains_remote else rtx # load zarr_server (if RAMtx contains remote data source) to be thread-safe
+                rtx_fork_safe = rtx.get_fork_safe_version( ) # retrieve a fork-safe version of a RAMtx
+                
+                """ %% DENSE %% """
+                if flag_dense_ramtx_output : # if dense output is present
+                    za_mtx_dense = ZarrServer( path_folder_ramtx_dense_mtx, mode = 'a', flag_spawn = flag_spawn ) # use the same chunk size of the current RAMtx # open a synchronized, fork-safe zarr object 
 
                 while True :
                     batch = pipe_receiver_batch.recv( )
@@ -8802,7 +9401,7 @@ class RamData( ) :
                     if flag_sparse_ramtx_output : # if sparse output is present
                         # open an Zarr object
                         path_folder_zarr_output_sparse = f"{path_folder_temp}{bk.UUID( )}.zarr/" # define output Zarr object path
-                        za_output_sparse = zarr.open( path_folder_zarr_output_sparse, mode = 'w', shape = ( rtx_fork_safe._int_num_records, 2 ), chunks = za_mtx_sparse.chunks, dtype = dtype_of_value, synchronizer = zarr.ThreadSynchronizer( ) )
+                        za_output_sparse = zarr.open( path_folder_zarr_output_sparse, mode = 'w', shape = ( rtx_fork_safe._int_num_records, 2 ), chunks = za_mtx_sparse.chunks, dtype = dtype_of_value ) # 'za_output_sparse' will be stored locally, and ZarrServer will not be used
                         # define an index file
                         path_file_index_output_sparse = f"{path_folder_temp}{bk.UUID( )}.index.tsv.gz" # define output index file path
                         l_index = [ ] # collect index
@@ -8858,11 +9457,13 @@ class RamData( ) :
                         pd.DataFrame( l_index ).to_csv( path_file_index_output_sparse, header = None, index = None, sep = '\t' ) # write the index file
 
                     pipe_sender_result.send( ( index_batch, int_num_processed_records, int_num_records_written, path_folder_zarr_output_sparse, path_file_index_output_sparse ) ) # send information about the output files
-                # destroy zarr servers
-                if rtx_fork_safe.contains_remote :
-                    rtx_fork_safe.destroy_zarr_server( )
+                # terminate spawned processes
+                """ %% DENSE %% """
+                if flag_dense_ramtx_output : # if dense output is present
+                    za_mtx_dense.terminate( )
+                rtx_fork_safe.terminate_spawned_processes( )
             # initialize the progress bar
-            pbar = progress_bar( total = rtx.get_total_num_records( int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ) )
+            pbar = progress_bar( total = rtx_fork_safe.get_total_num_records( int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ) )
             """ %% SPARSE %% """
             if flag_sparse_ramtx_output :
                 ''' create a worker process for off-laoding works (mostly file I/O) asynchronously so that main process can delegate works to the working processes without being blocked during file I/O. '''
@@ -8871,13 +9472,26 @@ class RamData( ) :
                     post-process sparse matrix output
                     '''
                     # initialize
+                    flag_is_destination_remote = is_remote_url( path_folder_ramtx_sparse_mtx ) # flag indicating whether a output destination is remotely located
+                    path_folder_dest = f"{path_folder_temp}matrix.zarr/" if flag_is_destination_remote else '' # define a path to the local output folder, which is either final destionation (local output) or temporary destionation before being uploaded (remote output)
+                    
+                    fs = FileSystemServer( flag_spawn = flag_spawn ) # initialize a filesystem server
+                    fs.filesystem_operations( 'mkdir', path_folder_dest ) # make the local output folder
+                    # initialize zarr objects
+                    za_mtx_sparse = ZarrServer( path_folder_ramtx_sparse_mtx, mode = 'a', flag_spawn = flag_spawn ) # use the same chunk size of the current RAMtx
+                    za_mtx_sparse_index = ZarrServer( f'{path_folder_ramtx_sparse}matrix.index.zarr', mode = 'a', flag_spawn = flag_spawn ) # use the same dtype and chunk size of the current RAMtx
                     int_num_chunks_written_to_ramtx = 0 # initialize the number of chunks written to ramtx object # the number of chunks already present in the output RAMtx zarr matrix object
                     int_len_matrix = 1 # default length # keep track the number of rows in the output sparse matrix in order to resize the matrix once the output has been written
+                    
+                    # start processing
                     while True :
                         ''' receive inputs '''
                         ins = pipe_input.recv( )
                         if ins is None : # if None is received, exit
                             break
+                        
+                        logging.info( f'batch {ins} was received' )
+                            
                         index_batch, int_num_processed_records, int_num_records_written, path_folder_zarr_output, path_file_index_output = ins # parse inputs
                             
                         ''' post-process sparse matrix output '''
@@ -8889,18 +9503,18 @@ class RamData( ) :
                         if za_mtx_sparse.shape[ 0 ] < int_min_num_rows_required : # check whether the size of Zarr matrix is smaller than the minimum requirement
                             za_mtx_sparse.resize( int_min_num_rows_required, 2 ) # resize the Zarr matrix so that data can be safely added to the matrix
 
-                        # copy Zarr chunks to the sparse RAMtx Zarr matrix object
-                        if not is_remote_url( path_folder_zarr_output ) :
-                            # %% Local File System %%
-                            os.chdir( path_folder_zarr_output ) # to reduce the length of file path, change directory to the output folder before retrieving file paths of the chunks
-                            for e in glob.glob( '*.0' ) : # to reduce the size of file paths returned by glob, use relative path to retrieve the list of chunk files of the Zarr matrix of the current batch
-                                index_chunk = int( e.split( '.0', 1 )[ 0 ] ) # retrieve the integer index of the chunk
-                                os.rename( e, path_folder_ramtx_sparse_mtx + str( index_chunk + int_num_chunks_written_to_ramtx ) + '.0' ) # simply rename the chunk to transfer stored values
-                        elif is_s3_url( path_folder_zarr_output ) :
-                            # %% Amazon S3 %%
-                            for e in filesystem_operations( 'glob', f'{path_folder_zarr_output}*.0' ) : # to reduce the size of file paths returned by glob, use relative path to retrieve the list of chunk files of the Zarr matrix of the current batch
-                                index_chunk = int( e.rsplit( '/', 1 )[ 1 ][ : - 2 ] ) # retrieve the integer index of the chunk
-                                filesystem_operations( 'mv', e, path_folder_ramtx_sparse_mtx + str( index_chunk + int_num_chunks_written_to_ramtx ) + '.0' ) # simply rename the chunk to transfer stored values
+                        # copy Zarr chunks to the sparse RAMtx Zarr matrix object folder
+                        os.chdir( path_folder_zarr_output ) # to reduce the length of file path, change directory to the output folder before retrieving file paths of the chunks
+                        for e in glob.glob( '*.0' ) : # to reduce the size of file paths returned by glob, use relative path to retrieve the list of chunk files of the Zarr matrix of the current batch
+                            index_chunk = int( e.split( '.0', 1 )[ 0 ] ) # retrieve the integer index of the chunk
+                            os.rename( e, path_folder_dest + str( index_chunk + int_num_chunks_written_to_ramtx ) + '.0' ) # simply rename the chunk to transfer stored values
+                        
+                        # upload chunks to remote locations and delete local chunks
+                        if flag_is_destination_remote :
+                            # %% REMOTE %%
+                            fs.filesystem_operations( 'cp', path_folder_dest, path_folder_ramtx_sparse, flag_recursive = True ) # upload the processed chunks to the remote locations
+                            fs.filesystem_operations( 'rm', path_folder_dest, flag_recursive = True ) # delete the processed chunks
+                            fs.filesystem_operations( 'mkdir', path_folder_dest ) # re-create the local temporary output folder
 
                         # retrieve index data of the current batch
                         arr_index = pd.read_csv( path_file_index_output, header = None, sep = '\t' ).values.astype( int ) # convert to integer dtype
@@ -8912,10 +9526,17 @@ class RamData( ) :
                         int_num_chunks_written_to_ramtx += int_num_chunks_written_for_a_batch
 
                         # delete temporary files and folders
-                        filesystem_operations( 'rm', path_folder_zarr_output )
-                        filesystem_operations( 'rm', path_file_index_output )
+                        fs.filesystem_operations( 'rm', path_folder_zarr_output )
+                        fs.filesystem_operations( 'rm', path_file_index_output )
                     ''' send output and indicate the post-processing has been completed '''
                     pipe_output.send( int_len_matrix )
+                    # delete temporary folders
+                    fs.filesystem_operations( 'rm', path_folder_dest )
+                    # terminate the zarr servers
+                    za_mtx_sparse.terminate( )
+                    za_mtx_sparse_index.terminate( )
+                    # terminate the file server
+                    fs.terminate( ) 
                     return # exit
                 # create pipes for communications
                 pipe_sender_input_sparse_matrix_post_processing, pipe_receiver_input_sparse_matrix_post_processing = mp.Pipe( )
@@ -8958,37 +9579,48 @@ class RamData( ) :
                         ns[ 'l_res_sparse' ][ ns[ 'index_batch_waiting_to_be_written_sparse' ] ] = None # remove the result from the list of batch outputs
                         ns[ 'index_batch_waiting_to_be_written_sparse' ] += 1 # start waiting for the next batch to be completed
                         pbar.update( int_num_processed_records ) # update the progress bar
-                os.chdir( path_folder_layer_new ) # change path to layer before deleting temp folder (to avoid deleting the working directory)
+                os.chdir( self.path_folder_temp ) # change path to root temporary folder before deleting the current temp folder (to avoid deleting the working directory)
+                
             # transform the values of the RAMtx using multiple processes
-            bk.Multiprocessing_Batch_Generator_and_Workers( rtx.batch_generator( ax.filter, int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, int_total_weight_for_each_batch = self.int_total_weight_for_each_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) # create batch considering chunk boundaries # return batch index to allow combining sparse matrix in an ascending order.
+            bk.Multiprocessing_Batch_Generator_and_Workers( rtx_fork_safe.batch_generator( ax.filter, int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, int_total_weight_for_each_batch = self.int_total_weight_for_each_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 ) # create batch considering chunk boundaries # return batch index to allow combining sparse matrix in an ascending order.
             pbar.close( ) # close the progress bar
             
             ''' export ramtx settings '''
             """ %% DENSE %% """
             if flag_dense_ramtx_output : # if dense output is present
-                filesystem_operations( 'rm', path_file_lock_mtx_dense ) # delete file system locks
-                root = zarr.group( path_folder_ramtx_dense )
-                root.attrs[ 'dict_metadata' ] = { 
-                    'mode' : 'dense',
-                    'str_completed_time' : bk.TIME_GET_timestamp( True ),
-                    'int_num_features' : rtx._int_num_features,
-                    'int_num_barcodes' : rtx._int_num_barcodes,
-                    'int_num_records' : ns[ 'int_num_records_written_to_ramtx' ],
-                    'version' : _version_,
-                }
+                fs.filesystem_operations( 'rm', path_file_lock_mtx_dense ) # delete file system locks
+                # save a zarr metadata
+                zms.set_metadata( 
+                    path_folder_ramtx_dense,
+                    'dict_metadata',
+                    { 
+                        'mode' : 'dense',
+                        'str_completed_time' : bk.TIME_GET_timestamp( True ),
+                        'int_num_features' : rtx._int_num_features,
+                        'int_num_barcodes' : rtx._int_num_barcodes,
+                        'int_num_records' : ns[ 'int_num_records_written_to_ramtx' ],
+                        'version' : _version_,
+                    },
+                )
+                # terminate the zarr server
+                za_mtx_dense.terminate( )
 
             """ %% SPARSE %% """
             if flag_sparse_ramtx_output : # if sparse output is present
-                root = zarr.group( path_folder_ramtx_sparse )
-                root.attrs[ 'dict_metadata' ] = { 
-                    'mode' : mode_sparse,
-                    'flag_ramtx_sorted_by_id_feature' : rtx.is_for_querying_features,
-                    'str_completed_time' : bk.TIME_GET_timestamp( True ),
-                    'int_num_features' : rtx._int_num_features,
-                    'int_num_barcodes' : rtx._int_num_barcodes,
-                    'int_num_records' : ns[ 'int_num_records_written_to_ramtx' ],
-                    'version' : _version_,
-                }
+                # save a metadata
+                zms.set_metadata( 
+                    path_folder_ramtx_sparse,
+                    'dict_metadata',
+                    { 
+                        'mode' : mode_sparse,
+                        'flag_ramtx_sorted_by_id_feature' : rtx.is_for_querying_features,
+                        'str_completed_time' : bk.TIME_GET_timestamp( True ),
+                        'int_num_features' : rtx._int_num_features,
+                        'int_num_barcodes' : rtx._int_num_barcodes,
+                        'int_num_records' : ns[ 'int_num_records_written_to_ramtx' ],
+                        'version' : _version_,
+                    }
+                )
                 # retrieve result from the worker process
                 pipe_sender_input_sparse_matrix_post_processing.send( None ) # indicate all work has been completed
                 int_len_matrix = pipe_receiver_output_sparse_matrix_post_processing.recv( ) # receive the length of the matrix
@@ -8996,10 +9628,20 @@ class RamData( ) :
                 # resize the za_mtx_sparse matrix if its length is larger than 'int_len_matrix'
                 if za_mtx_sparse.shape[ 0 ] > int_len_matrix :
                     za_mtx_sparse.resize( int_len_matrix, 2 ) # resize the Zarr matrix to according to the actual number of rows in the matrix
+                
+                # terminate the zarr servers
+                za_mtx_sparse.terminate( )
+                za_mtx_sparse_index.terminate( )
                     
             # remove temp folder once all operations have been completed
-            filesystem_operations( 'rm', path_folder_temp )
+            fs.filesystem_operations( 'rm', path_folder_temp )
+            
+            # terminate spawned processes
+            rtx_fork_safe.terminate_spawned_processes( )
+            fs.terminate( ) # terminate the file server
+            zms.terminate( ) # terminate the zarr metadata server
             return # exit
+            # END of RAMtx_Apply function
         
         # initialize the list arguments for running multiple processes
         l_args = [ ]
@@ -9080,7 +9722,8 @@ class RamData( ) :
                 logging.info( '[RamData.apply] [Info] no operation was performed' )
             return
         
-        if self.contains_remote and name_layer not in self.layers_excluding_components : # if current RamData contains data hosted remotely and current layer is composed of components (which indicates that zarr objects from remote locations will be used), avoid multi-processing due to current lack of support for multi-processing on Zarr HTTPStore
+        # if current RamData contains data hosted remotely and current layer consists of components (which indicates that zarr objects from remote locations will be used), avoid multi-processing due to current lack of support for multi-processing on Zarr HTTPStore. Also, when output folder is a remote location, avoid multiprocessing 'RAMtx_Apply' since s3fs appears to be not fork-safe
+        if ( self.contains_remote and name_layer not in self.layers_excluding_components ) :  #  or is_remote_url( path_folder_ramdata_output )
             for args in l_args :
                 RAMtx_Apply( * args )
         else :
@@ -9118,6 +9761,7 @@ class RamData( ) :
         # update the metadata
         if self.verbose :
             logging.info( f'[RamData.apply] [Info] apply operation {name_layer} > {name_layer_new} has been completed' )
+    """ </CORE METHODS> """
     def subset( self, path_folder_ramdata_output, l_name_layer : list = [ ], dict_mode_instructions : dict = dict( ), int_num_threads = None, flag_survey_weights = False, ** kwargs ) :
         ''' # 2022-10-30 23:37:31 
         this function will create a new RamData object on disk by creating a subset of the current RamData according to the current filters. the following components will be subsetted.
@@ -10304,7 +10948,7 @@ class RamData( ) :
             return -1 
         # set layer
         self.layer = name_layer
-
+        
         # set default 'index_component_reference'
         if self.is_combined :
             if int_index_component_reference is None :
@@ -10355,7 +10999,7 @@ class RamData( ) :
         """
         # initialize iPCA object
         ipca = IncrementalPCA( n_components = int_num_components, batch_size = int_num_barcodes_in_ipca_batch, copy = False, whiten = flag_ipca_whiten ) # copy = False to increase memory-efficiency
-
+        
         # define functions for multiprocessing step
         def process_batch( pipe_receiver_batch, pipe_sender_result ) :
             ''' # 2022-09-20 11:51:39 
@@ -10373,6 +11017,8 @@ class RamData( ) :
                 int_num_retrieved_entries = len( l_int_entry_current_batch )
 
                 pipe_sender_result.send( ( int_num_of_previously_returned_entries, int_num_retrieved_entries, rtx_fork_safe.get_sparse_matrix( l_int_entry_current_batch )[ int_num_of_previously_returned_entries : int_num_of_previously_returned_entries + int_num_retrieved_entries ] ) ) # retrieve and send sparse matrix as an input to the incremental PCA # resize sparse matrix
+            # destroy zarr servers
+            rtx_fork_safe.terminate_spawned_processes( )
         pbar = progress_bar( total = ax.meta.n_rows ) # initialize the progress bar
         def post_process_batch( res ) :
             """ # 2022-07-13 22:18:18 
@@ -11954,8 +12600,7 @@ class RamData( ) :
                 pipe_sender_result.send( ( l_int_entry_current_batch, X ) ) # send the result back to the main process
 
             # dismiss fork-safe zarr object
-            if isinstance( za_fork_safe, ZarrServer ) :
-                za_fork_safe.terminate( ) # shutdown the zarr server
+            za_fork_safe.terminate( ) # shutdown the zarr server
         pbar = progress_bar( total = ax.meta.n_rows ) # initialize the progress bar
         def post_process_batch( res ) :
             """ # 2022-07-13 22:18:26 
@@ -12139,12 +12784,20 @@ class RamData( ) :
                     dict_summary[ name_col_pval ][ index_clus ] = test( arr_expr_clus, arr_expr_rest ).pvalue
             return dict_summary    
 
+        # report
+        if self.verbose :
+            logging.info( f'[RamData.find_markers] [Info] finding markers for {len( l_unique_cluster_label_to_analyze )} number of clusters started' )
+        
         # calculate the metric for identifying marker features
         self.summarize( name_layer, 'features', func, l_name_col_summarized = l_name_col_summarized )
-
+        
         # destroy view if a view was not active
         if flag_view_was_not_active :
             self.bc.destroy_view( )
+            
+        # report
+        if self.verbose :
+            logging.info( f'[RamData.find_markers] [Info] finding markers for {len( l_unique_cluster_label_to_analyze )} number of clusters completed' )
     def get_marker_table( self, max_pval : float = 1e-10, min_auroc : float = 0.7, min_log2fc : float = 1, name_col_auroc : Union[ str, None ] = None, name_col_log2fc : Union[ str, None ] = None, name_col_pval : Union[ str, None ] = None, int_num_chunks_in_a_batch : int = 10 ) :
         """ # 2022-09-15 22:38:39 
         retrieve marker table using the given thresholds
@@ -12235,7 +12888,6 @@ class RamData( ) :
         dict_mapping = dict( ( i, s ) for i, s in zip( arr_int_entry_ft, arr_str_entry_ft ) ) # retrieve a mapping of int > str repr. of features
         df_marker[ 'name_feature' ] = list( dict_mapping[ i ] for i in df_marker[ 'name_feature' ].values ) # retrieve string representations of the features of the marker table
         return df_marker
-
     ''' scarab-associated methods for analyzing RamData '''
     def _classify_feature_of_scarab_output_( self, int_min_num_occurrence_to_identify_valid_feature_category = 1000 ) :
         """ # 2022-05-30 12:39:01 
