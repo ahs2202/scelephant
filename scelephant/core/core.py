@@ -2357,8 +2357,10 @@ class FileSystemServer( ) :
         """ # 2022-12-05 18:48:59 
         """
         # set read-only attributes
-        self._flag_spawn = True # indicate that a process has been spawned
+        self._flag_spawn = flag_spawn # indicate that a process has been spawned
         
+        # set attributes
+        self._flag_is_terminated = False
         if self.flag_spawn :
             # %% PROCESS SPAWNING %%
             # create pipes for interactions
@@ -2394,10 +2396,11 @@ class FileSystemServer( ) :
         """ # 2022-09-06 23:16:22 
         terminate the server
         """
-        if self.flag_spawn :
+        if self.flag_spawn and not self._flag_is_terminated :
             # %% PROCESS SPAWNING %%
             self._pipe_sender_input.send( None )
             self._p.join( ) # wait until the process join the main process
+            self._flag_is_terminated = True # set the flag
     def __enter__( self ) :
         """ # 2022-12-08 02:00:08 
         """
@@ -3719,6 +3722,7 @@ class ZarrServer( ) :
         self._mode = mode
         self._path_folder_zarr = path_folder_zarr
         self._path_process_synchronizer = path_process_synchronizer
+        self._flag_is_terminated = False
         
         if self.flag_spawn :
             # %% PROCESS SPAWNING %%
@@ -3881,10 +3885,11 @@ class ZarrServer( ) :
         """ # 2022-09-06 23:16:22 
         terminate the server
         """
-        if self.flag_spawn :
+        if self.flag_spawn and not self._flag_is_terminated : 
             # %% PROCESS SPAWNING %%
             self._pipe_sender_input.send( None )
             self._p.join( ) # wait until the process join the main process
+            self._flag_is_terminated = True # set the flag
     def __enter__( self ) :
         """ # 2022-12-08 02:00:08 
         """
@@ -3925,6 +3930,8 @@ class ZarrMetadataServer( ) :
         # set read-only attributes
         self._flag_spawn = flag_spawn # indicate that a process has been spawned
         
+        # set attributes
+        self._flag_is_terminated = False 
         if self.flag_spawn :
             # %% PROCESS SPAWNING %%
             # create pipes for interactions
@@ -3971,10 +3978,11 @@ class ZarrMetadataServer( ) :
         """ # 2022-09-06 23:16:22 
         terminate the server
         """
-        if self.flag_spawn :
+        if self.flag_spawn and not self._flag_is_terminated : 
             # %% PROCESS SPAWNING %%
             self._pipe_sender_input.send( None )
             self._p.join( ) # wait until the process join the main process
+            self._flag_is_terminated = True # set the flag
     def __enter__( self ) :
         """ # 2022-12-08 02:00:08 
         """
@@ -6835,38 +6843,30 @@ class RAMtx( ) :
                 rtx_with_zarr_server = RAMtx( rtx_template = self, l_rtx = list( None if rtx is None else rtx.get_fork_safe_version( ) for rtx in self._l_rtx ) )
         return rtx_with_zarr_server
     def terminate_spawned_processes( self ) :
-        """ # 2022-12-04 15:54:45 
+        """ # 2022-12-08 18:59:11 
         destroy zarr server objects if they exists in the current RAMtx
         """
-        # terminate the file system server
-        self.fs.terminate( )
-        # for remote zarr object, load the zarr object using the ZarrServer to avoid fork-not-safe error
-        if not self.is_combined and self.is_remote : # if current RAMtx is remotely located
-            if self.is_sparse :
-                # destroy Zarr object hosted in a spawned process
-                if hasattr( self._za_mtx_index, 'terminate' ) :
-                    self._za_mtx_index.terminate( )
-                if hasattr( self._za_mtx, 'terminate' ) :
-                    self._za_mtx.terminate( )
-            else : # dense matrix
-                if hasattr( self._za_mtx, 'terminate' ) :
-                    self._za_mtx.terminate( )
-        elif self.is_combined :
-            # %% COMBINED %%
-            # destroy zarr server for each component RAMtx object
-            for rtx in self._l_rtx :
-                if rtx is not None :
-                    rtx.terminate_spawned_processes( )
-    def __enter__( self ) :
-        """ # 2022-12-08 02:00:08 
-        return a (copy of) RAMtx object that is safe to use in a forked process
-        """
-        return self
-    def __exit__( self ) :
-        """ # 2022-12-08 02:00:08 
-        return a (copy of) RAMtx object that is safe to use in a forked process
-        """
-        self.terminate( )
+        if not hasattr( self, '_flag_is_terminated' ) : # terminate the spawned processes only once
+            # terminate the file system server
+            self.fs.terminate( )
+            # for remote zarr object, load the zarr object using the ZarrServer to avoid fork-not-safe error
+            if not self.is_combined and self.is_remote : # if current RAMtx is remotely located
+                if self.is_sparse :
+                    # destroy Zarr object hosted in a spawned process
+                    if hasattr( self._za_mtx_index, 'terminate' ) :
+                        self._za_mtx_index.terminate( )
+                    if hasattr( self._za_mtx, 'terminate' ) :
+                        self._za_mtx.terminate( )
+                else : # dense matrix
+                    if hasattr( self._za_mtx, 'terminate' ) :
+                        self._za_mtx.terminate( )
+            elif self.is_combined :
+                # %% COMBINED %%
+                # destroy zarr server for each component RAMtx object
+                for rtx in self._l_rtx :
+                    if rtx is not None :
+                        rtx.terminate_spawned_processes( )
+            self._flag_is_terminated = False # set a flag indicating spawned processes have been terminated.
     def get_za( self ) :
         """ # 2022-09-05 11:11:05 
         get zarr objects for operating RAMtx matrix.  the primary function of this function is to retrieve a zarr objects hosted in a thread-safe spawned process when the source is remotely located (http)
@@ -8263,7 +8263,7 @@ class RamDataLayer( ) :
             rtx.terminate_spawned_processes( ) # terminate spawned processes from the RAMtx object
 ''' class for storing RamData '''
 class RamData( ) :
-    """ # 2022-12-06 23:40:57 
+    """ # 2022-12-09 16:59:50 
     This class provides frameworks for single-cell transcriptomic/genomic data analysis, utilizing RAMtx data structures, which is backed by Zarr persistant arrays.
     Extreme lazy loading strategies used by this class allows efficient parallelization of analysis of single cell data with minimal memory footprint, loading only essential data required for analysis. 
     
@@ -8293,7 +8293,7 @@ class RamData( ) :
         int_index_component_reference : Union[ int, None ] = None # if an integer is given and 'combined' mode is being used, use the component as the default reference component
 
     === Amazon S3/other file remote system ===
-    path_folder_temp : Union[ str, None ] = '/tmp/' # a temporary folder where the temporary output files will be saved and processed before being uploaded to the remote location, which makes the file system operations more efficient. if None is given, current working directory will be used.
+    path_folder_temp_local_default_for_remote_ramdata : str = '/tmp/' # a default local temporary folder where the temporary output files will be saved and processed before being uploaded to the remote location, where RamData resides remotely, which makes the file system operations more efficient. 
 
     === AnnDataContainer ===
     flag_load_anndata_container : bool = False # load anndata container to load/save anndata objects stored in the curren RamData object
@@ -8326,7 +8326,7 @@ class RamData( ) :
         flag_load_anndata_container : bool = False,
         flag_enforce_name_adata_with_only_valid_characters : bool = True, 
         int_index_component_reference : Union[ int, None ] = None,
-        path_folder_temp : Union[ str, None ] = '/tmp/',
+        path_folder_temp_local_default_for_remote_ramdata : str = '/tmp/',
         verbose : bool = True, 
         flag_debugging : bool = False
     ) :
@@ -8339,9 +8339,6 @@ class RamData( ) :
         
         ''' modifiable settings '''
         # default settings
-        if path_folder_temp is None :
-            path_folder_temp = f'{os.getcwd( )}/temp_{bk.UUID( )}/' # define a temporary directory in the current working directory by default
-        self._path_folder_temp = path_folder_temp # set path of the temporary folder as an attribute
         # handle input object paths
         if path_folder_ramdata[ - 1 ] != '/' : # add '/' at the end of path to indicate it is a directory
             path_folder_ramdata += '/'
@@ -8360,6 +8357,7 @@ class RamData( ) :
         self._int_num_cpus_for_fetching_data = int_num_cpus_for_fetching_data
         self._dtype_of_feature_and_barcode_indices = dtype_of_feature_and_barcode_indices
         self._dtype_of_values = dtype_of_values
+        self._path_folder_temp_local_default_for_remote_ramdata = path_folder_temp_local_default_for_remote_ramdata
         # batch-generation associated settings, which can be changed later
         self.int_num_entries_for_each_weight_calculation_batch = int_num_entries_for_each_weight_calculation_batch
         self.int_total_weight_for_each_batch = int_total_weight_for_each_batch
@@ -8389,6 +8387,10 @@ class RamData( ) :
                 self._mode = 'r' # indicate current RamData cannot be modified
                 if self.verbose :
                     logging.info( 'The current RamData object cannot be modified yet no mask location is given. Therefore, the current RamData object will be "read-only"' )
+                    
+        ''' set 'path_folder_temp' '''
+        path_folder_temp = path_folder_temp_local_default_for_remote_ramdata if is_remote_url( self._path_folder_ramdata_modifiable ) else f'{self._path_folder_ramdata_modifiable}/temp_{bk.UUID( )}/' # define a temporary directory in the current working directory if modifiable RamData resides locally. if the modifiable RamData resides remotely, use 'path_folder_temp_local_default_for_remote_ramdata' as a the temporary folder
+        self._path_folder_temp = path_folder_temp # set path of the temporary folder as an attribute
         
         # initialize axis objects
         self.bc = RamDataAxis( path_folder_ramdata, 'barcodes', l_ax = list( ram.bc for ram in self._l_ramdata ) if self._l_ramdata is not None else None, index_ax_data_source_when_interleaved = index_ramdata_source_for_combined_barcodes_shared_across_ramdata, flag_check_combined_type = flag_check_combined_type, flag_is_interleaved = flag_combined_ramdata_barcodes_shared_across_ramdata, ba_filter = None, ramdata = self, dict_kw_zdf = dict_kw_zdf, dict_kw_view = dict_kw_view, int_index_str_rep = int_index_str_rep_for_barcodes, verbose = verbose, mode = self._mode, path_folder_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only )
@@ -8602,7 +8604,7 @@ class RamData( ) :
         if mask is given, path to the mask will be returned.
         if current ramdata location cannot be modified and no mask has been given, None will be returned.
         """
-        if self._path_folder_ramdata_mask is not None : # if mask is given, use the mask (mask should be modifiable)
+        if self._path_folder_ramdata_mask is not None and not is_remote_url( self._path_folder_ramdata_mask ) : # if mask is given and is located locally, use the mask
             return self._path_folder_ramdata_mask
         elif not self._flag_is_read_only : # if current object can be modified, create temp folder inside the current object
             return self._path_folder_ramdata
@@ -8623,7 +8625,7 @@ class RamData( ) :
     @property
     def path_folder_temp( self ) :
         """ # 2022-12-06 23:41:31 
-        return the path to the temporary folder
+        return the path to the temporary folder (a read-only attribute)
         """
         return self._path_folder_temp
     """ </Methods handling Paths> """
@@ -9261,7 +9263,7 @@ class RamData( ) :
         
         For example, one can define the following function:
         
-        ram = RamData( path_folder_to_ramdata )
+        ram = RamData( path_folder_to_ramdata ) verbose : bool = True,
         ram.a_variable = 10
         def func( self, int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value ) :
             return self, int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value * self.a_variable
@@ -9473,7 +9475,7 @@ class RamData( ) :
                     '''
                     # initialize
                     flag_is_destination_remote = is_remote_url( path_folder_ramtx_sparse_mtx ) # flag indicating whether a output destination is remotely located
-                    path_folder_dest = f"{path_folder_temp}matrix.zarr/" if flag_is_destination_remote else '' # define a path to the local output folder, which is either final destionation (local output) or temporary destionation before being uploaded (remote output)
+                    path_folder_dest = f"{path_folder_temp}matrix.zarr/" if flag_is_destination_remote else path_folder_ramtx_sparse_mtx # define a path to the local output folder, which is either final destionation (local output) or temporary destionation before being uploaded (remote output)
                     
                     fs = FileSystemServer( flag_spawn = flag_spawn ) # initialize a filesystem server
                     fs.filesystem_operations( 'mkdir', path_folder_dest ) # make the local output folder
@@ -9489,9 +9491,6 @@ class RamData( ) :
                         ins = pipe_input.recv( )
                         if ins is None : # if None is received, exit
                             break
-                        
-                        logging.info( f'batch {ins} was received' )
-                            
                         index_batch, int_num_processed_records, int_num_records_written, path_folder_zarr_output, path_file_index_output = ins # parse inputs
                             
                         ''' post-process sparse matrix output '''
