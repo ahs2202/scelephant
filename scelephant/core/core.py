@@ -4000,17 +4000,28 @@ class ZarrMetadataServer( ) :
         self.terminate( )
 ''' a class for file-system-backed synchronization of zarr objects '''
 class ZarrSpinLockServer( ) :
-    """ # 2022-12-11 14:00:26 
+    """ # 2022-12-11 19:36:14 
     A class for acquiring, waiting, releasing for a spin-lock based on a file system and the Zarr format
     
     === arguments ===
     flag_spawn : bool = False # when used in a forked process and path to the lock object is remote (e.g. Amazon S3), please set this flag to True to avoid runtime error. it will create appropriate ZarrMetadataServer and FileSystemServer objects to handle lock operations in a fork-safe manner.
     dict_kwargs_credentials_s3 : dict = dict( ) # the credentials for the Amazon S3 file system as keyworded arguments
+    filesystem_server : Union[ None, FileSystemServer ] = None # a FileSystemServer object to use. if None is given, start the new server based on the setting
+    zarrmetadata_server : Union[ None, ZarrMetadataServer ] = None # a FileSystemServer object to use. if None is given, start the new server based on the setting
     
     flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock : bool = False # if True, does not wait and raise 'RuntimeError' when a modification of a RamData cannot be made due to the resource that need modification is temporarily unavailable, locked by other processes
     float_second_to_wait_before_checking_availability_of_a_spin_lock : float = 0.5 # number of seconds to wait before repeatedly checking the availability of a spin lock if the lock has been acquired by other operations.
     """
-    def __init__( self, flag_spawn : bool = False, dict_kwargs_credentials_s3 : dict = dict( ), flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock : bool = False, float_second_to_wait_before_checking_availability_of_a_spin_lock : float = 0.5 ) :
+    def __init__( 
+        self, 
+        flag_spawn : bool = False, 
+        dict_kwargs_credentials_s3 : dict = dict( ), 
+        flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock : bool = False, 
+        float_second_to_wait_before_checking_availability_of_a_spin_lock : float = 0.5, 
+        filesystem_server : Union[ None, FileSystemServer ] = None, 
+        zarrmetadata_server : Union[ None, ZarrMetadataServer ] = None,
+        template = None,
+    ) :
         """ # 2022-12-11 14:03:53  
         """
         # set read-only attributes
@@ -4018,15 +4029,20 @@ class ZarrSpinLockServer( ) :
         self._str_uuid_lock = bk.UUID( ) # a unique id of the current ZarrSpinLockServer object. This id will be used to acquire and release locks so that lock can only be released by the object that acquired the lock
         
         # set attributes that can be changed anytime during the lifetime of the object
-        self.flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock = flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock
-        self.float_second_to_wait_before_checking_availability_of_a_spin_lock = float_second_to_wait_before_checking_availability_of_a_spin_lock
+        if isinstance( template, ZarrSpinLockServer ) :
+            # retrieve attributes from the template
+            self.flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock = template.flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock
+            self.float_second_to_wait_before_checking_availability_of_a_spin_lock = template.float_second_to_wait_before_checking_availability_of_a_spin_lock
+        else :
+            self.flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock = flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock
+            self.float_second_to_wait_before_checking_availability_of_a_spin_lock = float_second_to_wait_before_checking_availability_of_a_spin_lock
         
         # set attributes
         self._flag_is_terminated = False
         
         # start servers required for operations
-        self.fs = FileSystemServer( flag_spawn = flag_spawn, dict_kwargs_credentials_s3 = dict_kwargs_credentials_s3 )
-        self.zms = ZarrMetadataServer( flag_spawn = flag_spawn, dict_kwargs_credentials_s3 = dict_kwargs_credentials_s3 )
+        self.fs = filesystem_server if isinstance( filesystem_server, FileSystemServer ) else FileSystemServer( flag_spawn = flag_spawn, dict_kwargs_credentials_s3 = dict_kwargs_credentials_s3 )
+        self.zms = zarrmetadata_server if isinstance( zarrmetadata_server, ZarrMetadataServer ) else ZarrMetadataServer( flag_spawn = flag_spawn, dict_kwargs_credentials_s3 = dict_kwargs_credentials_s3 )
         
         # initialize a set for saving the list of lock objects current ZarrSpinLockServer has acquired in order to ignore additional attempts to acquire the lock that has been already acquired
         self._set_path_folder_lock = set( )
@@ -4065,20 +4081,32 @@ class ZarrSpinLockServer( ) :
         terminate the spawned process when exiting the context
         """
         self.terminate( )
+    def process_path_folder_lock( self, path_folder_lock ) :
+        """ # 2022-12-11 22:40:37 
+        process the given 'process_path_folder_lock'
+        """
+        # add '/' at the end of the 'path_folder_lock'
+        if path_folder_lock[ -1 ] != '/' :
+            path_folder_lock += '/'
+        return path_folder_lock
     def check_lock( self, path_folder_lock : str ) :
         """ # 2022-12-10 21:32:38 
         check whether the lock currently exists, based on the file system where the current lock object resides.
         
-        path_folder_lock : str # path to the lock (an absolute path to the zarr object, representing a spin lock)
+        path_folder_lock : str # an absolute (full-length) path to the lock (an absolute path to the zarr object, representing a spin lock)
         """
+        # process 'path_folder_lock'
+        path_folder_lock = self.process_path_folder_lock( path_folder_lock )
         # return the flag indicating whether the lock exists
         return self.fs.filesystem_operations( 'exists', f"{path_folder_lock}.zattrs" )
     def wait_lock( self, path_folder_lock : str ) :
         """ # 2022-12-10 21:32:38 
         wait for the lock, based on the file system where the current lock object resides.
         
-        path_folder_lock : str # path to the lock (an absolute path to the zarr object, representing a spin lock)
+        path_folder_lock : str # an absolute (full-length) path to the lock (an absolute path to the zarr object, representing a spin lock)
         """
+        # process 'path_folder_lock'
+        path_folder_lock = self.process_path_folder_lock( path_folder_lock )
         # if lock is available and 'flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock' is True, raise a RuntimeError
         if self.check_lock( path_folder_lock ) and self.flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock :
             raise RuntimeError( f'a lock is present at ({path_folder_lock}), exiting' )
@@ -4090,11 +4118,13 @@ class ZarrSpinLockServer( ) :
         acquire the lock, based on the file system where the current lock object resides.
         
         === arguments ===
-        path_folder_lock : str # path to the lock (an absolute path to the zarr object, representing a spin lock)
+        path_folder_lock : str # an absolute (full-length) path to the lock (an absolute path to the zarr object, representing a spin lock)
         
         === returns ===
         return str_uuid_lock # return 'str_uuid_lock' that is required for releasing the created lock
         """
+        # process 'path_folder_lock'
+        path_folder_lock = self.process_path_folder_lock( path_folder_lock )
         if path_folder_lock not in self.currently_held_locks : # if the lock object has not been previously acquired by the current object
             # wait until the lock becomes available
             self.wait_lock( path_folder_lock )
@@ -4109,8 +4139,10 @@ class ZarrSpinLockServer( ) :
         """ # 2022-12-10 21:32:38 
         release the lock, based on the file system where the current lock object resides
         
-        path_folder_lock : str # path to the lock (an absolute path to the zarr object, representing a spin lock)
+        path_folder_lock : str # an absolute (full-length) path to the lock (an absolute path to the zarr object, representing a spin lock)
         """
+        # process 'path_folder_lock'
+        path_folder_lock = self.process_path_folder_lock( path_folder_lock )
         if path_folder_lock in self.currently_held_locks : # if the lock object has been previously acquired by the current object
             # if the lock is available, release lock using the given 'str_uuid_lock'
             if self.check_lock( path_folder_lock ) :
@@ -4119,10 +4151,11 @@ class ZarrSpinLockServer( ) :
                     self.fs.filesystem_operations( 'rm', path_folder_lock )
                 else :
                     raise KeyError( f"{str_uuid_lock} of the current ZarrSpinLockServer does not match that of the lock object" )
-                
+    """ </Methods for Locking> """
+    
 ''' a class for Zarr-based DataFrame object '''
 class ZarrDataFrame( ) :
-    """ # 2022-11-14 23:49:26 
+    """ # 2022-12-12 00:44:54 
     storage-based persistant DataFrame backed by Zarr persistent arrays.
     each column can be separately loaded, updated, and unloaded.
     a filter can be set, which allows updating and reading ZarrDataFrame as if it only contains the rows indicated by the given filter.
@@ -4205,10 +4238,13 @@ class ZarrDataFrame( ) :
     flag_use_lazy_loading = True : if False, all values from a column from masked ZDF or combined ZDF will be retrieved and saved as a new column of the current ZDF even when a single entry was accessed. 
         if True, based on the availability mask, only the accessed entries will be transferred to the current ZDF object, reducing significant overhead when the number of rows are extremely large (e.g. > 10 million entries)
         
+    === Amazon S3/other file remote system ===
+    dict_kwargs_credentials_s3 : dict = dict( ) # credentials for Amazon S3 object. By default, credentials will be retrieved from the default location.
+        
     === Synchronization across multiple processes and (remote) devices analyzing the current ZarrDataFrame (multiple 'researchers') ===  
     flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock : bool = False # if True, does not wait and raise 'RuntimeError' when a modification of a RamData cannot be made due to the resource that need modification is temporarily unavailable, locked by other processes
     float_second_to_wait_before_checking_availability_of_a_spin_lock : float = 0.5 # number of seconds to wait before repeatedly checking the availability of a spin lock if the lock has been acquired by other operations.
-    zarrspinlockserver : Union[ None, ZarrSpinLockServer ] = None # a ZarrSpinLockServer objec. if None is given, a new ZarrSpinLockServer object will be created and attached to the current ZarrDataFrame object
+    zarrspinlockserver : Union[ True, None, ZarrSpinLockServer ] = None # a ZarrSpinLockServer object for synchronization of methods of the current object. if None is given, synchronization feature will not be used. if True is given, a new ZarrSpinLockServer object will be created and attached to the current ZarrDataFrame object
     """
     def __init__( 
         self, 
@@ -4234,15 +4270,16 @@ class ZarrDataFrame( ) :
         flag_use_mask_for_caching : bool = True, 
         verbose : bool = True,
         flag_use_lazy_loading : bool = True,
+        dict_kwargs_credentials_s3 : dict = dict( ),
         flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock : bool = False,
         float_second_to_wait_before_checking_availability_of_a_spin_lock : float = 0.5,
-        zarrspinlockserver : Union[ None, ZarrSpinLockServer ] = None,
+        zarrspinlockserver : Union[ None, True, ZarrSpinLockServer ] = None,
     ) :
         """ # 2022-11-14 23:49:20 
         """
         # set attributes that can be changed anytime during the lifetime of the object
-        self.flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock = flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock
-        self.float_second_to_wait_before_checking_availability_of_a_spin_lock = float_second_to_wait_before_checking_availability_of_a_spin_lock
+        self._flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock = flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock
+        self._float_second_to_wait_before_checking_availability_of_a_spin_lock = float_second_to_wait_before_checking_availability_of_a_spin_lock
         
         # handle path
         if '://' not in path_folder_zdf : # does not retrieve abspath if the given path is remote path
@@ -4269,6 +4306,14 @@ class ZarrDataFrame( ) :
         self._l_dict_index_mapping_interleaved = l_dict_index_mapping_interleaved
         self._l_dict_index_mapping_from_combined_to_component = l_dict_index_mapping_from_combined_to_component
         self._l_dict_index_mapping_from_component_to_combined = l_dict_index_mapping_from_component_to_combined
+        
+        # load a zarr spin lock server
+        if isinstance( zarrspinlockserver, ZarrSpinLockServer ) :
+            self._zsls = zarrspinlockserver 
+        elif zarrspinlockserver : # if 'zarrspinlockserver' is True, start a new zarr spin lock server
+            self._zsls = ZarrSpinLockServer( flag_spawn = False, dict_kwargs_credentials_s3 = dict_kwargs_credentials_s3, flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock = flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock, float_second_to_wait_before_checking_availability_of_a_spin_lock = float_second_to_wait_before_checking_availability_of_a_spin_lock )
+        else : # if 'zarrspinlockserver' is False or None, does not use a synchronization feature
+            self._zsls = None
 
         # %% COMBINED = STACKED %%
         if self.is_combined and not self.is_interleaved :
@@ -4294,18 +4339,18 @@ class ZarrDataFrame( ) :
             # if 'int_num_rows' has been given, add it to the metadata
             if int_num_rows is not None :
                 self._dict_metadata[ 'int_num_rows' ] = int_num_rows
-            self._save_metadata_( ) # save metadata
+            self.set_metadata( self._dict_metadata ) # save metadata
         else :
             # read existing zdf object
             self._root = zarr.open( path_folder_zdf, mode = 'a' )
                 
             # retrieve metadata
-            self._dict_metadata = self._root.attrs[ 'dict_metadata' ] 
-            # handle old version of the zarrdataframe columns
+            self._dict_metadata = self.get_metadata( )
+            # handle the old versions of the zarrdataframe columns
             if 'columns' in self._dict_metadata :
                 if isinstance( self._dict_metadata[ 'columns' ], list ) :
                     self._dict_metadata[ 'columns' ] = dict( ( col, None ) for col in self._dict_metadata[ 'columns' ] )
-                    self._save_metadata_( ) # save metadata
+                    self.set_metadata( self._dict_metadata ) # save metadata
         
         # if a mask is given, open the mask zdf
         self._mask = None # initialize 'mask'
@@ -4330,6 +4375,9 @@ class ZarrDataFrame( ) :
                 l_dict_index_mapping_from_component_to_combined = l_dict_index_mapping_from_component_to_combined,
                 zdf_source = self, # give reference to current source zdf
                 flag_use_lazy_loading = self._flag_use_lazy_loading,
+                flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock = flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock,
+                float_second_to_wait_before_checking_availability_of_a_spin_lock = float_second_to_wait_before_checking_availability_of_a_spin_lock,
+                zarrspinlockserver = self._zsls # use the zarrspinlockserver of the current ZDF.
             ) # the mask ZarrDataFrame shoud not have mask, should be modifiable, and not mode == 'r'.
         
         # handle input arguments
@@ -4343,12 +4391,18 @@ class ZarrDataFrame( ) :
             self.update( df )
             
         # initialize attribute storing columns as dictionaries
-        self.dict = dict( )
+        self.dict = dict( )      
     def __len__( self ) :
         """ # 2022-09-22 23:45:53 
         return the number of rows (after applying filter if a filter has been set)
         """
         return self.n_rows
+    @property
+    def path_folder_zdf( self ) :
+        """ # 2022-12-11 22:38:21 
+        return 'path_folder_zdf' of the current object
+        """
+        return self._path_folder_zdf
     @property
     def is_mask( self ) :
         """ # 2022-09-10 22:14:40 
@@ -4397,16 +4451,10 @@ class ZarrDataFrame( ) :
         """ # 2022-08-02 13:01:53 
         setting the length of chunk in the primary axis
         """
-        self._dict_metadata[ 'int_num_rows_in_a_chunk' ] = val
-        self._save_metadata_( ) # save metadata
+        self.update_metadata( { 'int_num_rows_in_a_chunk' : val } ) # update metadata
         # update the settings of the mask, if available.
         if self._mask is not None :
             self.int_num_rows_in_a_chunk = val
-    @property
-    def metadata( self ) :
-        ''' # 2022-07-21 02:38:31 
-        '''
-        return self._dict_metadata
     @property
     def _n_rows_unfiltered( self ) :
         """ # 2022-06-22 23:12:09 
@@ -4450,8 +4498,7 @@ class ZarrDataFrame( ) :
             
             # check the length of filter bitarray
             if 'int_num_rows' not in self._dict_metadata : # if 'int_num_rows' has not been set, set 'int_num_rows' using the length of the filter bitarray
-                self._dict_metadata[ 'int_num_rows' ] = len( ba_filter )
-                self._save_metadata_( ) # save metadata
+                self.update_metadata( dict_metadata_to_be_updated = { 'int_num_rows' : len( ba_filter ) } ) # save metadata
             else :
                 # check the length of filter bitarray
                 assert len( ba_filter ) == self._dict_metadata[ 'int_num_rows' ]
@@ -4491,25 +4538,242 @@ class ZarrDataFrame( ) :
                     for zdf in self._l_zdf :
                         zdf.filter = ba_filter[ int_pos : int_pos + zdf._n_rows_unfiltered ] # apply a subset of filter
                         int_pos += zdf._n_rows_unfiltered # update 'int_pos'
+    """ <Methods handling columns> """
+    @property
+    def columns( self ) :
+        ''' # 2022-08-25 17:33:18 
+        return available column names (including mask and components) as a set
+        '''
+        # retrieve columns
+        columns = set( self._dict_metadata[ 'columns' ] )
+        # add columns of mask
+        if self._mask is not None : # if mask is available :
+            columns = columns.union( set( self._mask._dict_metadata[ 'columns' ] ) ) # return the column names of the current ZDF and the mask ZDF
+        # add columns from zdf components
+        if self.is_combined :
+            if self.is_interleaved :
+                # %% COMBINED INTERLEAVED %%
+                zdf = self._l_zdf[ self.index_zdf_data_source_when_interleaved ] # retrieve data source zdf
+                columns = columns.union( zdf.columns ) # add columns of the data source zdf
+            else :
+                # %% COMBINED STACKED %%
+                for zdf in self._l_zdf : # for each zdf component
+                    columns = columns.union( zdf.columns ) # add columns of the zdf component
+        return columns
+    @property
+    def columns_excluding_components( self ) :
+        ''' # 2022-08-26 14:23:27 
+        return available column names (including mask but excluding components) as a set
+        '''
+        # retrieve columns
+        columns = set( self._dict_metadata[ 'columns' ] )
+        # add columns of mask
+        if self._mask is not None : # if mask is available :
+            columns = columns.union( set( self._mask._dict_metadata[ 'columns' ] ) ) # return the column names of the current ZDF and the mask ZDF
+        return columns
+    def __contains__( self, name_col : str ) :
+        """ # 2022-08-25 17:33:22 
+        check whether a column name exists in the given ZarrDataFrame
+        """
+        return name_col in self.columns
+    def __iter__( self ) :
+        """ # 2022-11-15 00:55:57 
+        iterate name of columns in the current ZarrDataFrame
+        """
+        if self._mask is not None : # if mask is available :
+            return iter( set( self.columns ).union( set( self._mask.columns ) ) ) # iterate over the column names of the current ZDF and the mask ZDF
+        else :
+            return iter( self.columns )
+    def _get_column_path( self, name_col : str ) :
+        """ # 2022-08-26 10:34:35 
+        if 'name_col' column exists in the current ZDF object, return the path of the column. the columns in mask, or component ZarrDataFrame will be found and retrieved.
+        
+        === arguments ===
+        'name_col' : the name of the column to search
+        
+        the column will be searched in the following order: main zdf object --> mask zdf object --> component zdf objects, in the order specified in the list.
+        """
+        path_col = None # set default value
+        if name_col is not None and name_col in self : # use 'name_col' as a template if valid name_col has been given
+            if name_col in self._dict_metadata[ 'columns' ] : # search the current zdf
+                path_col = f"{self._path_folder_zdf}{name_col}/" 
+            elif self._mask is not None and name_col in self._mask._dict_metadata[ 'columns' ] : # search mask (if available)
+                path_col = f"{self._mask._path_folder_zdf}{name_col}/"
+            elif self.is_combined : # search component zdf(s) (if combined mode is active)
+                if self.is_interleaved :
+                    # %% COMBINED INTERLEAVED %%
+                    zdf = self._l_zdf[ self.index_zdf_data_source_when_interleaved ] # retrieve data source zdf
+                    path_col = f"{zdf._path_folder_zdf}{name_col}/"
+                else :
+                    # %% COMBINED STACKED %%
+                    for zdf in self._l_zdf : # for each zdf component
+                        if name_col in zdf : # when the column was identified
+                            path_col = f"{zdf._path_folder_zdf}{name_col}/"
+                            break
+        return path_col # return the path of the matched column
+    """ <Methods handling columns> """
+    """ <Methods handling Metadata> """
+    @property
+    def metadata( self ) :
+        ''' # 2022-07-21 02:38:31 
+        '''
+        return self.get_metadata( )
+    def get_metadata( self ) :
+        """ # 2022-12-11 22:08:05 
+        read metadata with file-locking
+        """
+        if self._zsls is not None : # when locking has been enabled, read metadata from the storage, and update the metadata currently loaded in the memory
+            self._zsls.wait_lock( f"{self._path_folder_zdf}.zattrs.lock/" ) # wait until a lock is released
+            self._dict_metadata = self._zsls.zms.get_metadata( self._path_folder_zdf, 'dict_metadata' ) # retrieve metadata from the storage, and update the metadata stored in the object
+        return self._dict_metadata # return the metadata
+    def set_metadata( self, dict_metadata : dict ) :
+        """ # 2022-12-11 22:08:05 
+        write metadata with file-locking
+        """
+        if self._flag_is_read_only : # save metadata only when it is not in the read-only mode 
+            return
+        self._dict_metadata = dict_metadata # update metadata stored in the memory
+        if self._zsls is None : # if locking is not used, return previously loaded metadata
+            self._root.attrs[ 'dict_metadata' ] = self._dict_metadata
+        else : # when locking has been enabled
+            self._zsls.acquire_lock( f"{self._path_folder_zdf}.zattrs.lock/" ) # acquire a lock
+            self._zsls.zms.set_metadata( self._path_folder_zdf, 'dict_metadata', self._dict_metadata ) # write metadata to the storage
+            self._zsls.release_lock( f"{self._path_folder_zdf}.zattrs.lock/" ) # release the lock
+    def update_metadata( self, dict_metadata_to_be_updated : dict = dict( ), l_name_col_to_be_deleted : Union[ None, list ] = None, dict_rename_name_col : dict = dict( ) ) :
+        """ # 2022-12-11 22:08:05 
+        write metadata with file-locking
+        
+        dict_metadata_to_be_updated : dict # a dictionarty for updating 'dict_metadata' of the current object
+        l_name_col_to_be_deleted : list = [ ] # a list of name of columns to be deleted from the metadata.
+        dict_rename_name_col : dict = dict( ) # a dictionary mapping previous name_col to new name_col for renaming columns
+        """
+        if self._flag_is_read_only : # update the metadata only when it is not in the read-only mode 
+            return
+        def __update_dict_metadata( dict_metadata : dict, dict_metadata_to_be_updated : dict, l_name_col_to_be_deleted : list, dict_rename_name_col : dict ) :
+            ''' # 2022-12-11 23:38:13 
+            update dict_metadata with dict_metadata_to_be_updated and return the updated dict_metadata
+            '''
+            if 'columns' in dict_metadata_to_be_updated :
+                dict_metadata_columns = dict_metadata[ 'columns' ]
+                dict_metadata_columns.update( dict_metadata_to_be_updated[ 'columns' ] )
+                dict_metadata_to_be_updated[ 'columns' ] = dict_metadata_columns
+                
+            # update 'dict_metadata'
+            dict_metadata.update( dict_metadata_to_be_updated )
+            
+            # delete columns from the 'dict_metadata'
+            for name_col in l_name_col_to_be_deleted :
+                if name_col in dict_metadata[ 'columns' ] :
+                    dict_metadata[ 'columns' ].pop( name_col )
+            
+            # rename columns of the 'dict_metadata'
+            for name_col_prev in dict_rename_name_col :
+                name_col_new = dict_rename_name_col[ name_col_prev ]
+                if name_col_prev in dict_metadata[ 'columns' ] and name_col_new not in dict_metadata[ 'columns' ] : # for a valid pair of previous and new column names
+                    dict_metadata[ 'columns' ][ name_col_new ] = dict_metadata[ 'columns' ].pop( name_col_prev ) # perform a renaming operation
+            
+            return dict_metadata
+        if self._zsls is None : # if locking is not used, return previously loaded metadata
+            self._dict_metadata = __update_dict_metadata( self._dict_metadata, dict_metadata_to_be_updated, l_name_col_to_be_deleted, dict_rename_name_col ) # update 'self._dict_metadata' with 'dict_metadata_to_be_updated'
+            self._root.attrs[ 'dict_metadata' ] = self._dict_metadata
+        else : # when locking has been enabled
+            self._zsls.acquire_lock( f"{self._path_folder_zdf}.zattrs.lock/" ) # acquire a lock
+            
+            self._dict_metadata = self._zsls.zms.get_metadata( self._path_folder_zdf, 'dict_metadata' ) # read metadata from the storage and update the metadata
+            self._dict_metadata = __update_dict_metadata( self._dict_metadata, dict_metadata_to_be_updated, l_name_col_to_be_deleted, dict_rename_name_col ) # update 'self._dict_metadata' with 'dict_metadata_to_be_updated'
+            self._zsls.zms.set_metadata( self._path_folder_zdf, 'dict_metadata', self._dict_metadata ) # write metadata to the storage
+            
+            self._zsls.release_lock( f"{self._path_folder_zdf}.zattrs.lock/" ) # release the lock
     def get_column_metadata( self, name_col : str ) :
-        """ # 2022-08-02 11:21:24 
+        """ # 2022-12-11 23:48:28 
         get metadata of a given column
         """
         if name_col in self : # if the current column is valid
             # if mask is available return the metadata from the mask
             if self._mask is not None and name_col in self._mask : # if the column is available in the mask
                 return self._mask.get_column_metadata( name_col = name_col )
+
+            # %% FILE LOCKING %%
+            if self._zsls is not None : # if locking is used, wait until lock is released
+                self._zsls.wait_lock( f"{self._path_folder_zdf}{name_col}.lock/" ) # wait until a lock is released
             
             # read metadata
             za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'r' ) # read data from the Zarr object
             dict_col_metadata = za.attrs[ 'dict_col_metadata' ] # retrieve metadata of the current column
             return dict_col_metadata
+    def set_column_metadata( self, name_col : str, dict_col_metadata : dict ) :
+        """ # 2022-12-11 23:17:27 
+        a method for setting metadata of a given column (and the metadata of the current object)
+        """
+        if name_col in self : # if the current column is valid
+            # if mask is available return the metadata from the mask
+            if self._mask is not None and name_col in self._mask : # if the column is available in the mask
+                return self._mask.set_column_metadata( name_col = name_col, dict_col_metadata = dict_col_metadata )
+            
+            # %% FILE LOCKING %%
+            if self._zsls is not None : # if locking is used, acquire the lock
+                self._zsls.acquire_lock( f"{self._path_folder_zdf}{name_col}.lock/" ) # wait until a lock is released
+            
+            # read column metadata
+            za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'a' ) # read data from the Zarr object
+            za.attrs[ 'dict_col_metadata' ] = dict_col_metadata # retrieve metadata of the current column
+            
+            if 'dict_metadata_description' in dict_col_metadata :
+                # update metadata (sycn. with metadata of the current object)
+                self.update_metadata( { 'columns' : { name_col : dict_col_metadata[ 'dict_metadata_description' ] } } )
+            
+            # %% FILE LOCKING %%
+            if self._zsls is not None : # if locking is used, release the lock
+                self._zsls.release_lock( f"{self._path_folder_zdf}{name_col}.lock/" ) # wait until a lock is released
+    def update_column_metadata( self, name_col : str, dict_col_metadata_to_be_updated : dict, flag_relpace_dict_metadata_description : bool = False ) :
+        """ # 2022-12-11 23:17:27 
+        a method for setting metadata of a given column (and the metadata of the current object)
+        
+        dict_col_metadata_to_be_updated : dict # a dictionarty for updating 'dict_col_metadata'
+        flag_relpace_dict_metadata_description : bool = False # if True, replace previous 'dict_col_metadata_description' with the current 'dict_col_metadata_description'. if False, update the previous 'dict_col_metadata_description' with the current 'dict_col_metadata_description' 
+        """
+        if name_col in self : # if the current column is valid
+            # if mask is available return the metadata from the mask
+            if self._mask is not None and name_col in self._mask : # if the column is available in the mask
+                return self._mask.update_column_metadata( name_col = name_col, dict_col_metadata_to_be_updated = dict_col_metadata_to_be_updated )
+            
+            # %% FILE LOCKING %%
+            if self._zsls is not None : # if locking is used, acquire the lock
+                self._zsls.acquire_lock( f"{self._path_folder_zdf}{name_col}.lock/" ) # wait until a lock is released
+            
+            # read metadata
+            za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'a' ) # read data from the Zarr object
+            dict_col_metadata = za.attrs[ 'dict_col_metadata' ] # read 'dict_col_metadata'
+            
+            # update 'dict_col_metadata_description'
+            if 'dict_metadata_description' in dict_col_metadata_to_be_updated : # if 'dict_col_metadata_to_be_updated' contains 'dict_metadata_description' for the update
+                dict_metadata_description = dict_col_metadata[ 'dict_metadata_description' ] if 'dict_metadata_description' in dict_col_metadata else dict( )  # retrieve 'dict_col_metadata_description' from 'dict_col_metadata'
+                if isinstance( dict_col_metadata_to_be_updated[ 'dict_metadata_description' ], dict ) : # if dict_col_metadata_to_be_updated[ 'dict_metadata_description' ] contains valid value
+                    dict_metadata_description.update( dict_col_metadata_to_be_updated[ 'dict_metadata_description' ] ) # update 'dict_col_metadata_description' using the 'dict_col_metadata_description' from the 'dict_col_metadata_to_be_updated'
+                else : # reset 'dict_metadata_description'
+                    dict_metadata_description = None
+                dict_col_metadata_to_be_updated[ 'dict_metadata_description' ] = dict_metadata_description # set the updated 'dict_col_metadata_description'
+                
+                # update metadata (sycn. with metadata of the current object)
+                self.update_metadata( { 'columns' : { name_col : dict_metadata_description } } )
+            
+            dict_col_metadata.update( dict_col_metadata_to_be_updated ) # update 'dict_col_metadata'
+            za.attrs[ 'dict_col_metadata' ] = dict_col_metadata # save the column metadata
+            
+            # %% FILE LOCKING %%
+            if self._zsls is not None : # if locking is used, release the lock
+                self._zsls.release_lock( f"{self._path_folder_zdf}{name_col}.lock/" ) # wait until a lock is released
     def get_column_metadata_description( self, name_col : str ) :
         """ # 2022-12-05 12:00:53 
-        retrieve description metadata of a given column.
+        retrieve description metadata of a given column. (might not be up-to-date.)
         """
         if name_col in self : # if the column exists in the current ZDF
-            return self.metadata[ 'columns' ][ name_col ] # return description metadata
+            if self._zsls is not None : 
+                # %% FILE LOCKING %%
+                return self.get_column_metadata( name_col )[ 'dict_metadata_description' ] # read column metadata from the storage
+            else : 
+                # when file locking is not used, return column_metadata_description from the metadata of the current object
+                return self._dict_metadata[ 'columns' ][ name_col ] # return description metadata
     def update_column_metadata_description( self, name_col : str, dict_col_metadata_description_to_be_updated : Union[ None, dict ] = None ) :
         """ # 2022-12-05 11:59:50 
         update description metadata of a given column.
@@ -4518,19 +4782,7 @@ class ZarrDataFrame( ) :
         
         (internally, ZDF metadata and individual column metadata will be modified)
         """
-        if name_col in self : # if the column exists in the current ZDF
-            if isinstance( dict_col_metadata_description_to_be_updated, dict ) : # if 'dict_col_metadata_description_to_be_updated' is a dictionary update the description metadata
-                # update 'dict_col_metadata_description'
-                dict_col_metadata_description = self.get_column_metadata_description( name_col )
-                if not isinstance( dict_col_metadata_description, None ) : # if 'dict_col_metadata_description' is not dictionary, initialize the new 'dict_col_metadata_description' dictionary
-                    dict_col_metadata_description = dict( )
-                dict_col_metadata_description.update( dict_col_metadata_description_to_be_updated ) # update the metadata of a ZDF
-                # set updated 'dict_col_metadata_description'
-                self.metadata[ 'columns' ][ name_col ] = dict_col_metadata_description # update the metadata of a ZDF
-                self._save_metadata_( ) # save metadata of the current ZDF object
-                dict_metadata = self.get_column_metadata( name_col ) # retrieve the column metadata
-                dict_metadata[ 'dict_col_metadata_description' ] = dict_col_metadata_description # set 'dict_col_metadata_description'
-                self._set_column_metadata( name_col, dict_metadata ) # save metadata to the storage
+        self.update_column_metadata( name_col = name_col, dict_col_metadata_to_be_updated = { 'dict_metadata_description' : dict_col_metadata_description_to_be_updated }, flag_relpace_dict_metadata_description = False ) # update previous 'dict_col_metadata_description' with the current 'dict_col_metadata_description'
     def set_column_metadata_description( self, name_col : str, dict_col_metadata_description : Union[ None, dict ] = None ) :
         """ # 2022-12-05 12:08:35 
         set description metadata of a given column
@@ -4539,13 +4791,36 @@ class ZarrDataFrame( ) :
         
         (internally, ZDF metadata and individual column metadata will be modified)
         """
-        if name_col in self : # if the column exists in the current ZDF
-            # set 'dict_col_metadata_description'
-            self.metadata[ 'columns' ][ name_col ] = dict_col_metadata_description # update the metadata of a ZDF
-            self._save_metadata_( ) # save metadata of the current ZDF object
-            dict_metadata = self.get_column_metadata( name_col ) # retrieve the column metadata
-            dict_metadata[ 'dict_col_metadata_description' ] = dict_col_metadata_description # set 'dict_col_metadata_description'
-            self._set_column_metadata( name_col, dict_metadata ) # save metadata to the storage
+        self.update_column_metadata( name_col = name_col, dict_col_metadata_to_be_updated = { 'dict_metadata_description' : dict_col_metadata_description }, flag_relpace_dict_metadata_description = True ) # replace previous 'dict_col_metadata_description' with the current 'dict_col_metadata_description'
+    def _add_column( self, name_col : str, dict_metadata_description : Union[ dict, None ] = None ) :
+        """ # 2022-11-15 00:14:14 
+        a semi-private method for adding column label to the metadata of the current ZarrDataFrame (not added to the metadata of the mask)
+        
+        dict_metadata_description : Union[ str, None ] = None # 'dict_metadata_description' of the column. if None, no description metadata will be recorded
+        """
+        if name_col not in self :
+            self.update_metadata( dict_metadata_to_be_updated = { 'columns' : { name_col : dict_metadata_description } } )
+    def _save_metadata_( self ) :
+        ''' # 2022-11-15 00:14:34 
+        save metadata of the current ZarrDataFrame
+        '''
+        if not self._flag_is_read_only : # save metadata only when it is not in the read-only mode
+            self.set_metadata( dict_metadata = self._dict_metadata ) # update metadata
+    def get_categories( self, name_col ) :
+        """ # 2022-12-12 01:09:37 
+        for columns with categorical data, return categories. if the column contains non-categorical data, return an empty list
+        """
+        if name_col in self : # if the current column is valid
+            # if the column is available in the mask, return the result of the mask
+            if self._mask is not None and name_col in self._mask :
+                return self._mask.get_categories( name_col = name_col )
+            
+            dict_col_metadata = self.get_column_metadata( name_col ) # retrieve metadata of the current column
+            if dict_col_metadata[ 'flag_categorical' ] : # if the current column contains categorical data
+                return dict_col_metadata[ 'l_value_unique' ]
+            else :
+                return [ ]
+    """ </Methods handling Metadata> """
     def lazy_load( self, queries, flag_mode_write : bool = False, name_col_sink : Union[ str, None ] = None, path_column_sink : Union[ str, None ] = None, path_column_source : Union[ str, None ] = None, l_path_column_source : Union[ list, None ] = None, name_col_availability : Union[ None, str ] = None, flag_retrieve_from_all_interleaved_components : bool = False ) -> None :
         """ # 2022-09-16 16:18:36 
         perform lazy-loading of a given column using the column containing availability values.
@@ -4727,46 +5002,7 @@ class ZarrDataFrame( ) :
             za.attrs[ 'flag_is_being_lazy_loaded' ] = False 
         else :
             # save metadata of availability column
-            self._set_column_metadata( name_col_availability, dict_col_metadata_availbility ) # save metadata
-    def _set_column_metadata( self, name_col : str, dict_col_metadata : dict ) :
-        """ # 2022-08-22 12:36:13 
-        a semi-private method for setting metadata of a given column (metadata is supposed to be read-only)
-        """
-        if name_col in self : # if the current column is valid
-            # if mask is available return the metadata from the mask
-            if self._mask is not None and name_col in self._mask : # if the column is available in the mask
-                return self._mask._set_column_metadata( name_col = name_col, dict_col_metadata = dict_col_metadata )
-            
-            # read metadata
-            za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'a' ) # read data from the Zarr object
-            za.attrs[ 'dict_col_metadata' ] = dict_col_metadata # retrieve metadata of the current column
-    def _get_column_path( self, name_col : str ) :
-        """ # 2022-08-26 10:34:35 
-        if 'name_col' column exists in the current ZDF object, return the path of the column. the columns in mask, or component ZarrDataFrame will be found and retrieved.
-        
-        === arguments ===
-        'name_col' : the name of the column to search
-        
-        the column will be searched in the following order: main zdf object --> mask zdf object --> component zdf objects, in the order specified in the list.
-        """
-        path_col = None # set default value
-        if name_col is not None and name_col in self : # use 'name_col' as a template if valid name_col has been given
-            if name_col in self._dict_metadata[ 'columns' ] : # search the current zdf
-                path_col = f"{self._path_folder_zdf}{name_col}/" 
-            elif self._mask is not None and name_col in self._mask._dict_metadata[ 'columns' ] : # search mask (if available)
-                path_col = f"{self._mask._path_folder_zdf}{name_col}/"
-            elif self.is_combined : # search component zdf(s) (if combined mode is active)
-                if self.is_interleaved :
-                    # %% COMBINED INTERLEAVED %%
-                    zdf = self._l_zdf[ self.index_zdf_data_source_when_interleaved ] # retrieve data source zdf
-                    path_col = f"{zdf._path_folder_zdf}{name_col}/"
-                else :
-                    # %% COMBINED STACKED %%
-                    for zdf in self._l_zdf : # for each zdf component
-                        if name_col in zdf : # when the column was identified
-                            path_col = f"{zdf._path_folder_zdf}{name_col}/"
-                            break
-        return path_col # return the path of the matched column
+            self.set_column_metadata( name_col_availability, dict_col_metadata_availbility ) # save metadata
     def get_integer_indices( self, queries = None ) :
         """ # 2022-09-11 21:44:43 
         retrieve integer indices from advanced indexing queries.
@@ -5203,8 +5439,7 @@ class ZarrDataFrame( ) :
 
         # update the length of zdf if it has not been set.
         if self._n_rows_unfiltered is None : # if a valid information about the number of rows is available
-            self._dict_metadata[ 'int_num_rows' ] = len( values ) # retrieve the length of the primary axis
-            self._save_metadata_( ) # save metadata
+            self.update_metadata( { 'int_num_rows' : len( values ) } ) # retrieve the length of the primary axis # update metadata
         
         """ convert data to np.ndarray """
         # detect broadcasting 
@@ -5321,8 +5556,7 @@ class ZarrDataFrame( ) :
         
         # update metadata of the current zdf object
         if name_col not in self._dict_metadata[ 'columns' ] :
-            self._dict_metadata[ 'columns' ][ name_col ] = dict_col_metadata[ 'dict_metadata_description' ] # add 'dict_metadata_description'
-            self._save_metadata_( )
+            self._add_column( name_col = name_col, dict_metadata_description = dict_col_metadata[ 'dict_metadata_description' ] ) # add 'dict_metadata_description'
         
         # if indexing was used to partially update the data, remove the cache, because it can cause inconsistency
         if flag_indexing_primary_axis and name_col in self._loaded_data :
@@ -5355,59 +5589,13 @@ class ZarrDataFrame( ) :
             # remove column from the memory
             self.unload( name_col ) 
             # remove the column from metadata
-            self._dict_metadata[ 'columns' ].pop( name_col )
-            self._save_metadata_( ) # update metadata
+            self.update_metadata( l_name_col_to_be_deleted = [ name_col ] ) # update metadata
             # delete the column from the disk ZarrDataFrame object
             filesystem_operations( 'rm', f"{self._path_folder_zdf}{name_col}/" )
     def __repr__( self ) :
         """ # 2022-07-20 23:00:15 
         """
         return f"<ZarrDataFrame object{'' if self._n_rows_unfiltered is None else ' containing '}{'' if self.filter is None else f'{self.n_rows}/'}{'' if self._n_rows_unfiltered is None else f'{self._n_rows_unfiltered} rows'} stored at {self._path_folder_zdf}\n\twith the following columns: {sorted( self._dict_metadata[ 'columns' ] )}" + ( '\n\t[combined]-' + ( '(interleaved)' if self.is_interleaved else '(stacked)' ) + f" ZarrDataFrame, composed of the following ZarrDataFrame objects:\n[" + '\n'.join( str( zdf ) for zdf in self._l_zdf ) + "]" if self.is_combined else '' ) +  ">"
-    @property
-    def columns( self ) :
-        ''' # 2022-08-25 17:33:18 
-        return available column names (including mask and components) as a set
-        '''
-        # retrieve columns
-        columns = set( self._dict_metadata[ 'columns' ] )
-        # add columns of mask
-        if self._mask is not None : # if mask is available :
-            columns = columns.union( set( self._mask._dict_metadata[ 'columns' ] ) ) # return the column names of the current ZDF and the mask ZDF
-        # add columns from zdf components
-        if self.is_combined :
-            if self.is_interleaved :
-                # %% COMBINED INTERLEAVED %%
-                zdf = self._l_zdf[ self.index_zdf_data_source_when_interleaved ] # retrieve data source zdf
-                columns = columns.union( zdf.columns ) # add columns of the data source zdf
-            else :
-                # %% COMBINED STACKED %%
-                for zdf in self._l_zdf : # for each zdf component
-                    columns = columns.union( zdf.columns ) # add columns of the zdf component
-        return columns
-    @property
-    def columns_excluding_components( self ) :
-        ''' # 2022-08-26 14:23:27 
-        return available column names (including mask but excluding components) as a set
-        '''
-        # retrieve columns
-        columns = set( self._dict_metadata[ 'columns' ] )
-        # add columns of mask
-        if self._mask is not None : # if mask is available :
-            columns = columns.union( set( self._mask._dict_metadata[ 'columns' ] ) ) # return the column names of the current ZDF and the mask ZDF
-        return columns
-    def __contains__( self, name_col : str ) :
-        """ # 2022-08-25 17:33:22 
-        check whether a column name exists in the given ZarrDataFrame
-        """
-        return name_col in self.columns
-    def __iter__( self ) :
-        """ # 2022-11-15 00:55:57 
-        iterate name of columns in the current ZarrDataFrame
-        """
-        if self._mask is not None : # if mask is available :
-            return iter( set( self.columns ).union( set( self._mask.columns ) ) ) # iterate over the column names of the current ZDF and the mask ZDF
-        else :
-            return iter( self.columns )
     @property
     def df( self ) :
         ''' # 2022-07-01 22:32:00 
@@ -5420,36 +5608,6 @@ class ZarrDataFrame( ) :
         else :
             df = pd.DataFrame( index = arr_index ) # build an empty dataframe using the integer indices
         return df
-    def _add_column( self, name_col : str, dict_metadata_description : Union[ str, None ] = None ) :
-        """ # 2022-11-15 00:14:14 
-        a semi-private method for adding column label to the metadata of the current ZarrDataFrame (not added to the metadata of the mask)
-        
-        dict_metadata_description : Union[ str, None ] = None # 'dict_metadata_description' of the column. if None, no description metadata will be recorded
-        """
-        if name_col not in self :
-            self._dict_metadata[ 'columns' ][ name_col ] = dict_metadata_description
-            self._save_metadata_( )
-    def _save_metadata_( self ) :
-        ''' # 2022-11-15 00:14:34 
-        save metadata of the current ZarrDataFrame
-        '''
-        if not self._flag_is_read_only : # save metadata only when it is not in the read-only mode
-            self._root.attrs[ 'dict_metadata' ] = self._dict_metadata # update metadata
-    def get_categories( self, name_col ) :
-        """ # 2022-06-21 00:57:37 
-        for columns with categorical data, return categories. if the column contains non-categorical data, return an empty list
-        """
-        if name_col in self : # if the current column is valid
-            # if the column is available in the mask, return the result of the mask
-            if self._mask is not None and name_col in self._mask :
-                return self._mask.get_categories( name_col = name_col )
-            
-            za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'r' ) # read data from the Zarr object
-            dict_col_metadata = za.attrs[ 'dict_col_metadata' ] # retrieve metadata of the current column
-            if dict_col_metadata[ 'flag_categorical' ] : # if the current column contains categorical data
-                return dict_col_metadata[ 'l_value_unique' ]
-            else :
-                return [ ]
     def update( self, df, flag_use_index_as_integer_indices = True ) :
         """ # 2022-06-20 21:36:55 
         update ZarrDataFrame with the given 'df'
@@ -5685,9 +5843,7 @@ class ZarrDataFrame( ) :
             filesystem_operations( 'mv', f"{self._path_folder_zdf}{name_col_before}/", f"{self._path_folder_zdf}{name_col_after}/" )
             
             # remove previous column name and add new column name
-            dict_metadata_description = self._dict_metadata[ 'columns' ].pop( name_col_before ) # remove the column and retrieve the desscription metadata
-            self._dict_metadata[ 'columns' ][ name_col_after ] = dict_metadata_description # add description metadata to the ZarrDataFrame metadata
-            self._save_metadata_( ) # update metadata
+            self.update_metadata( dict_rename_name_col = { name_col_before : name_col_after } ) # update metadata
     """ <Methods for Locking> """
     def check_lock( self, type_resource : Literal[ 'metadata', 'column' ], name_col : Union[ str, None ] = None ) :
         """ # 2022-12-10 21:32:38 
@@ -5785,7 +5941,6 @@ class ZarrDataFrame( ) :
                 filesystem_operations( 'rm', path_folder_lock )
             else :
                 raise KeyError( f"{str_uuid_lock} does not match that of the lock" )
-    """ </Methods for Locking> """
 ''' a class for representing axis of RamData (barcodes/features) '''
 class IndexMappingDictionary( ) :
     """ # 2022-09-02 00:53:27 
@@ -5844,6 +5999,8 @@ class RamDataAxis( ) :
     'flag_load_all_string_representations_from_components' = False # if True, load all string representations in zarr format AND chunks format (for compatibility with Zarr.js). 
         if False, string representations will be loaded as it is accessed. to load string representations in chunks format (lazy-loading not supported), please run RamDataAxis.prepare_javascript_application method.
     
+    === Synchronization across multiple processes ===  
+    zarrspinlockserver : Union[ None, ZarrSpinLockServer ] = None # a ZarrSpinLockServer object for synchronization of methods of the current object.
     """
     def __init__( 
         self, 
@@ -5864,6 +6021,7 @@ class RamDataAxis( ) :
         dict_kw_zdf : dict = { 'flag_retrieve_categorical_data_as_integers' : False, 'flag_load_data_after_adding_new_column' : True, 'flag_enforce_name_col_with_only_valid_characters' : True, 'int_max_num_entries_per_batch' : 1000000 }, 
         dict_kw_view : dict = { 'float_min_proportion_of_active_entries_in_an_axis_for_using_array' : 0.1, 'dtype' : np.int32 }, 
         flag_load_all_string_representations_from_components : bool = False,
+        zarrspinlockserver : Union[ None, ZarrSpinLockServer ] = None,
         verbose : bool = True
     ) :
         """ # 2022-08-30 12:25:03 
@@ -5888,6 +6046,9 @@ class RamDataAxis( ) :
         self._l_dict_index_mapping_from_component_to_combined = None # set default value for list of dictionaries (or similar class) for mapping component indices to combined indices. this will be used for both combined-stacked and combined-interleaved.
         self._dict_index_mapping_from_combined_to_dest_component = None # set default mapping to destination component
         self._int_index_component_destination = None
+        
+        # load a zarr spin lock server
+        self._zsls = zarrspinlockserver if isinstance( zarrspinlockserver, ZarrSpinLockServer ) else None
         
         # %% COMBINED MODE %%
         if self.is_combined :
@@ -6119,6 +6280,7 @@ class RamDataAxis( ) :
             mode = mode, 
             path_folder_mask = None if path_folder_mask is None else f"{path_folder_mask}{name_axis}.num_and_cat.zdf", 
             flag_is_read_only = self._flag_is_read_only, 
+            zarrspinlockserver = self._zsls,
             ** dict_kw_zdf
         ) # open a ZarrDataFrame with a given filter
         self.int_num_entries = self.meta._n_rows_unfiltered # retrieve number of entries
@@ -6942,8 +7104,33 @@ class RAMtx( ) :
     dict_index_mapping_from_combined_to_component_ft : mapping dictionary-like object.
     dict_index_mapping_from_combined_to_dest_component_ft : mapping dictionary-like object.
     dict_index_mapping_from_combined_to_dest_component_bc : mapping dictionary-like object.
+    
+    === Synchronization across multiple processes ===  
+    zarrspinlockserver : Union[ None, ZarrSpinLockServer ] = None # a ZarrSpinLockServer object for synchronization of methods of the current object.
     """
-    def __init__( self, path_folder_ramtx = None, l_rtx : Union[ list, tuple, None ] = None, dict_index_mapping_from_component_to_combined_bc : Union[ dict, None ] = None, dict_index_mapping_from_component_to_combined_ft : Union[ dict, None ] = None, dict_index_mapping_from_combined_to_component_bc : Union[ dict, None ] = None, dict_index_mapping_from_combined_to_component_ft : Union[ dict, None ] = None, ramdata = None, dtype_of_feature_and_barcode_indices = np.uint32, dtype_of_values = np.float64, int_num_cpus : int = 1, verbose : bool = False, flag_debugging : bool = False, mode : str = 'a', flag_is_read_only : bool = False, path_folder_ramtx_mask : Union[ str, None ] = None, is_for_querying_features : bool = True, int_total_number_of_values_in_a_batch_for_dense_matrix : int = 10000000, rtx_template = None, flag_spawn = False ) :
+    def __init__( 
+        self, 
+        path_folder_ramtx = None, 
+        l_rtx : Union[ list, tuple, None ] = None, 
+        dict_index_mapping_from_component_to_combined_bc : Union[ dict, None ] = None, 
+        dict_index_mapping_from_component_to_combined_ft : Union[ dict, None ] = None, 
+        dict_index_mapping_from_combined_to_component_bc : Union[ dict, None ] = None, 
+        dict_index_mapping_from_combined_to_component_ft : Union[ dict, None ] = None, 
+        ramdata = None, 
+        dtype_of_feature_and_barcode_indices = np.uint32, 
+        dtype_of_values = np.float64, 
+        int_num_cpus : int = 1, 
+        verbose : bool = False, 
+        flag_debugging : bool = False, 
+        mode : str = 'a', 
+        flag_is_read_only : bool = False, 
+        path_folder_ramtx_mask : Union[ str, None ] = None, 
+        is_for_querying_features : bool = True, 
+        int_total_number_of_values_in_a_batch_for_dense_matrix : int = 10000000, 
+        rtx_template = None, 
+        flag_spawn = False,
+        zarrspinlockserver : Union[ None, ZarrSpinLockServer ] = None,
+    ) :
         """ # 2022-07-31 00:49:59 
         """
         if rtx_template is not None : # when template has been given, copy attributes and metadata
@@ -6974,6 +7161,9 @@ class RAMtx( ) :
             
             # set 'l_rtx'
             self._l_rtx = l_rtx
+            
+            # load a zarr spin lock server
+            self._zsls = rtx_template._zsls
         else :
             # set attributes 
             self._dtype_of_feature_and_barcode_indices = dtype_of_feature_and_barcode_indices
@@ -6995,6 +7185,9 @@ class RAMtx( ) :
             self._dict_index_mapping_from_component_to_combined_ft = dict_index_mapping_from_component_to_combined_ft
             self._dict_index_mapping_from_combined_to_component_ft = dict_index_mapping_from_combined_to_component_ft
             self._dict_index_mapping_from_combined_to_component_bc = dict_index_mapping_from_combined_to_component_bc
+            
+            # load a zarr spin lock server
+            self._zsls = zarrspinlockserver if isinstance( zarrspinlockserver, ZarrSpinLockServer ) else None
 
             # compose metadata for the combined ramtx
             # %% COMBINED %%
@@ -7025,7 +7218,7 @@ class RAMtx( ) :
             # read metadata
             self._root = zarr.open( path_folder_ramtx, 'a' )
             self._dict_metadata = self._root.attrs[ 'dict_metadata' ] # retrieve the metadata
-
+            
         # parse the metadata of the RAMtx object
         self._int_num_features, self._int_num_barcodes, self._int_num_records = self._dict_metadata[ 'int_num_features' ], self._dict_metadata[ 'int_num_barcodes' ], self._dict_metadata[ 'int_num_records' ]
 
@@ -7052,6 +7245,10 @@ class RAMtx( ) :
             self._is_for_querying_features = list( rtx for rtx in l_rtx if rtx is not None )[ 0 ].is_for_querying_features # use 'is_for_querying_features' of the first valid RAMtx component
         # attach a file system server
         self.fs = FileSystemServer( flag_spawn = flag_spawn )
+        
+        # if 'flag_spawn' is True, start the new 'ZarrMetadataServer' object with spawned processes
+        if flag_spawn :
+            self._zsls = ZarrMetadataServer( flag_spawn = flag_spawn, filesystem_server = self.fs, template = self._zsls )
     @property
     def flag_spawn( self ) :
         """ # 2022-12-06 02:37:31 
@@ -8223,9 +8420,26 @@ class RamDataLayer( ) :
     'path_folder_ramdata_mask' : a local (local file system) path to the mask of the RamData object that allows modifications to be written without modifying the source. if a valid local path to a mask is given, all modifications will be written to the mask
     
     === arguments for combined layer object ===
-    l_layer : 
+    l_layer : a layer to to intialize a combined layer
+    
+    === Synchronization across multiple processes ===  
+    zarrspinlockserver : Union[ None, ZarrSpinLockServer ] = None # a ZarrSpinLockServer object for synchronization of methods of the current object.
     """
-    def __init__( self, path_folder_ramdata, name_layer, l_layer : Union[ list, tuple, None ] = None, ramdata = None, dtype_of_feature_and_barcode_indices = np.int32, dtype_of_values = np.float64, int_num_cpus = 1, verbose = False, mode = 'a', path_folder_ramdata_mask = None, flag_is_read_only = False ) :
+    def __init__( 
+        self, 
+        path_folder_ramdata, 
+        name_layer, 
+        l_layer : Union[ list, tuple, None ] = None, 
+        ramdata = None, 
+        dtype_of_feature_and_barcode_indices = np.int32, 
+        dtype_of_values = np.float64, 
+        int_num_cpus = 1, 
+        verbose = False, 
+        mode = 'a', 
+        path_folder_ramdata_mask = None, 
+        flag_is_read_only = False,
+        zarrspinlockserver : Union[ None, ZarrSpinLockServer ] = None,
+    ) :
         """ # 2022-07-31 14:33:46 
         """
         # set attributes
@@ -8243,6 +8457,9 @@ class RamDataLayer( ) :
         self._flag_is_read_only = flag_is_read_only
         self._dtype_of_values = dtype_of_values
         self._dtype_of_feature_and_barcode_indices = dtype_of_feature_and_barcode_indices
+        
+        # load a zarr spin lock server
+        self._zsls = zarrspinlockserver if isinstance( zarrspinlockserver, ZarrSpinLockServer ) else None
         
         ''' write metadata if RamDataLayer is newly initialized '''
         if not zarr_exists( self._path_folder_ramdata_layer ) :
@@ -8291,6 +8508,7 @@ class RamDataLayer( ) :
             'mode' : self._mode, 
             'flag_is_read_only' : self._flag_is_read_only,
             'l_rtx' : None,
+            'zarrspinlockserver' : self._zsls,
         }
         # load ramtx
         for mode in self.modes : # iterate through each mode
@@ -8462,6 +8680,7 @@ class RamDataLayer( ) :
                 'path_folder_ramtx_mask' : f'{self._path_folder_ramdata_layer_mask}{mode}/' if self._mask_available else None, 
                 'flag_is_read_only' : self._flag_is_read_only,
                 'l_rtx' : l_rtx, # retrieve list of rtx objects for the current mode
+                'zarrspinlockserver' : self._zsls
             }
             rtx = RAMtx( f'{self._path_folder_ramdata_layer}{mode}/', ** dict_kwargs )
             # apply filters
@@ -8549,6 +8768,7 @@ class RamData( ) :
     dict_kwargs_credentials_s3 : dict = dict( ) # credentials for Amazon S3 object. By default, credentials will be retrieved from the default location.
 
     === Synchronization across multiple processes and (remote) devices analyzing the current RamData (multiple 'researchers') ===  
+    flag_enable_synchronization_through_locking : bool = True # if True, enable sycnrhonization of modifications on RamData using file-system-based locking.
     flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock : bool = False # if True, does not wait and raise 'RuntimeError' when a modification of a RamData cannot be made due to the resource that need modification is temporarily unavailable, locked by other processes
     float_second_to_wait_before_checking_availability_of_a_spin_lock : float = 0.5 # number of seconds to wait before repeatedly checking the availability of a spin lock if the lock has been acquired by other operations.
 
@@ -8587,6 +8807,7 @@ class RamData( ) :
         dict_kwargs_credentials_s3 : dict = dict( ),
         flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock : bool = False,
         float_second_to_wait_before_checking_availability_of_a_spin_lock : float = 0.5,
+        flag_enable_synchronization_through_locking : bool = True,
         verbose : bool = True, 
         flag_debugging : bool = False
     ) :
@@ -8620,6 +8841,7 @@ class RamData( ) :
             path_folder_ramdata_mask = os.path.abspath( path_folder_ramdata_mask ) + '/' # retrieve abs path
             
         # set attributes
+        self._flag_enable_synchronization_through_locking = flag_enable_synchronization_through_locking
         self._mode = mode
         self._path_folder_ramdata = path_folder_ramdata
         self._path_folder_ramdata_mask = path_folder_ramdata_mask
@@ -8657,12 +8879,12 @@ class RamData( ) :
         path_folder_temp = path_folder_temp_local_default_for_remote_ramdata if is_remote_url( self._path_folder_ramdata_modifiable ) else f'{self._path_folder_ramdata_modifiable}/temp_{bk.UUID( )}/' # define a temporary directory in the current working directory if modifiable RamData resides locally. if the modifiable RamData resides remotely, use 'path_folder_temp_local_default_for_remote_ramdata' as a the temporary folder
         self._path_folder_temp = path_folder_temp # set path of the temporary folder as an attribute
         
-        ''' start a spin lock server '''
-        self._zsls = ZarrSpinLockServer( flag_spawn = False, dict_kwargs_credentials_s3 = dict_kwargs_credentials_s3, flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock = flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock, float_second_to_wait_before_checking_availability_of_a_spin_lock = float_second_to_wait_before_checking_availability_of_a_spin_lock )
+        ''' start a spin lock server (if 'flag_enable_synchronization_through_locking' is True) '''
+        self._zsls = ZarrSpinLockServer( flag_spawn = False, dict_kwargs_credentials_s3 = dict_kwargs_credentials_s3, flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock = flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock, float_second_to_wait_before_checking_availability_of_a_spin_lock = float_second_to_wait_before_checking_availability_of_a_spin_lock ) if flag_enable_synchronization_through_locking else None
         
         # initialize axis objects
-        self.bc = RamDataAxis( path_folder_ramdata, 'barcodes', l_ax = list( ram.bc for ram in self._l_ramdata ) if self._l_ramdata is not None else None, index_ax_data_source_when_interleaved = index_ramdata_source_for_combined_barcodes_shared_across_ramdata, flag_check_combined_type = flag_check_combined_type, flag_is_interleaved = flag_combined_ramdata_barcodes_shared_across_ramdata, ba_filter = None, ramdata = self, dict_kw_zdf = dict_kw_zdf, dict_kw_view = dict_kw_view, int_index_str_rep = int_index_str_rep_for_barcodes, verbose = verbose, mode = self._mode, path_folder_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only )
-        self.ft = RamDataAxis( path_folder_ramdata, 'features', l_ax = list( ram.ft for ram in self._l_ramdata ) if self._l_ramdata is not None else None, index_ax_data_source_when_interleaved = index_ramdata_source_for_combined_features_shared_across_ramdata, flag_check_combined_type = flag_check_combined_type, flag_is_interleaved = flag_combined_ramdata_features_shared_across_ramdata, ba_filter = None, ramdata = self, dict_kw_zdf = dict_kw_zdf, dict_kw_view = dict_kw_view, int_index_str_rep = int_index_str_rep_for_features, verbose = verbose, mode = self._mode, path_folder_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only )
+        self.bc = RamDataAxis( path_folder_ramdata, 'barcodes', l_ax = list( ram.bc for ram in self._l_ramdata ) if self._l_ramdata is not None else None, index_ax_data_source_when_interleaved = index_ramdata_source_for_combined_barcodes_shared_across_ramdata, flag_check_combined_type = flag_check_combined_type, flag_is_interleaved = flag_combined_ramdata_barcodes_shared_across_ramdata, ba_filter = None, ramdata = self, dict_kw_zdf = dict_kw_zdf, dict_kw_view = dict_kw_view, int_index_str_rep = int_index_str_rep_for_barcodes, verbose = verbose, mode = self._mode, path_folder_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only, zarrspinlockserver = self._zsls )
+        self.ft = RamDataAxis( path_folder_ramdata, 'features', l_ax = list( ram.ft for ram in self._l_ramdata ) if self._l_ramdata is not None else None, index_ax_data_source_when_interleaved = index_ramdata_source_for_combined_features_shared_across_ramdata, flag_check_combined_type = flag_check_combined_type, flag_is_interleaved = flag_combined_ramdata_features_shared_across_ramdata, ba_filter = None, ramdata = self, dict_kw_zdf = dict_kw_zdf, dict_kw_view = dict_kw_view, int_index_str_rep = int_index_str_rep_for_features, verbose = verbose, mode = self._mode, path_folder_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only, zarrspinlockserver = self._zsls )
 
         # compose metadata for the combined ramdata
         if self.is_combined :
@@ -8801,6 +9023,7 @@ class RamData( ) :
         """
         int_num_components = len( self._l_ramdata ) if self.is_combined else None
         return int_num_components
+    """ <Methods handling Metadata> """
     @property
     def metadata( self ) :
         """ # 2022-07-21 00:45:12 
@@ -8833,6 +9056,7 @@ class RamData( ) :
                 self._dict_metadata[ 'layers' ] = list( temp ) # convert to list
                 self._root.attrs[ 'dict_metadata' ] = self._dict_metadata # update metadata
                 self._dict_metadata[ 'layers' ] = temp # revert to set
+    """ </Methods handling Metadata> """
     @property
     def int_num_cpus_for_fetching_data( self ) :
         """ # 2022-07-21 23:32:24 
@@ -8974,9 +9198,9 @@ class RamData( ) :
                         else :
                             l_layer.append( None )
                     # load combined layer
-                    self._layer = RamDataLayer( self._path_folder_ramdata, name_layer, l_layer = l_layer, ramdata = self, dtype_of_feature_and_barcode_indices = self._dtype_of_feature_and_barcode_indices, dtype_of_values = self._dtype_of_values, int_num_cpus = self._int_num_cpus_for_fetching_data, verbose = self.verbose, mode = self._mode, path_folder_ramdata_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only )
+                    self._layer = RamDataLayer( self._path_folder_ramdata, name_layer, l_layer = l_layer, ramdata = self, dtype_of_feature_and_barcode_indices = self._dtype_of_feature_and_barcode_indices, dtype_of_values = self._dtype_of_values, int_num_cpus = self._int_num_cpus_for_fetching_data, verbose = self.verbose, mode = self._mode, path_folder_ramdata_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only, zarrspinlockserver = self._zsls )
                 else : # load the layer from the combined RamData object directly
-                    self._layer = RamDataLayer( self._path_folder_ramdata, name_layer, ramdata = self, dtype_of_feature_and_barcode_indices = self._dtype_of_feature_and_barcode_indices, dtype_of_values = self._dtype_of_values, int_num_cpus = self._int_num_cpus_for_fetching_data, verbose = self.verbose, mode = self._mode, path_folder_ramdata_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only )
+                    self._layer = RamDataLayer( self._path_folder_ramdata, name_layer, ramdata = self, dtype_of_feature_and_barcode_indices = self._dtype_of_feature_and_barcode_indices, dtype_of_values = self._dtype_of_values, int_num_cpus = self._int_num_cpus_for_fetching_data, verbose = self.verbose, mode = self._mode, path_folder_ramdata_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only, zarrspinlockserver = self._zsls )
                 if self.verbose :
                     logging.info( f"(RamData.layer) '{name_layer}' layer has been loaded" )
     def rename_layer( self, name_layer_current : str, name_layer_new : str, flag_allow_copying : bool = False ) :
