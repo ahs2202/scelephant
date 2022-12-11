@@ -45,7 +45,7 @@ logging.basicConfig( format = '[SC-Elephant] %(asctime)s - %(message)s', level =
 # define version
 _version_ = '0.0.9'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-12-05 13:24:48'
+_last_modified_time_ = '2022-12-11 17:13:37 '
 
 """ # 2022-07-21 10:35:42  realease note
 
@@ -262,11 +262,15 @@ It appears Amazon S3 file system access using the S3FS package is not fork-safe.
 # 2022-12-07 20:22:44 
 To read and write zarr meta information in forked processes, ZarrMetadataServer was implemented.
 RamData.apply support was added to Amazon S3 file system.
-RamData.rename_layer method was adeed
+RamData.rename_layer method was added
+
+# 2022-12-11 17:11:25 
+RamData.summarize support was added to the Amazon S3 file system.
+a class ZarrSpinLockServer was implemented to support file-locking of ZarrDataFrame, RamData, and associated components. Methods of RamData and other objects utilizing the object ZarrSpinLockServer is being implemented.
 
 ##### Future implementations #####
-# 2022-12-01 20:48:47 
-support for s3 object will be added - for collaboration of very large single-cell data privately
+# 2022-12-10 20:59:46 
+For synchronization of operations on a RamData by multiple processes (or 'users' for collaborative research), locking methods will be implemented (based on file-system locks). 
 
 """
 
@@ -2257,7 +2261,7 @@ def filesystem_server( pipe_receiver_input, pipe_sender_output, dict_kwargs_cred
     
     dict_kwargs_credentials_s3 : dict = dict( ) # the credentials for the Amazon S3 file system as keyworded arguments
     """
-    def __filesystem_operations( method : Literal[ 'exists', 'rm', 'glob', 'mkdir', 'mv', 'cp', 'isdir' ], path_src : str, path_dest : Union[ str, None ] = None, flag_recursive : bool = True, dict_kwargs_credentials_s3 : dict = dict( ), ** kwargs ) :
+    def __filesystem_operations( method : Literal[ 'exists', 'rm', 'glob', 'mkdir', 'mv', 'cp', 'isdir' ], path_src : str, path_dest : Union[ str, None ] = None, flag_recursive : bool = True, dict_kwargs_credentials_s3 : dict = dict_kwargs_credentials_s3, ** kwargs ) :
         """ # 2022-12-04 00:57:45 
         perform a file system operation (either Amazon S3 or local file system)
 
@@ -2353,7 +2357,7 @@ class FileSystemServer( ) :
     flag_spawn : bool = True # if True, spawn a new process for file system operations. if False, perform file system operations in the current process. 
         (both are blocking and synchronous. the difference is that file system operations that are not fork-safe can be performed in forked process by spawning a new process)
     """
-    def __init__( self, flag_spawn : bool = True, dict_kwargs_credentials_s3 : dict = dict( ) ) :
+    def __init__( self, flag_spawn : bool = False, dict_kwargs_credentials_s3 : dict = dict( ) ) :
         """ # 2022-12-05 18:48:59 
         """
         # set read-only attributes
@@ -3435,7 +3439,7 @@ def zarr_end_multiprocessing_write( ) :
     revert setting back from the write of a zarr object using multiple processes
     """
     numcodecs.blosc.use_threads = None
-        
+    
 ''' a class for containing disk-backed AnnData objects '''
 class AnnDataContainer( ) :
     """ # 2022-06-09 18:35:04 
@@ -3602,7 +3606,6 @@ class AnnDataContainer( ) :
             for name_attr in [ 'var', 'varm', 'varp' ] :
                 if hasattr( adata, name_attr ) :
                     setattr( adata_current, name_attr, getattr( adata, name_attr ) )
-
 ''' a class for wrapping shelve-backed persistent dictionary '''
 class ShelveContainer( ) :
     """ # 2022-07-14 20:29:42 
@@ -3668,7 +3671,7 @@ class ShelveContainer( ) :
         """ # 2022-07-14 21:37:28 
         """
         return f"<shelve-backed namespace: {self.keys}>"
-
+    
 ''' a class for serving zarr object from remote source in multiple forked processes '''
 def zarr_object_server( path_folder_zarr : str, pipe_receiver_input, pipe_sender_output, mode : str = 'r', shape = None, chunks = None, dtype = np.int32, fill_value = 0, path_process_synchronizer : Union[ str, None ] = None ) :
     """ # 2022-12-07 00:32:22 
@@ -3899,9 +3902,11 @@ class ZarrServer( ) :
         terminate the spawned process when exiting the context
         """
         self.terminate( )
-def zarr_metadata_server( pipe_receiver_input, pipe_sender_output ) :
+def zarr_metadata_server( pipe_receiver_input, pipe_sender_output, dict_kwargs_credentials_s3 : dict = dict( ) ) :
     """ # 2022-12-07 18:19:13 
     a function for getting and setting zarr object metadata dictionaries
+    
+    dict_kwargs_credentials_s3 : dict = dict( ) # the credentials for the Amazon S3 file system as keyworded arguments
     """
     import zarr
     while True :
@@ -3921,10 +3926,11 @@ class ZarrMetadataServer( ) :
     This class is for getting and setting zarr object metadata in a spawned process or the current process for thread-safe operation.
     API functions calls mimic those of a zarr object for seamless replacement of a zarr object
     
+    dict_kwargs_credentials_s3 : dict = dict( ) # the credentials for the Amazon S3 file system as keyworded arguments
     flag_spawn : bool = True # if True, spawn a new process for zarr operations. if False, perform zarr operations in the current process. 
         (both are blocking and synchronous. the difference is that zarr operations that are not fork-safe can be performed in forked process by spawning a new process and interacting with the process using pipes)
     """ 
-    def __init__( self, flag_spawn : bool = True ) :
+    def __init__( self, flag_spawn : bool = True, dict_kwargs_credentials_s3 : dict = dict( ) ) :
         """ # 2022-12-07 18:55:04 
         """
         # set read-only attributes
@@ -3943,7 +3949,7 @@ class ZarrMetadataServer( ) :
             self._pipe_receiver_output = pipe_receiver_output
 
             # start the process hosting a zarr object
-            p = mpsp.Process( target = zarr_metadata_server, args = ( pipe_receiver_input, pipe_sender_output ) )
+            p = mpsp.Process( target = zarr_metadata_server, args = ( pipe_receiver_input, pipe_sender_output, dict_kwargs_credentials_s3 ) )
             p.start( )
             self._p = p
     @property
@@ -3992,6 +3998,128 @@ class ZarrMetadataServer( ) :
         terminate the spawned process when exiting the context
         """
         self.terminate( )
+''' a class for file-system-backed synchronization of zarr objects '''
+class ZarrSpinLockServer( ) :
+    """ # 2022-12-11 14:00:26 
+    A class for acquiring, waiting, releasing for a spin-lock based on a file system and the Zarr format
+    
+    === arguments ===
+    flag_spawn : bool = False # when used in a forked process and path to the lock object is remote (e.g. Amazon S3), please set this flag to True to avoid runtime error. it will create appropriate ZarrMetadataServer and FileSystemServer objects to handle lock operations in a fork-safe manner.
+    dict_kwargs_credentials_s3 : dict = dict( ) # the credentials for the Amazon S3 file system as keyworded arguments
+    
+    flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock : bool = False # if True, does not wait and raise 'RuntimeError' when a modification of a RamData cannot be made due to the resource that need modification is temporarily unavailable, locked by other processes
+    float_second_to_wait_before_checking_availability_of_a_spin_lock : float = 0.5 # number of seconds to wait before repeatedly checking the availability of a spin lock if the lock has been acquired by other operations.
+    """
+    def __init__( self, flag_spawn : bool = False, dict_kwargs_credentials_s3 : dict = dict( ), flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock : bool = False, float_second_to_wait_before_checking_availability_of_a_spin_lock : float = 0.5 ) :
+        """ # 2022-12-11 14:03:53  
+        """
+        # set read-only attributes
+        self._flag_spawn = flag_spawn # indicate that a process has been spawned
+        self._str_uuid_lock = bk.UUID( ) # a unique id of the current ZarrSpinLockServer object. This id will be used to acquire and release locks so that lock can only be released by the object that acquired the lock
+        
+        # set attributes that can be changed anytime during the lifetime of the object
+        self.flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock = flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock
+        self.float_second_to_wait_before_checking_availability_of_a_spin_lock = float_second_to_wait_before_checking_availability_of_a_spin_lock
+        
+        # set attributes
+        self._flag_is_terminated = False
+        
+        # start servers required for operations
+        self.fs = FileSystemServer( flag_spawn = flag_spawn, dict_kwargs_credentials_s3 = dict_kwargs_credentials_s3 )
+        self.zms = ZarrMetadataServer( flag_spawn = flag_spawn, dict_kwargs_credentials_s3 = dict_kwargs_credentials_s3 )
+        
+        # initialize a set for saving the list of lock objects current ZarrSpinLockServer has acquired in order to ignore additional attempts to acquire the lock that has been already acquired
+        self._set_path_folder_lock = set( )
+    @property
+    def flag_spawn( self ) :
+        """ # 2022-12-11 14:04:21 
+        return whether spawned processes are used to perform fork-safe operations
+        """
+        return self._flag_spawn
+    @property
+    def str_uuid_lock( self ) :
+        """ # 2022-12-11 14:04:21 
+        return a unique id of the current ZarrSpinLockServer object
+        """
+        return self._str_uuid_lock
+    @property
+    def currently_held_locks( self ) :
+        """ # 2022-12-11 16:56:33 
+        return a copy of a set containing path_folder_lock of all the lock objects current ZarrSpinLockServer has acquired.
+        """
+        return set( self._set_path_folder_lock )
+    def terminate( self ) :
+        """ # 2022-09-06 23:16:22 
+        terminate the server
+        """
+        if len( self.currently_held_locks ) > 0 : # if unreleased locks are present, raise a RuntimeError
+            raise RuntimeError( f'there are unreleased locks held by current ZarrSpinLockServer object being terminated. the list of the acquired locks are the following: {self.currently_held_locks}.' )
+        self.fs.terminate( )
+        self.zms.terminate( )        
+    def __enter__( self ) :
+        """ # 2022-12-08 02:00:08 
+        """
+        return self
+    def __exit__( self ) :
+        """ # 2022-12-08 02:00:08 
+        terminate the spawned process when exiting the context
+        """
+        self.terminate( )
+    def check_lock( self, path_folder_lock : str ) :
+        """ # 2022-12-10 21:32:38 
+        check whether the lock currently exists, based on the file system where the current lock object resides.
+        
+        path_folder_lock : str # path to the lock (an absolute path to the zarr object, representing a spin lock)
+        """
+        # return the flag indicating whether the lock exists
+        return self.fs.filesystem_operations( 'exists', f"{path_folder_lock}.zattrs" )
+    def wait_lock( self, path_folder_lock : str ) :
+        """ # 2022-12-10 21:32:38 
+        wait for the lock, based on the file system where the current lock object resides.
+        
+        path_folder_lock : str # path to the lock (an absolute path to the zarr object, representing a spin lock)
+        """
+        # if lock is available and 'flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock' is True, raise a RuntimeError
+        if self.check_lock( path_folder_lock ) and self.flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock :
+            raise RuntimeError( f'a lock is present at ({path_folder_lock}), exiting' )
+        # implement a spin lock using the sleep function
+        while self.check_lock( path_folder_lock ) : # until a lock is released
+            time.sleep( self.float_second_to_wait_before_checking_availability_of_a_spin_lock ) # wait for 'float_second_to_wait_before_checking_availability_of_a_spin_lock' second
+    def acquire_lock( self, path_folder_lock : str ) :
+        """ # 2022-12-10 21:32:38 
+        acquire the lock, based on the file system where the current lock object resides.
+        
+        === arguments ===
+        path_folder_lock : str # path to the lock (an absolute path to the zarr object, representing a spin lock)
+        
+        === returns ===
+        return str_uuid_lock # return 'str_uuid_lock' that is required for releasing the created lock
+        """
+        if path_folder_lock not in self.currently_held_locks : # if the lock object has not been previously acquired by the current object
+            # wait until the lock becomes available
+            self.wait_lock( path_folder_lock )
+
+            # acquire a lock
+            # create the lock zarr object
+            self.zms.set_metadata( path_folder_lock, 'dict_metadata', { 'str_uuid_lock' : self.str_uuid_lock, 'time' : int( time.time( ) ) } )
+
+            # record the 'path_folder_lock' of the acquired lock object
+            self._set_path_folder_lock.add( path_folder_lock )
+    def release_lock( self, path_folder_lock : str ) :
+        """ # 2022-12-10 21:32:38 
+        release the lock, based on the file system where the current lock object resides
+        
+        path_folder_lock : str # path to the lock (an absolute path to the zarr object, representing a spin lock)
+        """
+        if path_folder_lock in self.currently_held_locks : # if the lock object has been previously acquired by the current object
+            # if the lock is available, release lock using the given 'str_uuid_lock'
+            if self.check_lock( path_folder_lock ) :
+                # check 'str_uuid_lock' of the lock and release the lock if 'str_uuid_lock' of the current ZarrSpinLockServer object is matched with that of the lock zarr object
+                if self.zms.get_metadata( path_folder_lock, 'dict_metadata' )[ 'str_uuid_lock' ] == self.str_uuid_lock :
+                    self.fs.filesystem_operations( 'rm', path_folder_lock )
+                else :
+                    raise KeyError( f"{str_uuid_lock} of the current ZarrSpinLockServer does not match that of the lock object" )
+                
 ''' a class for Zarr-based DataFrame object '''
 class ZarrDataFrame( ) :
     """ # 2022-11-14 23:49:26 
@@ -4072,10 +4200,15 @@ class ZarrDataFrame( ) :
     
     === arguments for mask operation ===
     'zdf_source' : reference to the ZarrDataFrame that will act as a data source for the current zdf
-    
+        
     === settings for lazy-loading ===
     flag_use_lazy_loading = True : if False, all values from a column from masked ZDF or combined ZDF will be retrieved and saved as a new column of the current ZDF even when a single entry was accessed. 
         if True, based on the availability mask, only the accessed entries will be transferred to the current ZDF object, reducing significant overhead when the number of rows are extremely large (e.g. > 10 million entries)
+        
+    === Synchronization across multiple processes and (remote) devices analyzing the current ZarrDataFrame (multiple 'researchers') ===  
+    flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock : bool = False # if True, does not wait and raise 'RuntimeError' when a modification of a RamData cannot be made due to the resource that need modification is temporarily unavailable, locked by other processes
+    float_second_to_wait_before_checking_availability_of_a_spin_lock : float = 0.5 # number of seconds to wait before repeatedly checking the availability of a spin lock if the lock has been acquired by other operations.
+    zarrspinlockserver : Union[ None, ZarrSpinLockServer ] = None # a ZarrSpinLockServer objec. if None is given, a new ZarrSpinLockServer object will be created and attached to the current ZarrDataFrame object
     """
     def __init__( 
         self, 
@@ -4100,10 +4233,17 @@ class ZarrDataFrame( ) :
         flag_is_read_only : bool = False, 
         flag_use_mask_for_caching : bool = True, 
         verbose : bool = True,
-        flag_use_lazy_loading : bool = True
+        flag_use_lazy_loading : bool = True,
+        flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock : bool = False,
+        float_second_to_wait_before_checking_availability_of_a_spin_lock : float = 0.5,
+        zarrspinlockserver : Union[ None, ZarrSpinLockServer ] = None,
     ) :
         """ # 2022-11-14 23:49:20 
         """
+        # set attributes that can be changed anytime during the lifetime of the object
+        self.flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock = flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock
+        self.float_second_to_wait_before_checking_availability_of_a_spin_lock = float_second_to_wait_before_checking_availability_of_a_spin_lock
+        
         # handle path
         if '://' not in path_folder_zdf : # does not retrieve abspath if the given path is remote path
             path_folder_zdf = os.path.abspath( path_folder_zdf ) # retrieve absolute path
@@ -4769,7 +4909,7 @@ class ZarrDataFrame( ) :
             # add column to zdf (and update the associated metadata)
             self._add_column( name_col, dict_metadata_description ) 
     def __getitem__( self, args ) :
-        ''' # 2022-08-26 14:23:38 
+        ''' # 2022-12-11 05:45:07 
         retrieve data of a column.
         partial read is allowed through indexing (slice/integer index/boolean mask/bitarray is supported)
         if mask is set, retrieve data from the mask if the column is available in the mask. 
@@ -4821,6 +4961,10 @@ class ZarrDataFrame( ) :
         """
         # retrieve data
         """
+        # %% FILE LOCKING %%
+        # wait until the lock becomes available (the column is now ready for 'read' operation)
+        self.wait_lock( type_resource = 'column', name_col = name_col )
+        
         if name_col not in self : # if name_col is not valid (name_col does not exists in current ZDF, including the mask), exit by returning None
             return None
         # load data from mask/combined ZarrDataFrame
@@ -4914,7 +5058,7 @@ class ZarrDataFrame( ) :
                         values[ t_coord ] = l_value_unique[ val ] if val >= 0 else np.nan # convert integer representations to its original string values # -1 (negative integers) encodes np.nan
                     return values
     def __setitem__( self, args, values ) :
-        ''' # 2022-11-16 13:36:04 
+        ''' # 2022-12-11 05:45:16 
         save/update a column at indexed positions.
         when a filter is active, only active entries will be saved/updated automatically.
         boolean mask/integer arrays/slice indexing is supported. However, indexing will be applied to the original column with unfiltered rows (i.e., when indexing is active, filter will be ignored)
@@ -4934,7 +5078,7 @@ class ZarrDataFrame( ) :
         """
         if self._mode == 'r' : # if mode == 'r', ignore __setitem__ method calls
             return 
-        
+               
         # initialize indexing
         flag_indexing_primary_axis = False # a boolean flag indicating whether an indexing is active
         flag_coords_in_bool_mask = False
@@ -4977,6 +5121,10 @@ class ZarrDataFrame( ) :
         """
         2) set data
         """
+        # %% FILE LOCKING %%
+        # retrieve a lock
+        str_uuid_lock = self.acquire_lock( type_resource = 'column', name_col = name_col )
+        
         # load data from mask/combined ZarrDataFrame
         if self._flag_use_lazy_loading : # use lazy-loading when only partial data will be retrieved
             # update availability columns
@@ -5182,6 +5330,10 @@ class ZarrDataFrame( ) :
         # add data to the loaded data dictionary (object cache) if 'self._flag_load_data_after_adding_new_column' is True and indexing was not used
         if self._flag_load_data_after_adding_new_column and not flag_indexing_primary_axis and coords_rest is None and not flag_broadcasting_active :  # no indexing through secondary axis, too # broadcasting should not been used for caching
             self._loaded_data[ name_col ] = values_before_encoding if dict_col_metadata[ 'flag_categorical' ] else values
+            
+        # %% FILE LOCKING %%
+        # release a lock
+        self.release_lock( type_resource = 'column', name_col = name_col, str_uuid_lock = str_uuid_lock )
     def __delitem__( self, name_col ) :
         ''' # 2022-06-20 21:57:38 
         remove the column from the memory and the object on disk
@@ -5536,6 +5688,104 @@ class ZarrDataFrame( ) :
             dict_metadata_description = self._dict_metadata[ 'columns' ].pop( name_col_before ) # remove the column and retrieve the desscription metadata
             self._dict_metadata[ 'columns' ][ name_col_after ] = dict_metadata_description # add description metadata to the ZarrDataFrame metadata
             self._save_metadata_( ) # update metadata
+    """ <Methods for Locking> """
+    def check_lock( self, type_resource : Literal[ 'metadata', 'column' ], name_col : Union[ str, None ] = None ) :
+        """ # 2022-12-10 21:32:38 
+        check whether the lock for the metadata or columns currently exists, based on the file system where the current object resides.
+        
+        type_resource : Literal[ 'metadata', 'column' ] # 'metadata': lock editing of the metadata. 'column': lock editing of the specified column.
+        name_col : Union[ str, None ] = None # the name of the column to create a lock. the column that does not exist can be also locked, allowing applications to declare a new column that will be added to the ZDF before actually adding the column.
+        """
+        # run the operation on the mask
+        if self._mask is not None :
+            return self._mask.check_lock( type_resource = type_resource, name_col = name_col )
+        
+        # retrieve the path of the lock file
+        # implement a lock file using the zarr attribute file
+        if type_resource == 'metadata' : # lock metadata
+            path_file_lock = f"{self._path_folder_zdf}.zattrs.lock/.zattrs" 
+        elif type_resource == 'column' : # lock a column
+            path_file_lock = f"{self._path_folder_zdf}{name_col}.lock/.zattrs"
+        else :
+            raise KeyError( f"type_resource '{type_resource}' is an invalid argument." )
+        # return the flag indicating whether the lock exists
+        return filesystem_operations( 'exists', path_file_lock )
+    def wait_lock( self, type_resource : Literal[ 'metadata', 'column' ], name_col : Union[ str, None ] = None ) :
+        """ # 2022-12-10 21:32:38 
+        wait for the lock for the metadata or columns, based on the file system where the current object resides.
+        
+        type_resource : Literal[ 'metadata', 'column' ] # 'metadata': lock editing of the metadata. 'column': lock editing of the specified column.
+        name_col : Union[ str, None ] = None # the name of the column to create a lock. the column that does not exist can be also locked, allowing applications to declare a new column that will be added to the ZDF before actually adding the column.
+        """
+        # run the operation on the mask
+        if self._mask is not None :
+            return self._mask.wait_lock( type_resource = type_resource, name_col = name_col )
+        
+        # if lock is available and 'flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock' is True, raise a RuntimeError
+        if self.check_lock( type_resource = type_resource, name_col = name_col ) and self.flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock :
+            raise RuntimeError( f'modification is not possible for the current ZarrDataFrame ({self._path_folder_zdf}). type_resource={type_resource} name_col={name_col}' )
+        # implement a spin lock using the sleep function
+        while self.check_lock( type_resource = type_resource, name_col = name_col ) : # until a lock is released
+            time.sleep( self.float_second_to_wait_before_checking_availability_of_a_spin_lock ) # wait for 'float_second_to_wait_before_checking_availability_of_a_spin_lock' second
+    def acquire_lock( self, type_resource : Literal[ 'metadata', 'column' ], name_col : Union[ str, None ] = None ) :
+        """ # 2022-12-10 21:32:38 
+        acquire the lock for the metadata or columns, based on the file system where the current object resides.
+        
+        === arguments ===
+        type_resource : Literal[ 'metadata', 'column' ] # 'metadata': lock editing of the metadata. 'column': lock editing of the specified column.
+        name_col : Union[ str, None ] = None # the name of the column to create a lock. the column that does not exist can be also locked, allowing applications to declare a new column that will be added to the ZDF before actually adding the column.
+        
+        === returns ===
+        return str_uuid_lock # return 'str_uuid_lock' that is required for releasing the created lock
+        """
+        # run the operation on the mask
+        if self._mask is not None :
+            return self._mask.acquire_lock( type_resource = type_resource, name_col = name_col )
+        
+        # wait until the lock becomes available
+        self.wait_lock( type_resource = type_resource, name_col = name_col )
+        
+        # acquire a lock
+        str_uuid_lock = bk.UUID( ) # retrieve uuid of the current lock (required when releasing the lock)
+        # retrieve path of the lock zarr object
+        if type_resource == 'metadata' : # lock metadata
+            path_folder_lock = f"{self._path_folder_zdf}.zattrs.lock/" 
+        elif type_resource == 'column' : # lock a column
+            path_folder_lock = f"{self._path_folder_zdf}{name_col}.lock/"
+        else :
+            raise KeyError( f"type_resource '{type_resource}' is an invalid argument." )
+        # create the lock zarr object
+        za = zarr.open( path_folder_lock, 'w' )
+        za.attrs[ 'dict_metadata' ] = { 'str_uuid_lock' : str_uuid_lock, 'time' : int( time.time( ) ) }
+        return str_uuid_lock # return 'str_uuid_lock' that is required for releasing the created lock
+    def release_lock( self, type_resource : Literal[ 'metadata', 'column' ], str_uuid_lock : str, name_col : Union[ str, None ] = None ) :
+        """ # 2022-12-10 21:32:38 
+        release the lock for the metadata or columns, based on the file system where the current object resides
+        
+        type_resource : Literal[ 'metadata', 'column' ] # 'metadata': lock editing of the metadata. 'column': lock editing of the specified column.
+        name_col : Union[ str, None ] = None # the name of the column to create a lock. the column that does not exist can be also locked, allowing applications to declare a new column that will be added to the ZDF before actually adding the column.
+        """
+        # run the operation on the mask
+        if self._mask is not None :
+            return self._mask.release_lock( type_resource = type_resource, name_col = name_col )
+        
+        # if the lock is available, release lock using the given 'str_uuid_lock'
+        if self.check_lock( type_resource = type_resource, name_col = name_col ) :
+            # retrieve path of the lock zarr object
+            if type_resource == 'metadata' : # lock metadata
+                path_folder_lock = f"{self._path_folder_zdf}.zattrs.lock/" 
+            elif type_resource == 'column' : # lock a column
+                path_folder_lock = f"{self._path_folder_zdf}{name_col}.lock/"
+            else :
+                raise KeyError( f"type_resource '{type_resource}' is an invalid argument." )
+            # open the lock zarr object
+            za = zarr.open( path_folder_lock, 'r' )
+            # check 'str_uuid_lock' and release lock if 'str_uuid_lock' is matched with that of the lock zarr object
+            if za.attrs[ 'dict_metadata' ][ 'str_uuid_lock' ] == str_uuid_lock :
+                filesystem_operations( 'rm', path_folder_lock )
+            else :
+                raise KeyError( f"{str_uuid_lock} does not match that of the lock" )
+    """ </Methods for Locking> """
 ''' a class for representing axis of RamData (barcodes/features) '''
 class IndexMappingDictionary( ) :
     """ # 2022-09-02 00:53:27 
@@ -7370,7 +7620,7 @@ class RAMtx( ) :
         '__getitem__' can be used to retrieve minimal number of values required to build a sparse matrix or dense matrix from it
         
         Returns:
-        l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying, l_arr_value :
+        l_int_entry_of_axis_for_querying, l_arr_intinfor_entry_of_axis_not_for_querying, l_arr_value :
             'l_int_entry_of_axis_for_querying' only contains int_entry of valid entries
         """      
         ''' prepare '''
@@ -7639,6 +7889,7 @@ class RAMtx( ) :
                 for int_entry in dict_data : # iterate each entry
                     __process_entry( int_entry, np.concatenate( dict_data[ int_entry ][ 'l_arr_int_entry_of_axis_not_for_querying' ] ), np.concatenate( dict_data[ int_entry ][ 'l_arr_value' ] ) ) # concatenate list of arrays into a single array
                 del dict_data
+#                 logging.info( f"ramtx getitem __fetch_from_dense_ramtx completed for {len( l_int_entry_in_a_batch )} entries" )
             
             ''' retrieve data '''
             if self.is_sparse : # handle sparse ramtx
@@ -7689,6 +7940,7 @@ class RAMtx( ) :
                 index_chunk_start_current_batch = None # initialize the index of the chunk at the start of the batch
                 l_int_entry_in_a_batch = [ ] # several entries will be processed together as a batch if they reside in the same or nearby chunk ('int_num_chunks_for_a_batch' setting)
                 # iterate through each 'int_entry'
+#                 logging.info( f"ramtx getitem {len(l_int_entry)} entries will be retrieved" )
                 for int_entry in l_int_entry : # iterate through each entry
                     ''' if batch is full, flush the batch '''
                     index_chunk = int_entry // int_num_entries_in_a_chunk # retrieve the index of the chunk of the current entry
@@ -7708,13 +7960,13 @@ class RAMtx( ) :
                 if len( l_int_entry_in_a_batch ) > 0 : # if some entries remains unprocessed, flush the buffer
                     __fetch_from_dense_ramtx( l_int_entry_in_a_batch )
 
-            
             ''' return the retrieved data '''
             # destroy zarr server
             rtx_fork_safe.terminate_spawned_processes( )
             
             # compose a output value
             output = ( l_int_entry_of_axis_for_querying, l_arr_int_entry_of_axis_not_for_querying, l_arr_value )
+#             logging.info( 'ramtx getitem completed' )
             # if 'flag_as_a_worker' is True, send the result or return the result
             if flag_as_a_worker :
                 pipe_to_main_thread.send( output ) # send unzipped result back
@@ -8294,6 +8546,11 @@ class RamData( ) :
 
     === Amazon S3/other file remote system ===
     path_folder_temp_local_default_for_remote_ramdata : str = '/tmp/' # a default local temporary folder where the temporary output files will be saved and processed before being uploaded to the remote location, where RamData resides remotely, which makes the file system operations more efficient. 
+    dict_kwargs_credentials_s3 : dict = dict( ) # credentials for Amazon S3 object. By default, credentials will be retrieved from the default location.
+
+    === Synchronization across multiple processes and (remote) devices analyzing the current RamData (multiple 'researchers') ===  
+    flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock : bool = False # if True, does not wait and raise 'RuntimeError' when a modification of a RamData cannot be made due to the resource that need modification is temporarily unavailable, locked by other processes
+    float_second_to_wait_before_checking_availability_of_a_spin_lock : float = 0.5 # number of seconds to wait before repeatedly checking the availability of a spin lock if the lock has been acquired by other operations.
 
     === AnnDataContainer ===
     flag_load_anndata_container : bool = False # load anndata container to load/save anndata objects stored in the curren RamData object
@@ -8327,6 +8584,9 @@ class RamData( ) :
         flag_enforce_name_adata_with_only_valid_characters : bool = True, 
         int_index_component_reference : Union[ int, None ] = None,
         path_folder_temp_local_default_for_remote_ramdata : str = '/tmp/',
+        dict_kwargs_credentials_s3 : dict = dict( ),
+        flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock : bool = False,
+        float_second_to_wait_before_checking_availability_of_a_spin_lock : float = 0.5,
         verbose : bool = True, 
         flag_debugging : bool = False
     ) :
@@ -8337,7 +8597,19 @@ class RamData( ) :
         self._set_type_model_picklable = { 'ipca', 'hdbscan', 'knn_classifier', 'knn_embedder', 'knngraph', 'knnindex' }
         self._set_type_model_keras_model = { 'deep_learning.keras.classifier', 'deep_learning.keras.embedder' } # model containing keras model. keras model can be retrieved from the 'dict_model' using 'dl_model' as a key
         
-        ''' modifiable settings '''
+        ''' soft-coded settings '''
+        # changable settings (settings that can be changed anytime in the lifetime of a RamData object)
+        self._flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock = flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock
+        self._float_second_to_wait_before_checking_availability_of_a_spin_lock = float_second_to_wait_before_checking_availability_of_a_spin_lock
+        self.verbose = verbose
+        self.flag_debugging = flag_debugging
+        # the number of processes to be used
+        self.int_num_cpus = int_num_cpus
+        # batch-generation associated settings, which can be changed later
+        self.int_num_entries_for_each_weight_calculation_batch = int_num_entries_for_each_weight_calculation_batch
+        self.int_total_weight_for_each_batch = int_total_weight_for_each_batch
+        self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx
+        
         # default settings
         # handle input object paths
         if path_folder_ramdata[ - 1 ] != '/' : # add '/' at the end of path to indicate it is a directory
@@ -8351,17 +8623,10 @@ class RamData( ) :
         self._mode = mode
         self._path_folder_ramdata = path_folder_ramdata
         self._path_folder_ramdata_mask = path_folder_ramdata_mask
-        self.verbose = verbose
-        self.flag_debugging = flag_debugging
-        self.int_num_cpus = int_num_cpus
         self._int_num_cpus_for_fetching_data = int_num_cpus_for_fetching_data
         self._dtype_of_feature_and_barcode_indices = dtype_of_feature_and_barcode_indices
         self._dtype_of_values = dtype_of_values
         self._path_folder_temp_local_default_for_remote_ramdata = path_folder_temp_local_default_for_remote_ramdata
-        # batch-generation associated settings, which can be changed later
-        self.int_num_entries_for_each_weight_calculation_batch = int_num_entries_for_each_weight_calculation_batch
-        self.int_total_weight_for_each_batch = int_total_weight_for_each_batch
-        self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx
         # combined ramdata
         self._l_ramdata = l_ramdata
         self._ramdata_composite = ramdata_composite
@@ -8391,6 +8656,9 @@ class RamData( ) :
         ''' set 'path_folder_temp' '''
         path_folder_temp = path_folder_temp_local_default_for_remote_ramdata if is_remote_url( self._path_folder_ramdata_modifiable ) else f'{self._path_folder_ramdata_modifiable}/temp_{bk.UUID( )}/' # define a temporary directory in the current working directory if modifiable RamData resides locally. if the modifiable RamData resides remotely, use 'path_folder_temp_local_default_for_remote_ramdata' as a the temporary folder
         self._path_folder_temp = path_folder_temp # set path of the temporary folder as an attribute
+        
+        ''' start a spin lock server '''
+        self._zsls = ZarrSpinLockServer( flag_spawn = False, dict_kwargs_credentials_s3 = dict_kwargs_credentials_s3, flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock = flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock, float_second_to_wait_before_checking_availability_of_a_spin_lock = float_second_to_wait_before_checking_availability_of_a_spin_lock )
         
         # initialize axis objects
         self.bc = RamDataAxis( path_folder_ramdata, 'barcodes', l_ax = list( ram.bc for ram in self._l_ramdata ) if self._l_ramdata is not None else None, index_ax_data_source_when_interleaved = index_ramdata_source_for_combined_barcodes_shared_across_ramdata, flag_check_combined_type = flag_check_combined_type, flag_is_interleaved = flag_combined_ramdata_barcodes_shared_across_ramdata, ba_filter = None, ramdata = self, dict_kw_zdf = dict_kw_zdf, dict_kw_view = dict_kw_view, int_index_str_rep = int_index_str_rep_for_barcodes, verbose = verbose, mode = self._mode, path_folder_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only )
@@ -8630,6 +8898,16 @@ class RamData( ) :
         return self._path_folder_temp
     """ </Methods handling Paths> """
     """ <Methods for Locking> """
+    def acquire_lock( self, type_resource : Literal[ 'metadata', 'layer', 'layer.metadata', 'r' ] ) :
+        """ # 2022-12-10 21:32:38 
+        acquire lock 
+        """
+        pass
+    def release_lock( self ) :
+        """ # 2022-12-10 21:47:37 
+        
+        """
+        pass
     """ </Methods for Locking> """
     """ <Layer Methods> """
     @property
@@ -8992,7 +9270,7 @@ class RamData( ) :
         self.ad.update( * l_name_adata )
     """ <CORE METHODS> """
     def summarize( self, name_layer : str, axis : Union[ int, str ], summarizing_func, l_name_col_summarized : Union[ list, None ] = None, str_prefix : Union[ str, None ] = None, str_suffix : str = '' ) :
-        ''' # 2022-09-07 21:24:50 
+        ''' # 2022-12-11 16:49:09 
         this function summarize entries of the given axis (0 = barcode, 1 = feature) using the given function
         
         example usage: calculate total sum, standard deviation, pathway enrichment score calculation, etc.
@@ -9131,7 +9409,7 @@ class RamData( ) :
             summarize a given list of entries, and send summarized result through a pipe
             '''
             # retrieve fork-safe RAMtx
-            rtx_fork_safe = rtx.get_fork_safe_version( ) if rtx.contains_remote else rtx # load zarr_server (if RAMtx contains remote data source) to be thread-safe
+            rtx_fork_safe = rtx.get_fork_safe_version( ) # load zarr_server (if RAMtx contains remote data source) to be thread-safe
 
             while True :
                 batch = pipe_receiver_batch.recv( )
@@ -9163,8 +9441,7 @@ class RamData( ) :
                 pipe_sender_result.send( ( int_num_processed_records, l_int_entry_of_axis_for_querying, dict_data ) ) # send information about the output file
                 
             # destroy zarr servers
-            if rtx_fork_safe.contains_remote :
-                rtx_fork_safe.terminate_spawned_processes( )
+            rtx_fork_safe.terminate_spawned_processes( )
         # initialize the progress bar
         pbar = progress_bar( total = rtx.get_total_num_records( int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ) )
         def post_process_batch( res ) :
@@ -9180,8 +9457,14 @@ class RamData( ) :
             for name_col, name_col_with_prefix_and_suffix in zip( l_name_col_summarized, l_name_col_summarized_with_name_layer_prefix_and_suffix ) : 
                 ax.meta[ name_col_with_prefix_and_suffix, l_int_entry_of_axis_for_querying ] = dict_data[ name_col ]
         # summarize the RAMtx using multiple processes
-        bk.Multiprocessing_Batch_Generator_and_Workers( rtx.batch_generator( ax.filter, int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, int_total_weight_for_each_batch = self.int_total_weight_for_each_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 )
+        rtx_fork_safe = rtx.get_fork_safe_version( ) # get fork-safe version of rtx (batch generator uses a separate process to retrieve a batch, which requires rtx object to be used in a forked process)
+        bk.Multiprocessing_Batch_Generator_and_Workers( rtx_fork_safe.batch_generator( ax.filter, int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, int_total_weight_for_each_batch = self.int_total_weight_for_each_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 )
+        rtx_fork_safe.terminate_spawned_processes( ) # terminate the spawned processes
         pbar.close( ) # close the progress bar
+        
+        # report results
+        if self.verbose :
+            logging.info( f"[RamData.summarize] summarize operation of {name_layer} in the '{'barcode' if flag_summarizing_barcode else 'feature'}' axis was completed" )
     def apply( self, name_layer, name_layer_new, func = None, mode_instructions = 'sparse_for_querying_features', path_folder_ramdata_output = None, dtype_of_row_and_col_indices = np.int32, dtype_of_value = np.float64, int_num_threads = None, flag_survey_weights = True, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = True, int_num_of_records_in_a_chunk_zarr_matrix = 20000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, chunks_dense = ( 2000, 1000 ), dtype_dense_mtx = np.float64, dtype_sparse_mtx = np.float64, dtype_sparse_mtx_index = np.float64 ) :
         ''' # 2022-12-08 03:15:39 
         this function apply a function and/or filters to the records of the given data, and create a new data object with 'name_layer_new' as its name.
@@ -9475,10 +9758,10 @@ class RamData( ) :
                     '''
                     # initialize
                     flag_is_destination_remote = is_remote_url( path_folder_ramtx_sparse_mtx ) # flag indicating whether a output destination is remotely located
-                    path_folder_dest = f"{path_folder_temp}matrix.zarr/" if flag_is_destination_remote else path_folder_ramtx_sparse_mtx # define a path to the local output folder, which is either final destionation (local output) or temporary destionation before being uploaded (remote output)
+                    path_folder_local_dest = f"{path_folder_temp}matrix.zarr/" if flag_is_destination_remote else path_folder_ramtx_sparse_mtx # define a path to the local output folder, which is either final destionation (local output) or temporary destionation before being uploaded (remote output)
                     
                     fs = FileSystemServer( flag_spawn = flag_spawn ) # initialize a filesystem server
-                    fs.filesystem_operations( 'mkdir', path_folder_dest ) # make the local output folder
+                    fs.filesystem_operations( 'mkdir', path_folder_local_dest ) # make the local output folder
                     # initialize zarr objects
                     za_mtx_sparse = ZarrServer( path_folder_ramtx_sparse_mtx, mode = 'a', flag_spawn = flag_spawn ) # use the same chunk size of the current RAMtx
                     za_mtx_sparse_index = ZarrServer( f'{path_folder_ramtx_sparse}matrix.index.zarr', mode = 'a', flag_spawn = flag_spawn ) # use the same dtype and chunk size of the current RAMtx
@@ -9506,14 +9789,14 @@ class RamData( ) :
                         os.chdir( path_folder_zarr_output ) # to reduce the length of file path, change directory to the output folder before retrieving file paths of the chunks
                         for e in glob.glob( '*.0' ) : # to reduce the size of file paths returned by glob, use relative path to retrieve the list of chunk files of the Zarr matrix of the current batch
                             index_chunk = int( e.split( '.0', 1 )[ 0 ] ) # retrieve the integer index of the chunk
-                            os.rename( e, path_folder_dest + str( index_chunk + int_num_chunks_written_to_ramtx ) + '.0' ) # simply rename the chunk to transfer stored values
+                            os.rename( e, path_folder_local_dest + str( index_chunk + int_num_chunks_written_to_ramtx ) + '.0' ) # simply rename the chunk to transfer stored values
                         
                         # upload chunks to remote locations and delete local chunks
                         if flag_is_destination_remote :
                             # %% REMOTE %%
-                            fs.filesystem_operations( 'cp', path_folder_dest, path_folder_ramtx_sparse, flag_recursive = True ) # upload the processed chunks to the remote locations
-                            fs.filesystem_operations( 'rm', path_folder_dest, flag_recursive = True ) # delete the processed chunks
-                            fs.filesystem_operations( 'mkdir', path_folder_dest ) # re-create the local temporary output folder
+                            fs.filesystem_operations( 'cp', path_folder_local_dest, path_folder_ramtx_sparse, flag_recursive = True ) # upload the processed chunks to the remote locations
+                            fs.filesystem_operations( 'rm', path_folder_local_dest, flag_recursive = True ) # delete the processed chunks
+                            fs.filesystem_operations( 'mkdir', path_folder_local_dest ) # re-create the local temporary output folder
 
                         # retrieve index data of the current batch
                         arr_index = pd.read_csv( path_file_index_output, header = None, sep = '\t' ).values.astype( int ) # convert to integer dtype
@@ -9530,7 +9813,8 @@ class RamData( ) :
                     ''' send output and indicate the post-processing has been completed '''
                     pipe_output.send( int_len_matrix )
                     # delete temporary folders
-                    fs.filesystem_operations( 'rm', path_folder_dest )
+                    if flag_is_destination_remote : # delete local destination folder only when the final destination folder is located remotely (when the final destination folder is located locally, the final destination folder is the 'path_folder_local_dest')
+                        fs.filesystem_operations( 'rm', path_folder_local_dest )
                     # terminate the zarr servers
                     za_mtx_sparse.terminate( )
                     za_mtx_sparse_index.terminate( )
@@ -9757,7 +10041,7 @@ class RamData( ) :
             self.layers_excluding_components.add( name_layer_new ) # add layer directly to the current ramdata
             self._save_metadata_( )
         
-        # update the metadata
+        # report results
         if self.verbose :
             logging.info( f'[RamData.apply] [Info] apply operation {name_layer} > {name_layer_new} has been completed' )
     """ </CORE METHODS> """
