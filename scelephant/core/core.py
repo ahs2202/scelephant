@@ -4149,6 +4149,8 @@ class ZarrSpinLockServer( ) :
                 # check 'str_uuid_lock' of the lock and release the lock if 'str_uuid_lock' of the current ZarrSpinLockServer object is matched with that of the lock zarr object
                 if self.zms.get_metadata( path_folder_lock, 'dict_metadata' )[ 'str_uuid_lock' ] == self.str_uuid_lock :
                     self.fs.filesystem_operations( 'rm', path_folder_lock )
+                    # remove the released lock's 'path_folder_lock' from the list of the acquired lock objects
+                    self._set_path_folder_lock.remove( path_folder_lock )
                 else :
                     raise KeyError( f"{str_uuid_lock} of the current ZarrSpinLockServer does not match that of the lock object" )
     """ </Methods for Locking> """
@@ -4273,7 +4275,7 @@ class ZarrDataFrame( ) :
         dict_kwargs_credentials_s3 : dict = dict( ),
         flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock : bool = False,
         float_second_to_wait_before_checking_availability_of_a_spin_lock : float = 0.5,
-        zarrspinlockserver : Union[ None, True, ZarrSpinLockServer ] = None,
+        zarrspinlockserver : Union[ None, bool, ZarrSpinLockServer ] = None,
     ) :
         """ # 2022-11-14 23:49:20 
         """
@@ -4614,6 +4616,12 @@ class ZarrDataFrame( ) :
     """ <Methods handling columns> """
     """ <Methods handling Metadata> """
     @property
+    def use_locking( self ) :
+        """ # 2022-12-12 02:45:43 
+        return True if a spin lock algorithm is being used for synchronization of operations on the current object
+        """
+        return self._zsls is not None
+    @property
     def metadata( self ) :
         ''' # 2022-07-21 02:38:31 
         '''
@@ -4639,7 +4647,7 @@ class ZarrDataFrame( ) :
             self._zsls.acquire_lock( f"{self._path_folder_zdf}.zattrs.lock/" ) # acquire a lock
             self._zsls.zms.set_metadata( self._path_folder_zdf, 'dict_metadata', self._dict_metadata ) # write metadata to the storage
             self._zsls.release_lock( f"{self._path_folder_zdf}.zattrs.lock/" ) # release the lock
-    def update_metadata( self, dict_metadata_to_be_updated : dict = dict( ), l_name_col_to_be_deleted : Union[ None, list ] = None, dict_rename_name_col : dict = dict( ) ) :
+    def update_metadata( self, dict_metadata_to_be_updated : dict = dict( ), l_name_col_to_be_deleted : list = [ ], dict_rename_name_col : dict = dict( ) ) :
         """ # 2022-12-11 22:08:05 
         write metadata with file-locking
         
@@ -4688,7 +4696,7 @@ class ZarrDataFrame( ) :
         """ # 2022-12-11 23:48:28 
         get metadata of a given column
         """
-        if name_col in self : # if the current column is valid
+        if name_col in self.columns_excluding_components : # if the current column is present in the current object
             # if mask is available return the metadata from the mask
             if self._mask is not None and name_col in self._mask : # if the column is available in the mask
                 return self._mask.get_column_metadata( name_col = name_col )
@@ -4705,7 +4713,7 @@ class ZarrDataFrame( ) :
         """ # 2022-12-11 23:17:27 
         a method for setting metadata of a given column (and the metadata of the current object)
         """
-        if name_col in self : # if the current column is valid
+        if name_col in self.columns_excluding_components : # if the column is located in the current object
             # if mask is available return the metadata from the mask
             if self._mask is not None and name_col in self._mask : # if the column is available in the mask
                 return self._mask.set_column_metadata( name_col = name_col, dict_col_metadata = dict_col_metadata )
@@ -4726,13 +4734,13 @@ class ZarrDataFrame( ) :
             if self._zsls is not None : # if locking is used, release the lock
                 self._zsls.release_lock( f"{self._path_folder_zdf}{name_col}.lock/" ) # wait until a lock is released
     def update_column_metadata( self, name_col : str, dict_col_metadata_to_be_updated : dict, flag_relpace_dict_metadata_description : bool = False ) :
-        """ # 2022-12-11 23:17:27 
+        """ # 2022-12-12 02:39:05 
         a method for setting metadata of a given column (and the metadata of the current object)
         
         dict_col_metadata_to_be_updated : dict # a dictionarty for updating 'dict_col_metadata'
         flag_relpace_dict_metadata_description : bool = False # if True, replace previous 'dict_col_metadata_description' with the current 'dict_col_metadata_description'. if False, update the previous 'dict_col_metadata_description' with the current 'dict_col_metadata_description' 
         """
-        if name_col in self : # if the current column is valid
+        if name_col in self.columns_excluding_components : # if the column is present in the current object
             # if mask is available return the metadata from the mask
             if self._mask is not None and name_col in self._mask : # if the column is available in the mask
                 return self._mask.update_column_metadata( name_col = name_col, dict_col_metadata_to_be_updated = dict_col_metadata_to_be_updated )
@@ -4749,6 +4757,8 @@ class ZarrDataFrame( ) :
             if 'dict_metadata_description' in dict_col_metadata_to_be_updated : # if 'dict_col_metadata_to_be_updated' contains 'dict_metadata_description' for the update
                 dict_metadata_description = dict_col_metadata[ 'dict_metadata_description' ] if 'dict_metadata_description' in dict_col_metadata else dict( )  # retrieve 'dict_col_metadata_description' from 'dict_col_metadata'
                 if isinstance( dict_col_metadata_to_be_updated[ 'dict_metadata_description' ], dict ) : # if dict_col_metadata_to_be_updated[ 'dict_metadata_description' ] contains valid value
+                    if not isinstance( dict_metadata_description, dict ) : # initialize 'dict_metadata_description'
+                        dict_metadata_description = dict( )
                     dict_metadata_description.update( dict_col_metadata_to_be_updated[ 'dict_metadata_description' ] ) # update 'dict_col_metadata_description' using the 'dict_col_metadata_description' from the 'dict_col_metadata_to_be_updated'
                 else : # reset 'dict_metadata_description'
                     dict_metadata_description = None
@@ -4767,7 +4777,7 @@ class ZarrDataFrame( ) :
         """ # 2022-12-05 12:00:53 
         retrieve description metadata of a given column. (might not be up-to-date.)
         """
-        if name_col in self : # if the column exists in the current ZDF
+        if name_col in self.columns_excluding_components : # if the column is present in the current object
             if self._zsls is not None : 
                 # %% FILE LOCKING %%
                 return self.get_column_metadata( name_col )[ 'dict_metadata_description' ] # read column metadata from the storage
@@ -4782,7 +4792,8 @@ class ZarrDataFrame( ) :
         
         (internally, ZDF metadata and individual column metadata will be modified)
         """
-        self.update_column_metadata( name_col = name_col, dict_col_metadata_to_be_updated = { 'dict_metadata_description' : dict_col_metadata_description_to_be_updated }, flag_relpace_dict_metadata_description = False ) # update previous 'dict_col_metadata_description' with the current 'dict_col_metadata_description'
+        if name_col in self.columns_excluding_components : # if the column is present in the current object
+            self.update_column_metadata( name_col = name_col, dict_col_metadata_to_be_updated = { 'dict_metadata_description' : dict_col_metadata_description_to_be_updated }, flag_relpace_dict_metadata_description = False ) # update previous 'dict_col_metadata_description' with the current 'dict_col_metadata_description'
     def set_column_metadata_description( self, name_col : str, dict_col_metadata_description : Union[ None, dict ] = None ) :
         """ # 2022-12-05 12:08:35 
         set description metadata of a given column
@@ -4791,14 +4802,15 @@ class ZarrDataFrame( ) :
         
         (internally, ZDF metadata and individual column metadata will be modified)
         """
-        self.update_column_metadata( name_col = name_col, dict_col_metadata_to_be_updated = { 'dict_metadata_description' : dict_col_metadata_description }, flag_relpace_dict_metadata_description = True ) # replace previous 'dict_col_metadata_description' with the current 'dict_col_metadata_description'
+        if name_col in self.columns_excluding_components : # if the column is present in the current object
+            self.update_column_metadata( name_col = name_col, dict_col_metadata_to_be_updated = { 'dict_metadata_description' : dict_col_metadata_description }, flag_relpace_dict_metadata_description = True ) # replace previous 'dict_col_metadata_description' with the current 'dict_col_metadata_description'
     def _add_column( self, name_col : str, dict_metadata_description : Union[ dict, None ] = None ) :
         """ # 2022-11-15 00:14:14 
         a semi-private method for adding column label to the metadata of the current ZarrDataFrame (not added to the metadata of the mask)
         
         dict_metadata_description : Union[ str, None ] = None # 'dict_metadata_description' of the column. if None, no description metadata will be recorded
         """
-        if name_col not in self :
+        if name_col not in self.columns_excluding_components : # if the column is not present in the current object
             self.update_metadata( dict_metadata_to_be_updated = { 'columns' : { name_col : dict_metadata_description } } )
     def _save_metadata_( self ) :
         ''' # 2022-11-15 00:14:34 
@@ -4810,7 +4822,7 @@ class ZarrDataFrame( ) :
         """ # 2022-12-12 01:09:37 
         for columns with categorical data, return categories. if the column contains non-categorical data, return an empty list
         """
-        if name_col in self : # if the current column is valid
+        if name_col in self.columns_excluding_components : # if the column is present in the current object
             # if the column is available in the mask, return the result of the mask
             if self._mask is not None and name_col in self._mask :
                 return self._mask.get_categories( name_col = name_col )
@@ -5197,10 +5209,6 @@ class ZarrDataFrame( ) :
         """
         # retrieve data
         """
-        # %% FILE LOCKING %%
-        # wait until the lock becomes available (the column is now ready for 'read' operation)
-        self.wait_lock( type_resource = 'column', name_col = name_col )
-        
         if name_col not in self : # if name_col is not valid (name_col does not exists in current ZDF, including the mask), exit by returning None
             return None
         # load data from mask/combined ZarrDataFrame
@@ -5255,6 +5263,7 @@ class ZarrDataFrame( ) :
 
                             # transfer data from component zdf to the combined column of the current zdf object batch by batch
                             st, en = int_pos, int_pos + zdf._n_rows_unfiltered # retrieve start and end coordinates for the current component
+                            
                             int_pos_current_component = 0 # initialize the position of current entry in the current batch
                             while st + int_pos_current_component < en : # until all entries for the current component have been processed
                                 # transfer data from component zdf to the combined column of the current zdf object for the current batch
@@ -5263,6 +5272,11 @@ class ZarrDataFrame( ) :
                         int_pos += zdf._n_rows_unfiltered # update 'int_pos'
         
         # retrieve data from zdf objects excluding components (current zdf and mask zdf)
+        if self.use_locking : # if locking is used
+            # %% FILE LOCKING %%
+            # wait until the lock becomes available (the column is now ready for 'read' operation)
+            self._zsls.wait_lock( f'{self._path_folder_zdf}{name_col}.lock' )
+        
         if name_col in self : # if name_col is valid
             if name_col in self._loaded_data and not flag_indexing_primary_axis : # if a loaded data (filtered/unfiltered, according to the self.filter) is available and indexing is not active, return the cached data
                 """ if (filtered), preloaded data is available """
@@ -5294,7 +5308,7 @@ class ZarrDataFrame( ) :
                         values[ t_coord ] = l_value_unique[ val ] if val >= 0 else np.nan # convert integer representations to its original string values # -1 (negative integers) encodes np.nan
                     return values
     def __setitem__( self, args, values ) :
-        ''' # 2022-12-11 05:45:16 
+        ''' # 2022-12-12 02:53:38 
         save/update a column at indexed positions.
         when a filter is active, only active entries will be saved/updated automatically.
         boolean mask/integer arrays/slice indexing is supported. However, indexing will be applied to the original column with unfiltered rows (i.e., when indexing is active, filter will be ignored)
@@ -5357,10 +5371,7 @@ class ZarrDataFrame( ) :
         """
         2) set data
         """
-        # %% FILE LOCKING %%
-        # retrieve a lock
-        str_uuid_lock = self.acquire_lock( type_resource = 'column', name_col = name_col )
-        
+        # retrieve data from zdf objects excluding components (current zdf and mask zdf)        
         # load data from mask/combined ZarrDataFrame
         if self._flag_use_lazy_loading : # use lazy-loading when only partial data will be retrieved
             # update availability columns
@@ -5389,6 +5400,11 @@ class ZarrDataFrame( ) :
         """
         retrieve metadata and infer dtypes
         """
+        if self.use_locking : # if locking is used
+            # %% FILE LOCKING %%
+            # wait until the lock becomes available (the column is now ready for 'read' operation)
+            self._zsls.acquire_lock( f'{self._path_folder_zdf}{name_col}.lock' )
+        
         # set default fill_value
         fill_value = 0 # set default fill_value
         # define zarr object directory
@@ -5565,9 +5581,10 @@ class ZarrDataFrame( ) :
         if self._flag_load_data_after_adding_new_column and not flag_indexing_primary_axis and coords_rest is None and not flag_broadcasting_active :  # no indexing through secondary axis, too # broadcasting should not been used for caching
             self._loaded_data[ name_col ] = values_before_encoding if dict_col_metadata[ 'flag_categorical' ] else values
             
-        # %% FILE LOCKING %%
-        # release a lock
-        self.release_lock( type_resource = 'column', name_col = name_col, str_uuid_lock = str_uuid_lock )
+        if self.use_locking : # if locking is used
+            # %% FILE LOCKING %%
+            # release until the lock becomes available (the column is now ready for 'read' operation)
+            self._zsls.release_lock( f'{self._path_folder_zdf}{name_col}.lock' )
     def __delitem__( self, name_col ) :
         ''' # 2022-06-20 21:57:38 
         remove the column from the memory and the object on disk
@@ -5591,6 +5608,11 @@ class ZarrDataFrame( ) :
             # remove the column from metadata
             self.update_metadata( l_name_col_to_be_deleted = [ name_col ] ) # update metadata
             # delete the column from the disk ZarrDataFrame object
+            
+            if self.use_locking : # if locking is used
+                # %% FILE LOCKING %%
+                # wait until the lock becomes available (the column is now ready for 'delete' operation)
+                self._zsls.wait_lock( f'{self._path_folder_zdf}{name_col}.lock' )
             filesystem_operations( 'rm', f"{self._path_folder_zdf}{name_col}/" )
     def __repr__( self ) :
         """ # 2022-07-20 23:00:15 
