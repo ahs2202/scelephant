@@ -45,7 +45,7 @@ logging.basicConfig( format = '[SC-Elephant] %(asctime)s - %(message)s', level =
 # define version
 _version_ = '0.0.9'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-12-11 17:13:37 '
+_last_modified_time_ = '2022-12-13 03:32:24'
 
 """ # 2022-07-21 10:35:42  realease note
 
@@ -267,6 +267,9 @@ RamData.rename_layer method was added
 # 2022-12-11 17:11:25 
 RamData.summarize support was added to the Amazon S3 file system.
 a class ZarrSpinLockServer was implemented to support file-locking of ZarrDataFrame, RamData, and associated components. Methods of RamData and other objects utilizing the object ZarrSpinLockServer is being implemented.
+
+# 2022-12-13 03:30:26 
+A functioning version of 'create_ramtx_from_adata', 'create_ramdata_from_adata' methods were implemented, which uses multiprocessing to export count matrix to a RAMtx object. An AnnData can be exported to a RamData object using these functions.
 
 ##### Future implementations #####
 # 2022-12-10 20:59:46 
@@ -3377,6 +3380,412 @@ def sort_mtx_10x( path_folder_mtx_input : str, path_folder_mtx_output : str, fla
         filesystem_operations( 'cp', f"{path_folder_mtx_input}{name_file}", f"{path_folder_mtx_output}{name_file}" )
     # sort matrix file
     sort_mtx( f"{path_folder_mtx_input}matrix.mtx.gz", path_file_gzip_sorted = f"{path_folder_mtx_output}matrix.mtx.gz", flag_mtx_sorted_by_id_feature = flag_mtx_sorted_by_id_feature, ** kwargs )
+# for creating RamData from AnnData
+def create_ramtx_from_adata( 
+    adata : anndata.AnnData,
+    path_folder_output : str,
+    mode : Literal[ 'dense', 'sparse_for_querying_features', 'sparse_for_querying_barcodes' ] = 'sparse_for_querying_features',
+    int_num_threads_for_writing_matrix : int = 5,
+    dtype_dense_mtx = np.float64,
+    dtype_sparse_mtx = np.float64,
+    dtype_sparse_mtx_index = np.float64,
+    int_num_of_records_in_a_chunk_zarr_matrix : int = 20000,
+    int_num_of_entries_in_a_chunk_zarr_matrix_index : int = 1000,
+    int_num_of_entries_in_a_batch_for_writing_sparse_matrix : int = 350,
+    float_ratio_padding_for_zarr_sparse_matrix_output : float = 0.5,
+    chunks_dense : tuple = ( 2000, 1000 ),
+    int_num_of_entries_in_a_chunk_metadata : int = 1000,
+    int_max_num_categories_in_metadata : int = 10000 ,
+    dict_kw_zdf : dict = { 'flag_store_string_as_categorical' : True, 'flag_load_data_after_adding_new_column' : False, 'flag_store_64bit_integer_as_float' : True },
+    int_num_str_repr_bc : int = 1,
+    int_num_str_repr_ft : int = 2,
+    verbose : bool = False,
+    flag_debugging : bool = False,
+) :
+    """ # 2022-12-13 03:18:01 
+    Write a given AnnData object as a RAMtx object
+
+    Arguments:
+    -- basic arguments --
+    'adata' : an AnnData object to write as a RAMtx object
+    'path_folder_output' : folder directory of the output folder that will contains zarr representation of the AnnData object
+    'mode' : {'dense' or 'sparse_for_querying_barcodes', 'sparse_for_querying_features'} : whether to create dense ramtx or sparse ramtx. When building a dense ramtx, the chunk size can be set using 'chunks_dense' arguments
+    'flag_debugging' : if True, does not delete temporary files
+
+    -- for sparse ramtx --
+    int_num_threads_for_writing_matrix = 5 # the number of processes for writing a zarr matrix
+
+    'dtype_sparse_mtx' (default: np.float64), dtype of the output zarr array for storing sparse matrix
+    'dtype_sparse_mtx_index' (default: np.float64) : dtype of the output zarr array for storing sparse matrix indices
+    'int_num_of_records_in_a_chunk_zarr_matrix' : chunk size for output zarr mtx object (sparse ramtx)
+    'int_num_of_entries_in_a_chunk_zarr_matrix_index' : chunk size for output zarr mtx index object (sparse ramtx)
+    int_num_of_entries_in_a_batch_for_writing_sparse_matrix : int = 350 # the number of entries in a batch for writing a sparse matrix
+    float_ratio_padding_for_zarr_sparse_matrix_output : float = 0.5 # the ratio of the padding relative to the length of the sparse matrix for padding to accomodate fragmentations from multi-processing.
+
+    -- for dense ramtx --
+    'dtype_dense_mtx' (default: np.float64), dtype of the output zarr array for storing dense matrix
+    'chunks_dense' : chunk size for dense ramtx object. if None is given, a dense ramtx object will be created. when dense ramtx object is created, the number of threads for chunking can be set using the 'int_num_threads_for_chunking' argument ( int_num_barcodes_in_a_chunk, int_num_features_in_a_chunk )
+
+    -- for metadata --
+    'int_num_of_entries_in_a_chunk_metadata' : chunk size for output ramtx metadata
+    int_max_num_categories_in_metadata : int = 10000 # ignore columns with more than 'int_max_num_categories_in_metadata' number of categories.
+    dict_kw_zdf : dict = dict( ) # keyworded arguments for the initialization of the ZarrDataFrame
+    int_num_str_repr_bc : int = 1 # the number of columns for string representations of the barcode axis. The current index values of adata.obs will be duplicates this number of times and saved as a zarr object
+    int_num_str_repr_ft : int = 2 # the number of columns for string representations of the feature axis. The current index values of adata.var will be duplicates this number of times and saved as a zarr object
+    """
+    # check flag
+    path_file_flag_completion = f"{path_folder_output}ramtx.completed.flag"
+    if filesystem_operations( 'exists', path_file_flag_completion ) : # exit if a flag indicating the pipeline was completed previously.
+        print( 'return' )
+
+    ''' prepare '''
+    mode = mode.lower( ) # handle mode argument
+
+    # retrieve metadata from the input mtx file
+    int_num_features, int_num_barcodes, int_num_records = len( adata.var ), len( adata.obs ), adata.X.count_nonzero( ) # retrieve metadata of mtx
+    # create an output directory
+    filesystem_operations( 'mkdir', path_folder_output, exist_ok = True )
+    path_folder_temp = f"{path_folder_output}temp_{bk.UUID( )}/"
+    filesystem_operations( 'mkdir', path_folder_temp, exist_ok = True )
+
+    """
+    construct RAMTx (Zarr) matrix
+    """
+    pbar = progress_bar( total = int_num_records ) # set up the progress bar
+
+    if mode == 'dense' : # build a dense ramtx based on the setting.
+        # open a persistent zarr array
+        za_mtx = zarr.open( f'{path_folder_output}matrix.zarr', mode = 'w', shape = ( int_num_barcodes, int_num_features ), chunks = chunks_dense, dtype = dtype_sparse_mtx ) # each mtx record will contains two values instead of three values for more compact storage 
+
+        def __parse_adata( l_pipe_sender ) :
+            """ # 2022-12-12 17:34:39 
+            parse input adata along the chunk boundary and send parsed result to workers writing the dense matrix
+            """
+            int_num_workers = len( l_pipe_sender )
+            int_pos = 0
+            X = adata.X
+            int_index_worker = 0
+            while int_pos < int_num_barcodes :
+                # retrieve data for the current chunks
+                sl = slice( int_pos, min( int_pos + chunks_dense[ 0 ], int_num_barcodes ) )
+                arr_int_bc, arr_int_ft, arr_value = scipy.sparse.find( X[ sl ] )
+                arr_int_bc += int_pos # add the offset
+                l_pipe_sender[ int_index_worker ].send( ( arr_int_bc, arr_int_ft, arr_value ) )
+                # prepare next chunks
+                int_index_worker = ( int_index_worker + 1 ) % int_num_workers
+                int_pos += chunks_dense[ 0 ]
+            # notify workers that all works have been distributed
+            for pipe_sender in l_pipe_sender :
+                pipe_sender.send( None )
+        def __write_mtx( pipe_receiver, pipe_sender ) :
+            ''' # 2022-12-12 15:15:40 
+            write a dense mtx
+            '''
+            while True :
+                ins = pipe_receiver.recv( )
+                if ins is None :
+                    break
+                arr_int_bc, arr_int_ft, arr_value = ins # parse the input
+                za_mtx.set_coordinate_selection( ( arr_int_bc, arr_int_ft ), arr_value )
+                pipe_sender.send( len( arr_value ) ) # report the number of records written
+            pipe_sender.send( None ) # report that all works have been completed
+    elif 'sparse' in mode : # build a sparse ramtx based on the setting.
+        flag_mtx_sorted_by_id_feature = 'feature' in mode # retrieve a flag whether to sort ramtx by id_feature or id_barcode. 
+
+        # open persistent zarr arrays to store matrix and matrix index
+        za_mtx = zarr.open( f'{path_folder_output}matrix.zarr', mode = 'w', shape = ( int( int_num_records * ( 1 + float_ratio_padding_for_zarr_sparse_matrix_output ) ), 2 ), chunks = ( int_num_of_records_in_a_chunk_zarr_matrix, 2 ), dtype = dtype_sparse_mtx ) # each mtx record will contains two values instead of three values for more compact storage # initialize the matrix with a sufficiently large padding
+        za_mtx_index = zarr.open( f'{path_folder_output}matrix.index.zarr', mode = 'w', shape = ( int_num_features if flag_mtx_sorted_by_id_feature else int_num_barcodes, 2 ), chunks = ( int_num_of_entries_in_a_chunk_zarr_matrix_index, 2 ), dtype = dtype_sparse_mtx_index ) # max number of matrix index entries is 'int_num_records' of the input matrix. this will be resized # dtype of index should be np.float64 to be compatible with Zarr.js, since Zarr.js currently does not support np.int64...
+
+        def __parse_adata( l_pipe_sender ) :
+            """ # 2022-12-12 17:34:39 
+            parse input adata along the chunk boundary and send parsed result to workers writing the dense matrix
+            """
+            # prepare
+            int_num_workers = len( l_pipe_sender )
+            int_pos = 0
+            X = adata.X
+            int_index_worker = 0
+            int_index_chunk_of_mtx_index = 0
+            int_index_chunk_of_mtx = 0
+            int_num_entries_in_the_axis_for_querying = int_num_features if flag_mtx_sorted_by_id_feature else int_num_barcodes
+
+            while int_pos < int_num_entries_in_the_axis_for_querying :
+                # retrieve data for the current chunks
+                int_pos_end = min( int_pos + int_num_of_entries_in_a_batch_for_writing_sparse_matrix, ( int_index_chunk_of_mtx_index + 1 ) * int_num_of_entries_in_a_chunk_zarr_matrix_index ) # the position of the end of the chunks that will be processed in the current batch
+                sl = slice( int_pos, int_pos_end )
+                arr_int_bc, arr_int_ft, arr_value = scipy.sparse.find( X[ :, sl ] if flag_mtx_sorted_by_id_feature else X[ sl ] )
+                arr_int_entry_of_the_axis_for_querying, arr_int_entry_of_the_axis_not_for_querying = ( arr_int_ft, arr_int_bc ) if flag_mtx_sorted_by_id_feature else ( arr_int_bc, arr_int_ft )
+                arr_int_entry_of_the_axis_for_querying += int_pos # add the offset
+                int_num_records = len( arr_value )
+
+                # send parsed data to the worker process
+                l_pipe_sender[ int_index_worker ].send( ( int_pos, int_pos_end, int_index_chunk_of_mtx, arr_int_entry_of_the_axis_for_querying, arr_int_entry_of_the_axis_not_for_querying, arr_value ) )
+
+                # prepare next chunks
+                int_pos = int_pos_end # update 'int_pos'
+                if int_pos % int_num_of_entries_in_a_chunk_zarr_matrix_index > int_index_chunk_of_mtx_index : # if the updated position mapped to the different chunks from the previous chunks
+                    int_index_worker = ( int_index_worker + 1 ) % int_num_workers # change worker process
+                    int_index_chunk_of_mtx_index = int_pos % int_num_of_entries_in_a_chunk_zarr_matrix_index # update 'int_index_chunk_of_mtx_index'
+                int_index_chunk_of_mtx += int( np.ceil( int_num_records / int_num_of_records_in_a_chunk_zarr_matrix ) ) # update 'int_index_chunk_of_mtx'
+
+
+            # notify workers that all works have been distributed
+            for pipe_sender in l_pipe_sender :
+                pipe_sender.send( None )
+        def __write_mtx( pipe_receiver, pipe_sender ) :
+            ''' # 2022-12-12 15:15:40 
+            write a dense mtx
+            '''
+            while True :
+                ins = pipe_receiver.recv( )
+                if ins is None :
+                    break
+                int_pos, int_pos_end, int_index_chunk_of_mtx, arr_int_entry_of_the_axis_for_querying, arr_int_entry_of_the_axis_not_for_querying, arr_value = ins # parse the input
+
+                arr_argsort = arr_int_entry_of_the_axis_for_querying.argsort( ) # retrieve an argsort array 
+                # sort records
+                arr_int_entry_of_the_axis_for_querying = arr_int_entry_of_the_axis_for_querying[ arr_argsort ]
+                arr_int_entry_of_the_axis_not_for_querying = arr_int_entry_of_the_axis_not_for_querying[ arr_argsort ]
+                arr_value = arr_value[ arr_argsort ]
+                # retrieve the number of records
+                int_num_records = len( arr_value )
+
+                # retrieve boundaries of the sorted entries
+                l_boundary = [ 0 ] + list( np.where( np.diff( arr_int_entry_of_the_axis_for_querying ) )[ 0 ] + 1 ) + [ int_num_records ]
+                arr_index = np.array( [ l_boundary[ : -1 ], l_boundary[ 1 : ] ] ).T # compose the array of indices based on the locations of the boundaries
+
+                # export the sparse matrix
+                st, en = int_index_chunk_of_mtx * int_num_of_records_in_a_chunk_zarr_matrix, int_index_chunk_of_mtx * int_num_of_records_in_a_chunk_zarr_matrix + int_num_records
+                arr_index += st # add the offset from the start of the sparse matrix to the index coordinates
+                za_mtx.set_orthogonal_selection( slice( st, en ), np.vstack( ( arr_int_entry_of_the_axis_not_for_querying, arr_value ) ).T )
+                za_mtx_index.set_orthogonal_selection( sorted( set( arr_int_entry_of_the_axis_for_querying ) ), arr_index )
+
+                pipe_sender.send( int_num_records ) # report the number of records written
+            pipe_sender.send( None ) # report that all works have been completed
+
+    # compose pipes and processes
+    l_pipe_ins = list( mp.Pipe( ) for i in range( int_num_threads_for_writing_matrix ) )
+    l_pipe_outs = list( mp.Pipe( ) for i in range( int_num_threads_for_writing_matrix ) )
+    l_pipe_receiver = list( l_pipe_outs[ i ][ 1 ] for i in range( int_num_threads_for_writing_matrix ) )
+    l_p = list( mp.Process( target = __write_mtx, args = ( l_pipe_ins[ i ][ 1 ], l_pipe_outs[ i ][ 0 ] ) ) for i in range( int_num_threads_for_writing_matrix ) )
+    l_p.append( mp.Process( target = __parse_adata, args = ( list( l_pipe_ins[ i ][ 0 ] for i in range( int_num_threads_for_writing_matrix ) ), ) ) )
+
+    # start the processes 
+    for p in l_p :
+        p.start( )
+
+    # monitor the progress
+    arr_flag_work_remaining = np.ones( int_num_threads_for_writing_matrix ) # a list of flag indicating works are remaining
+    int_index_worker = 0
+    while arr_flag_work_remaining.sum( ) > 0 : # until all workers completed the works
+        if arr_flag_work_remaining[ int_index_worker ] > 0 : # if the current process is working
+            if l_pipe_receiver[ int_index_worker ].poll( ) :
+                outs = l_pipe_receiver[ int_index_worker ].recv( )
+                if outs is None :
+                    arr_flag_work_remaining[ int_index_worker ] = 0
+                else :
+                    int_num_processed_records = outs # parse the output
+                    pbar.update( int_num_processed_records ) # update the progress bar
+        int_index_worker = ( int_index_worker + 1 ) % int_num_threads_for_writing_matrix
+
+    # join the processes 
+    for p in l_p :
+        p.join( )
+    pbar.close( ) # close the progress bar
+
+    """
+    prepare data for the axes (features/barcodes)
+    """
+    ''' write barcodes and features files to zarr objects'''
+    for name_axis, int_num_entries, df, m, int_num_str_repr in zip( [ 'barcodes', 'features' ], [ int_num_barcodes, int_num_features ], [ adata.obs, adata.var ], [ adata.obsm, adata.varm ], [ int_num_str_repr_bc, int_num_str_repr_ft ] ) : 
+        # write zarr object for random access of string representation of features/barcodes
+        za = zarr.open( f'{path_folder_output}{name_axis}.str.zarr', mode = 'w', shape = ( int_num_entries, int_num_str_repr ), chunks = ( int_num_of_entries_in_a_chunk_metadata, 1 ), dtype = str ) # string object # individual columns will be chucked, so that each column can be retrieved separately.
+
+        # initialize a ZarrDataFrame object for random access of number and categorical data of features/barcodes
+        zdf = ZarrDataFrame( f'{path_folder_output}{name_axis}.num_and_cat.zdf', int_num_rows = int_num_entries, int_num_rows_in_a_chunk = int_num_of_entries_in_a_chunk_metadata, ** dict_kw_zdf ) # use the same chunk size for feature/barcode objects
+
+        # retrieve string representations
+        arr_str_entry = df.index.values
+        arr_str = np.vstack( list( arr_str_entry for i in range( int_num_str_repr ) ) ).T # stack 'arr_str_entry' 'int_num_str_repr' number of times
+
+        # rename columns with invalid characters
+        df.columns = list( col.replace( '/', '__' ) for col in df.columns.values )
+
+        # drop the columns with too many categories (these columns are likely to contain identifiers)
+        df = df[ list( col for col in df.columns.values if len( df[ col ].unique( ) ) <= int_max_num_categories_in_metadata ) ] 
+
+        df.reset_index( drop = True, inplace = True ) # reset the index
+        zdf.update( df ) # save the metadata
+
+        # create a folder to save a chunked string representations
+        path_folder_str_chunks = f'{path_folder_output}{name_axis}.str.chunks/'
+        filesystem_operations( 'mkdir', path_folder_str_chunks, exist_ok = True )
+        za_str_chunks = zarr.group( path_folder_str_chunks )
+        za_str_chunks.attrs[ 'dict_metadata' ] = { 'int_num_entries' : int_num_entries, 'int_num_of_entries_in_a_chunk' : int_num_of_entries_in_a_chunk_metadata } # write essential metadata for str.chunks
+
+        # add multi-dimensional data to the metadata
+        for name_key in m :
+            zdf[ name_key ] = m[ name_key ]
+
+        # save string representations
+        za[ : ] = arr_str # set str.zarr
+        # save str.chunks
+        index_chunk = 0
+        while index_chunk * int_num_of_entries_in_a_chunk_metadata < int_num_entries :
+            for index_col, arr_val in enumerate( arr_str[ index_chunk * int_num_of_entries_in_a_chunk_metadata : ( index_chunk + 1 ) * int_num_of_entries_in_a_chunk_metadata ].T ) :
+                with open( f"{path_folder_str_chunks}{index_chunk}.{index_col}", 'wt' ) as newfile : # similar organization to zarr
+                    newfile.write( _base64_encode( _gzip_bytes( ( '\n'.join( arr_val ) + '\n' ).encode( ) ) ) )
+            index_chunk += 1 # update 'index_chunk'
+
+    ''' write metadata '''
+    # compose metadata
+    dict_metadata = { 
+        'path_folder_mtx_10x_input' : None,
+        'mode' : mode,
+        'str_completed_time' : bk.TIME_GET_timestamp( True ),
+        'int_num_features' : int_num_features,
+        'int_num_barcodes' : int_num_barcodes,
+        'int_num_records' : int_num_records,
+        'version' : _version_,
+    }
+    if mode.lower( ) != 'dense' :
+        dict_metadata[ 'flag_ramtx_sorted_by_id_feature' ] = flag_mtx_sorted_by_id_feature
+    root = zarr.group( f'{path_folder_output}' )
+    root.attrs[ 'dict_metadata' ] = dict_metadata
+
+    # delete temp folder
+    filesystem_operations( 'rm', path_folder_temp )
+
+    ''' write a flag indicating the export has been completed '''
+    with open( path_file_flag_completion, 'w' ) as file :
+        file.write( bk.TIME_GET_timestamp( True ) )       
+def create_ramdata_from_adata( 
+    adata : anndata.AnnData,
+    path_folder_ramdata_output : str ,
+    set_modes : set = { 'sparse_for_querying_features' }, 
+    name_layer : str = 'normalized_log1p_scaled', 
+    int_num_threads_for_writing_matrix : int = 5,
+    dtype_dense_mtx = np.float64,
+    dtype_sparse_mtx = np.float64,
+    dtype_sparse_mtx_index = np.float64,
+    int_num_of_records_in_a_chunk_zarr_matrix : int = 20000,
+    int_num_of_entries_in_a_chunk_zarr_matrix_index : int = 1000,
+    int_num_of_entries_in_a_batch_for_writing_sparse_matrix : int = 350,
+    float_ratio_padding_for_zarr_sparse_matrix_output : float = 0.5,
+    chunks_dense : tuple = ( 2000, 1000 ),
+    int_num_of_entries_in_a_chunk_metadata : int = 1000,
+    int_max_num_categories_in_metadata : int = 10000 ,
+    dict_kw_zdf : dict = { 'flag_store_string_as_categorical' : True, 'flag_load_data_after_adding_new_column' : False, 'flag_store_64bit_integer_as_float' : True },
+    int_num_str_repr_bc : int = 1,
+    int_num_str_repr_ft : int = 2,
+    flag_multiprocessing : bool = True, 
+    verbose : bool = False,
+    flag_debugging : bool = False,
+) :
+    """ # 2022-12-13 02:56:04 
+    Write a given AnnData object as a RamData object
+
+    Arguments:
+    -- basic arguments --
+    'adata' : an AnnData object to write as a RamData object
+    'path_folder_ramdata_output' : an output folder directory of the RamData object
+    'set_modes' : a set of {'dense', 'sparse_for_querying_barcodes', 'sparse_for_querying_features'} : modes of ramtxs to build. 
+                'dense' : dense ramtx. When building a dense ramtx, the chunk size can be set using 'chunks_dense' arguments
+                'sparse_for_querying_barcodes/features' : sparse ramtx sorted by each axis
+    'flag_debugging' : if True, does not delete temporary files
+
+    -- for sparse ramtx --
+    int_num_threads_for_writing_matrix : int = 5 # the number of processes for writing a zarr matrix
+
+    'dtype_sparse_mtx' (default: np.float64), dtype of the output zarr array for storing sparse matrix
+    'dtype_sparse_mtx_index' (default: np.float64) : dtype of the output zarr array for storing sparse matrix indices
+    'int_num_of_records_in_a_chunk_zarr_matrix' : chunk size for output zarr mtx object (sparse ramtx)
+    'int_num_of_entries_in_a_chunk_zarr_matrix_index' : chunk size for output zarr mtx index object (sparse ramtx)
+    int_num_of_entries_in_a_batch_for_writing_sparse_matrix : int = 350 # the number of entries in a batch for writing a sparse matrix
+    float_ratio_padding_for_zarr_sparse_matrix_output : float = 0.5 # the ratio of the padding relative to the length of the sparse matrix for padding to accomodate fragmentations from multi-processing.
+
+    -- for dense ramtx --
+    'dtype_dense_mtx' (default: np.float64), dtype of the output zarr array for storing dense matrix
+    'chunks_dense' : chunk size for dense ramtx object. if None is given, a dense ramtx object will be created. when dense ramtx object is created, the number of threads for chunking can be set using the 'int_num_threads_for_chunking' argument ( int_num_barcodes_in_a_chunk, int_num_features_in_a_chunk )
+
+    -- for metadata --
+    'int_num_of_entries_in_a_chunk_metadata' : chunk size for output ramtx metadata
+    int_max_num_categories_in_metadata : int = 10000 # ignore columns with more than 'int_max_num_categories_in_metadata' number of categories.
+    dict_kw_zdf : dict = dict( ) # keyworded arguments for the initialization of the ZarrDataFrame
+    int_num_str_repr_bc : int = 1 # the number of columns for string representations of the barcode axis. The current index values of adata.obs will be duplicates this number of times and saved as a zarr object
+    int_num_str_repr_ft : int = 2 # the number of columns for string representations of the feature axis. The current index values of adata.var will be duplicates this number of times and saved as a zarr object
+
+    -- for RamData creation --
+    name_layer : str : a name of the ramdata layer to create (default: raw)
+    flag_multiprocessing : bool = True # if True, create RAMtx objects in parallel
+    """
+    ''' handle arguments '''
+    set_valid_modes = { 'dense', 'sparse_for_querying_barcodes', 'sparse_for_querying_features' }
+    set_modes = set( e for e in set( e.lower( ).strip( ) for e in set_modes ) if e in set_valid_modes ) # retrieve valid mode
+    if len( set_modes ) == 0 : # at least one valid mode should exists
+        return # exit early
+    
+    # build RAMtx objects
+    path_folder_ramdata_layer = f"{path_folder_ramdata_output}{name_layer}/" # define directory of the output data layer
+    
+    # define keyword arguments for ramtx building
+    kwargs_ramtx = { 
+        'int_num_threads_for_writing_matrix' : int_num_threads_for_writing_matrix,
+        'dtype_dense_mtx' : dtype_dense_mtx,
+        'dtype_sparse_mtx' : dtype_sparse_mtx,
+        'dtype_sparse_mtx_index' : dtype_sparse_mtx_index,
+        'int_num_of_records_in_a_chunk_zarr_matrix' : int_num_of_records_in_a_chunk_zarr_matrix,
+        'int_num_of_entries_in_a_chunk_zarr_matrix_index' : int_num_of_entries_in_a_chunk_zarr_matrix_index,
+        'int_num_of_entries_in_a_batch_for_writing_sparse_matrix' : int_num_of_entries_in_a_batch_for_writing_sparse_matrix,
+        'float_ratio_padding_for_zarr_sparse_matrix_output' : float_ratio_padding_for_zarr_sparse_matrix_output,
+        'chunks_dense' : chunks_dense,
+        'int_num_of_entries_in_a_chunk_metadata' : int_num_of_entries_in_a_chunk_metadata,
+        'int_max_num_categories_in_metadata' : int_max_num_categories_in_metadata,
+        'dict_kw_zdf' : dict_kw_zdf,
+        'int_num_str_repr_bc' : int_num_str_repr_bc,
+        'int_num_str_repr_ft' : int_num_str_repr_ft,
+        'verbose' : verbose,
+        'flag_debugging' : flag_debugging,
+    }
+    
+    if flag_multiprocessing : # build multiple RAMtx objects simultaneously
+        # compose processes 
+        l_p = [ ]
+        for mode in set_modes : 
+            l_p.append( mp.Process( target = create_ramtx_from_adata, args = ( adata, f"{path_folder_ramdata_layer}{mode}/", mode ), kwargs = kwargs_ramtx ) )
+        # run processes
+        for p in l_p : p.start( )
+        for p in l_p : p.join( )
+    else :
+        # build each RAMtx one at a time
+        for mode in set_modes : 
+            create_ramtx_from_adata( adata, f"{path_folder_ramdata_layer}{mode}/", mode, ** kwargs_ramtx )
+            
+    # copy features/barcode.tsv.gz random access files for the web (stacked base64 encoded tsv.gz files)
+    # copy features/barcode string representation zarr objects
+    # copy features/barcode ZarrDataFrame containing number/categorical data
+    for name_axis in [ 'features', 'barcodes' ] :
+        for str_suffix in [ '.str.chunks', '.str.zarr', '.num_and_cat.zdf' ] :
+            bk.OS_Run( [ 'cp', '-r', f"{path_folder_ramdata_layer}{mode}/{name_axis}{str_suffix}", f"{path_folder_ramdata_output}{name_axis}{str_suffix}" ] )
+            
+    # write ramdata metadata 
+    int_num_features, int_num_barcodes, int_num_records = len( adata.var ), len( adata.obs ), adata.X.count_nonzero( ) # retrieve metadata of mtx
+    root = zarr.group( path_folder_ramdata_output )
+    root.attrs[ 'dict_metadata' ] = { 
+        'path_folder_mtx_10x_input' : None,
+        'str_completed_time' : bk.TIME_GET_timestamp( True ),
+        'int_num_features' : int_num_features,
+        'int_num_barcodes' : int_num_barcodes,
+        'layers' : [ name_layer ],
+        'models' : dict( ),
+        'version' : _version_,
+    }
+    # write layer metadata
+    lay = zarr.group( path_folder_ramdata_layer )
+    lay.attrs[ 'dict_metadata' ] = { 
+        'set_modes' : list( set_modes ) + ( [ 'dense_for_querying_barcodes', 'dense_for_querying_features' ] if 'dense' in set_modes else [ ] ), # dense ramtx can be operated for querying either barcodes/features
+        'version' : _version_,
+    }
 
 ''' utility functions for handling zarr '''
 def zarr_exists( path_folder_zarr, filesystemserver : Union[ None, FileSystemServer ] = None ) :
@@ -4157,7 +4566,7 @@ class ZarrSpinLockServer( ) :
     
 ''' a class for Zarr-based DataFrame object '''
 class ZarrDataFrame( ) :
-    """ # 2022-12-12 00:44:54 
+    """ # 2022-12-13 00:55:53 
     storage-based persistant DataFrame backed by Zarr persistent arrays.
     each column can be separately loaded, updated, and unloaded.
     a filter can be set, which allows updating and reading ZarrDataFrame as if it only contains the rows indicated by the given filter.
@@ -4247,6 +4656,9 @@ class ZarrDataFrame( ) :
     flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock : bool = False # if True, does not wait and raise 'RuntimeError' when a modification of a RamData cannot be made due to the resource that need modification is temporarily unavailable, locked by other processes
     float_second_to_wait_before_checking_availability_of_a_spin_lock : float = 0.5 # number of seconds to wait before repeatedly checking the availability of a spin lock if the lock has been acquired by other operations.
     zarrspinlockserver : Union[ True, None, ZarrSpinLockServer ] = None # a ZarrSpinLockServer object for synchronization of methods of the current object. if None is given, synchronization feature will not be used. if True is given, a new ZarrSpinLockServer object will be created and attached to the current ZarrDataFrame object
+    
+    === Web application ===
+    flag_store_64bit_integer_as_float : bool = True # currently, javascript implementation of Zarr does not support a 64bit integer datatype. By setting this flag to True, all data values using a 64bit integer datatype will be saved using the 64bit float datatype.
     """
     def __init__( 
         self, 
@@ -4263,6 +4675,7 @@ class ZarrDataFrame( ) :
         ba_filter : Union[ bitarray, None ] = None, 
         flag_enforce_name_col_with_only_valid_characters : bool = False, 
         flag_store_string_as_categorical : bool = True, 
+        flag_store_64bit_integer_as_float : bool = True,
         flag_retrieve_categorical_data_as_integers : bool = False, 
         flag_load_data_after_adding_new_column : bool = True, 
         mode : str = 'a', 
@@ -4277,11 +4690,12 @@ class ZarrDataFrame( ) :
         float_second_to_wait_before_checking_availability_of_a_spin_lock : float = 0.5,
         zarrspinlockserver : Union[ None, bool, ZarrSpinLockServer ] = None,
     ) :
-        """ # 2022-11-14 23:49:20 
+        """ # 2022-12-13 00:56:01 
         """
         # set attributes that can be changed anytime during the lifetime of the object
         self._flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock = flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock
         self._float_second_to_wait_before_checking_availability_of_a_spin_lock = float_second_to_wait_before_checking_availability_of_a_spin_lock
+        self.flag_store_64bit_integer_as_float = flag_store_64bit_integer_as_float
         
         # handle path
         if '://' not in path_folder_zdf : # does not retrieve abspath if the given path is remote path
@@ -4375,6 +4789,7 @@ class ZarrDataFrame( ) :
                 l_dict_index_mapping_interleaved = l_dict_index_mapping_interleaved,
                 l_dict_index_mapping_from_combined_to_component = l_dict_index_mapping_from_combined_to_component,
                 l_dict_index_mapping_from_component_to_combined = l_dict_index_mapping_from_component_to_combined,
+                flag_store_64bit_integer_as_float = flag_store_64bit_integer_as_float,
                 zdf_source = self, # give reference to current source zdf
                 flag_use_lazy_loading = self._flag_use_lazy_loading,
                 flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock = flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock,
@@ -4627,12 +5042,14 @@ class ZarrDataFrame( ) :
         '''
         return self.get_metadata( )
     def get_metadata( self ) :
-        """ # 2022-12-11 22:08:05 
+        """ # 2022-12-13 02:00:26 
         read metadata with file-locking
         """
         if self._zsls is not None : # when locking has been enabled, read metadata from the storage, and update the metadata currently loaded in the memory
             self._zsls.wait_lock( f"{self._path_folder_zdf}.zattrs.lock/" ) # wait until a lock is released
             self._dict_metadata = self._zsls.zms.get_metadata( self._path_folder_zdf, 'dict_metadata' ) # retrieve metadata from the storage, and update the metadata stored in the object
+        elif not hasattr( self, '_dict_metadata' ) : # when locking is not used but the metadata has not been loaded, read the metadata without using the locking algorithm
+            self._dict_metadata = self._root.attrs[ 'dict_metadata' ] # retrieve 'dict_metadata' from the storage
         return self._dict_metadata # return the metadata
     def set_metadata( self, dict_metadata : dict ) :
         """ # 2022-12-11 22:08:05 
@@ -5143,6 +5560,12 @@ class ZarrDataFrame( ) :
                     dtype = np.int16
                 else :
                     dtype = np.int32
+            else :
+                if self.flag_store_64bit_integer_as_float : # if 'flag_store_64bit_integer_as_float' flag is set to True, avoid using np.int64 dtype due to its compatibility with the JavaScript
+                    if np.issubdtype( dtype, np.int64 ) : # the np.int64 dtype will be saved using the np.float64 dtype
+                        dtype = np.float64
+                    if dtype == int : # the general 'int' dtype will be saved using the np.int32 dtype
+                        dtype = np.int32
                     
             # initialize the zarr objects
             path_folder_col = f"{self._path_folder_zdf}{name_col}/"
@@ -5308,7 +5731,7 @@ class ZarrDataFrame( ) :
                         values[ t_coord ] = l_value_unique[ val ] if val >= 0 else np.nan # convert integer representations to its original string values # -1 (negative integers) encodes np.nan
                     return values
     def __setitem__( self, args, values ) :
-        ''' # 2022-12-12 02:53:38 
+        ''' # 2022-12-13 01:09:06 
         save/update a column at indexed positions.
         when a filter is active, only active entries will be saved/updated automatically.
         boolean mask/integer arrays/slice indexing is supported. However, indexing will be applied to the original column with unfiltered rows (i.e., when indexing is active, filter will be ignored)
@@ -5552,6 +5975,13 @@ class ZarrDataFrame( ) :
                 values = np.zeros_like( values_before_encoding, dtype = dtype ) # initialize encoded values
                 for t_coord, val in np.ndenumerate( values_before_encoding ) : # np.ndarray object can be encoded.
                     values[ t_coord ] = dict_encode_category[ val ] if val in dict_encode_category else -1 # encode strings into integer representations # -1 (negative integers) encodes np.nan, which is a fill_value for zarr object containing categorical data
+        else :
+            # when categorical data is not used, modify retrieved/inferred dtype
+            if self.flag_store_64bit_integer_as_float : # if 'flag_store_64bit_integer_as_float' flag is set to True, avoid using np.int64 dtype due to its compatibility with the JavaScript
+                if np.issubdtype( dtype, np.int64 ) : # the np.int64 dtype will be saved using the np.float64 dtype
+                    dtype = np.float64
+                if dtype == int : # the general 'int' dtype will be saved using the np.int32 dtype
+                    dtype = np.int32
             
         # open zarr object and write data
         za = zarr.open( path_folder_col, mode = 'a', synchronizer = zarr.ThreadSynchronizer( ) ) if flag_col_already_exists else zarr.open( path_folder_col, mode = 'w', shape = shape_inferred, chunks = chunks_inferred, dtype = dtype, fill_value = fill_value, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object if the object does not exist.
@@ -5866,103 +6296,6 @@ class ZarrDataFrame( ) :
             
             # remove previous column name and add new column name
             self.update_metadata( dict_rename_name_col = { name_col_before : name_col_after } ) # update metadata
-    """ <Methods for Locking> """
-    def check_lock( self, type_resource : Literal[ 'metadata', 'column' ], name_col : Union[ str, None ] = None ) :
-        """ # 2022-12-10 21:32:38 
-        check whether the lock for the metadata or columns currently exists, based on the file system where the current object resides.
-        
-        type_resource : Literal[ 'metadata', 'column' ] # 'metadata': lock editing of the metadata. 'column': lock editing of the specified column.
-        name_col : Union[ str, None ] = None # the name of the column to create a lock. the column that does not exist can be also locked, allowing applications to declare a new column that will be added to the ZDF before actually adding the column.
-        """
-        # run the operation on the mask
-        if self._mask is not None :
-            return self._mask.check_lock( type_resource = type_resource, name_col = name_col )
-        
-        # retrieve the path of the lock file
-        # implement a lock file using the zarr attribute file
-        if type_resource == 'metadata' : # lock metadata
-            path_file_lock = f"{self._path_folder_zdf}.zattrs.lock/.zattrs" 
-        elif type_resource == 'column' : # lock a column
-            path_file_lock = f"{self._path_folder_zdf}{name_col}.lock/.zattrs"
-        else :
-            raise KeyError( f"type_resource '{type_resource}' is an invalid argument." )
-        # return the flag indicating whether the lock exists
-        return filesystem_operations( 'exists', path_file_lock )
-    def wait_lock( self, type_resource : Literal[ 'metadata', 'column' ], name_col : Union[ str, None ] = None ) :
-        """ # 2022-12-10 21:32:38 
-        wait for the lock for the metadata or columns, based on the file system where the current object resides.
-        
-        type_resource : Literal[ 'metadata', 'column' ] # 'metadata': lock editing of the metadata. 'column': lock editing of the specified column.
-        name_col : Union[ str, None ] = None # the name of the column to create a lock. the column that does not exist can be also locked, allowing applications to declare a new column that will be added to the ZDF before actually adding the column.
-        """
-        # run the operation on the mask
-        if self._mask is not None :
-            return self._mask.wait_lock( type_resource = type_resource, name_col = name_col )
-        
-        # if lock is available and 'flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock' is True, raise a RuntimeError
-        if self.check_lock( type_resource = type_resource, name_col = name_col ) and self.flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock :
-            raise RuntimeError( f'modification is not possible for the current ZarrDataFrame ({self._path_folder_zdf}). type_resource={type_resource} name_col={name_col}' )
-        # implement a spin lock using the sleep function
-        while self.check_lock( type_resource = type_resource, name_col = name_col ) : # until a lock is released
-            time.sleep( self.float_second_to_wait_before_checking_availability_of_a_spin_lock ) # wait for 'float_second_to_wait_before_checking_availability_of_a_spin_lock' second
-    def acquire_lock( self, type_resource : Literal[ 'metadata', 'column' ], name_col : Union[ str, None ] = None ) :
-        """ # 2022-12-10 21:32:38 
-        acquire the lock for the metadata or columns, based on the file system where the current object resides.
-        
-        === arguments ===
-        type_resource : Literal[ 'metadata', 'column' ] # 'metadata': lock editing of the metadata. 'column': lock editing of the specified column.
-        name_col : Union[ str, None ] = None # the name of the column to create a lock. the column that does not exist can be also locked, allowing applications to declare a new column that will be added to the ZDF before actually adding the column.
-        
-        === returns ===
-        return str_uuid_lock # return 'str_uuid_lock' that is required for releasing the created lock
-        """
-        # run the operation on the mask
-        if self._mask is not None :
-            return self._mask.acquire_lock( type_resource = type_resource, name_col = name_col )
-        
-        # wait until the lock becomes available
-        self.wait_lock( type_resource = type_resource, name_col = name_col )
-        
-        # acquire a lock
-        str_uuid_lock = bk.UUID( ) # retrieve uuid of the current lock (required when releasing the lock)
-        # retrieve path of the lock zarr object
-        if type_resource == 'metadata' : # lock metadata
-            path_folder_lock = f"{self._path_folder_zdf}.zattrs.lock/" 
-        elif type_resource == 'column' : # lock a column
-            path_folder_lock = f"{self._path_folder_zdf}{name_col}.lock/"
-        else :
-            raise KeyError( f"type_resource '{type_resource}' is an invalid argument." )
-        # create the lock zarr object
-        za = zarr.open( path_folder_lock, 'w' )
-        za.attrs[ 'dict_metadata' ] = { 'str_uuid_lock' : str_uuid_lock, 'time' : int( time.time( ) ) }
-        return str_uuid_lock # return 'str_uuid_lock' that is required for releasing the created lock
-    def release_lock( self, type_resource : Literal[ 'metadata', 'column' ], str_uuid_lock : str, name_col : Union[ str, None ] = None ) :
-        """ # 2022-12-10 21:32:38 
-        release the lock for the metadata or columns, based on the file system where the current object resides
-        
-        type_resource : Literal[ 'metadata', 'column' ] # 'metadata': lock editing of the metadata. 'column': lock editing of the specified column.
-        name_col : Union[ str, None ] = None # the name of the column to create a lock. the column that does not exist can be also locked, allowing applications to declare a new column that will be added to the ZDF before actually adding the column.
-        """
-        # run the operation on the mask
-        if self._mask is not None :
-            return self._mask.release_lock( type_resource = type_resource, name_col = name_col )
-        
-        # if the lock is available, release lock using the given 'str_uuid_lock'
-        if self.check_lock( type_resource = type_resource, name_col = name_col ) :
-            # retrieve path of the lock zarr object
-            if type_resource == 'metadata' : # lock metadata
-                path_folder_lock = f"{self._path_folder_zdf}.zattrs.lock/" 
-            elif type_resource == 'column' : # lock a column
-                path_folder_lock = f"{self._path_folder_zdf}{name_col}.lock/"
-            else :
-                raise KeyError( f"type_resource '{type_resource}' is an invalid argument." )
-            # open the lock zarr object
-            za = zarr.open( path_folder_lock, 'r' )
-            # check 'str_uuid_lock' and release lock if 'str_uuid_lock' is matched with that of the lock zarr object
-            if za.attrs[ 'dict_metadata' ][ 'str_uuid_lock' ] == str_uuid_lock :
-                filesystem_operations( 'rm', path_folder_lock )
-            else :
-                raise KeyError( f"{str_uuid_lock} does not match that of the lock" )
 ''' a class for representing axis of RamData (barcodes/features) '''
 class IndexMappingDictionary( ) :
     """ # 2022-09-02 00:53:27 
@@ -8756,7 +9089,7 @@ class RamDataLayer( ) :
             rtx.terminate_spawned_processes( ) # terminate spawned processes from the RAMtx object
 ''' class for storing RamData '''
 class RamData( ) :
-    """ # 2022-12-09 16:59:50 
+    """ # 2022-12-13 02:58:40 
     This class provides frameworks for single-cell transcriptomic/genomic data analysis, utilizing RAMtx data structures, which is backed by Zarr persistant arrays.
     Extreme lazy loading strategies used by this class allows efficient parallelization of analysis of single cell data with minimal memory footprint, loading only essential data required for analysis. 
     
@@ -8833,7 +9166,7 @@ class RamData( ) :
         verbose : bool = True, 
         flag_debugging : bool = False
     ) :
-        """ # 2022-07-21 23:32:54 
+        """ # 2022-12-13 02:58:36 
         """
         ''' hard-coded settings  '''
         # define a set of picklable models :
@@ -8930,7 +9263,7 @@ class RamData( ) :
         self.metadata # load metadata
         
         # initialize the layor object
-        if name_layer is not None : # if given name of the layer is valid
+        if name_layer is not None and name_layer in self.layers : # if given name of the layer is valid
             self.layer = name_layer
         
         # initialize utility databases
