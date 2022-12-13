@@ -35,6 +35,7 @@ from bitarray import bitarray ## binary arrays
 import shelve # for persistent database (key-value based database)
 
 from tqdm import tqdm as progress_bar # for progress bar
+# from tqdm.autonotebook import tqdm  as progress_bar # for progress bar with jupyter notebook integration # not compatible with multi-processing
 
 # # for handling s3 objects
 # import s3fs
@@ -43,9 +44,9 @@ from tqdm import tqdm as progress_bar # for progress bar
 logging.basicConfig( format = '[SC-Elephant] %(asctime)s - %(message)s', level = logging.INFO )
 
 # define version
-_version_ = '0.0.9'
+_version_ = '0.0.10'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-12-13 03:32:24'
+_last_modified_time_ = '2022-12-14 01:20:50'
 
 """ # 2022-07-21 10:35:42  realease note
 
@@ -270,6 +271,10 @@ a class ZarrSpinLockServer was implemented to support file-locking of ZarrDataFr
 
 # 2022-12-13 03:30:26 
 A functioning version of 'create_ramtx_from_adata', 'create_ramdata_from_adata' methods were implemented, which uses multiprocessing to export count matrix to a RAMtx object. An AnnData can be exported to a RamData object using these functions.
+
+# 2022-12-14 01:21:04 
+the draft version of sychronization methods for ZarrDataFrame and RamData classes were implemented.
+(a commit prior to a major revision for RamData.models methods)
 
 ##### Future implementations #####
 # 2022-12-10 20:59:46 
@@ -3264,7 +3269,7 @@ def create_ramtx_from_mtx( path_folder_mtx_10x_input, path_folder_output, mode =
     with open( path_file_flag_completion, 'w' ) as file :
         file.write( bk.TIME_GET_timestamp( True ) )
 def create_ramdata_from_mtx( path_folder_mtx_10x_input, path_folder_ramdata_output, set_modes = { 'dense' }, name_layer = 'raw', int_num_records_in_a_chunk = 10000000, int_buffer_size = 300, compresslevel = 6, flag_dtype_is_float = False, int_num_threads_for_chunking = 5, int_num_threads_for_writing = 1, int_max_num_input_files_for_each_merge_sort_worker = 8, int_num_chunks_to_combine_before_concurrent_merge_sorting = 8, dtype_dense_mtx = np.uint32, dtype_sparse_mtx = np.float64, dtype_sparse_mtx_index = np.float64, int_num_of_records_in_a_chunk_zarr_matrix = 20000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, chunks_dense = ( 2000, 1000 ), int_num_of_entries_in_a_chunk_metadata = 1000, flag_multiprocessing = True, verbose = False, flag_debugging = False ) :
-    """ # 2022-08-05 21:41:07 
+    """ # 2022-12-13 22:25:38 
     sort a given mtx file in a very time- and memory-efficient manner, and create sparse (sorted by barcode/feature).
     when 'type' == 'dense', create a dense ramtx object in the given output folder without sorting the input mtx file in the given axis ('flag_mtx_sorted_by_id_feature')
     
@@ -3354,7 +3359,8 @@ def create_ramdata_from_mtx( path_folder_mtx_10x_input, path_folder_ramdata_outp
         'str_completed_time' : bk.TIME_GET_timestamp( True ),
         'int_num_features' : int_num_features,
         'int_num_barcodes' : int_num_barcodes,
-        'layers' : [ name_layer ],
+        'layers' : { name_layer : dict( ) },
+        'identifier' : bk.UUID( ),
         'models' : dict( ),
         'version' : _version_,
     }
@@ -3382,7 +3388,7 @@ def sort_mtx_10x( path_folder_mtx_input : str, path_folder_mtx_output : str, fla
     sort_mtx( f"{path_folder_mtx_input}matrix.mtx.gz", path_file_gzip_sorted = f"{path_folder_mtx_output}matrix.mtx.gz", flag_mtx_sorted_by_id_feature = flag_mtx_sorted_by_id_feature, ** kwargs )
 # for creating RamData from AnnData
 def create_ramtx_from_adata( 
-    adata : anndata.AnnData,
+    adata,
     path_folder_output : str,
     mode : Literal[ 'dense', 'sparse_for_querying_features', 'sparse_for_querying_barcodes' ] = 'sparse_for_querying_features',
     int_num_threads_for_writing_matrix : int = 5,
@@ -3659,8 +3665,9 @@ def create_ramtx_from_adata(
     ''' write a flag indicating the export has been completed '''
     with open( path_file_flag_completion, 'w' ) as file :
         file.write( bk.TIME_GET_timestamp( True ) )       
+    logging.info( f"Exporting of a RAMtx object at '{path_folder_output}' was completed" )
 def create_ramdata_from_adata( 
-    adata : anndata.AnnData,
+    adata,
     path_folder_ramdata_output : str ,
     set_modes : set = { 'sparse_for_querying_features' }, 
     name_layer : str = 'normalized_log1p_scaled', 
@@ -3776,7 +3783,8 @@ def create_ramdata_from_adata(
         'str_completed_time' : bk.TIME_GET_timestamp( True ),
         'int_num_features' : int_num_features,
         'int_num_barcodes' : int_num_barcodes,
-        'layers' : [ name_layer ],
+        'layers' : { name_layer : dict( ) },
+        'identifier' : bk.UUID( ),
         'models' : dict( ),
         'version' : _version_,
     }
@@ -3786,6 +3794,7 @@ def create_ramdata_from_adata(
         'set_modes' : list( set_modes ) + ( [ 'dense_for_querying_barcodes', 'dense_for_querying_features' ] if 'dense' in set_modes else [ ] ), # dense ramtx can be operated for querying either barcodes/features
         'version' : _version_,
     }
+    logging.info( f"Exporting of a RamData object at '{path_folder_ramdata_output}' was completed" )
 
 ''' utility functions for handling zarr '''
 def zarr_exists( path_folder_zarr, filesystemserver : Union[ None, FileSystemServer ] = None ) :
@@ -4328,7 +4337,10 @@ def zarr_metadata_server( pipe_receiver_input, pipe_sender_output, dict_kwargs_c
         if method == 'set_metadata' :
             zarr.open( path_folder_zarr ).attrs[ key ] = value
         elif method == 'get_metadata' :
-            outs = zarr.open( path_folder_zarr ).attrs[ key ]
+            try : # try to retrieve the value of the 'key'
+                outs = zarr.open( path_folder_zarr ).attrs[ key ]
+            except : 
+                outs = None 
         pipe_sender_output.send( outs ) # return the result
 class ZarrMetadataServer( ) :
     """ # 2022-12-07 18:57:38 
@@ -4377,7 +4389,11 @@ class ZarrMetadataServer( ) :
             return self._pipe_receiver_output.recv( ) # retrieve result and return
         else :
             # run a zarr operation in the current process
-            return zarr.open( path_folder_zarr ).attrs[ key ]
+            try :
+                # try to retrieve the value of the 'key'
+                return zarr.open( path_folder_zarr ).attrs[ key ]
+            except :
+                return None
     def set_metadata( self, path_folder_zarr : str, key : str, value ) :
         """ # 2022-12-07 18:59:43 
         a (possibly) fork-safe method for setting zarr group metadata
@@ -5477,7 +5493,7 @@ class ZarrDataFrame( ) :
 #             logging.info( f'[ZarrDataFrame] a column for quering integer indices was written' )
         return self[ '__index__', queries ] # return integer indices of the queries
     def initialize_column( self, name_col : str, dtype = np.float64, shape_not_primary_axis = ( ), chunks = ( ), categorical_values = None, fill_value = 0, dict_metadata_description : dict = dict( ), zdf_template = None, name_col_template : Union[ str, None ] = None, path_col_template : Union[ str, None ] = None ) : 
-        """ # 2022-11-15 00:14:23 
+        """ # 2022-12-13 19:15:36 
         initialize columns with a given shape and given dtype
         'dtype' : initialize the column with this 'dtype'
         'shape_not_primary_axis' : initialize the column with this shape excluding the dimension of the primary axis. if an empty tuple or None is given, a 1D array will be initialized. 
@@ -5525,6 +5541,18 @@ class ZarrDataFrame( ) :
             categorical_values = dict_col_metadata[ 'l_value_unique' ] if 'flag_categorical' in dict_col_metadata and dict_col_metadata[ 'flag_categorical' ] else None # retrieve categorical values
             
         if name_col not in self.columns_excluding_components : # if the column does not exists in the current ZarrDataFrame (excluding component zdf objects )
+            # retrieve path of the column
+            path_folder_col = f"{self._path_folder_zdf}{name_col}/"
+            if self.use_locking : # if locking is used
+                # %% FILE LOCKING %%
+                # if a lock is present, exit the function, since the column has been already initialized
+                if self._zsls.check_lock( f'{path_folder_col}.lock' ) :
+                    if self.verbose :
+                        logging.error( f'a lock is present for {path_folder_col} column, indicating that the column has been already initialized by other processes, exiting' )
+                    return
+                # acquire the lock before initializing the column
+                self._zsls.acquire_lock( f'{path_folder_col}.lock' )
+            
             # check whether the given name_col contains invalid characters(s)
             for char_invalid in self._str_invalid_char :
                 if char_invalid in name_col :
@@ -5568,15 +5596,20 @@ class ZarrDataFrame( ) :
                         dtype = np.int32
                     
             # initialize the zarr objects
-            path_folder_col = f"{self._path_folder_zdf}{name_col}/"
             shape = tuple( [ self._n_rows_unfiltered ] + list( shape_not_primary_axis ) ) # compose 'shape' of the zarr object
             chunks = tuple( chunks ) if len( chunks ) == len( shape ) else tuple( [ self.int_num_rows_in_a_chunk ] + list( chunks ) ) # compose 'chunks' of the zarr object
             assert len( chunks ) == len( shape ) # the length of chunks and shape should be the same
+            
             za = zarr.open( path_folder_col, mode = 'w', shape = shape, chunks = chunks, dtype = dtype, fill_value = fill_value, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object if the object does not exist.
             
             # write metadata
             za.attrs[ 'dict_col_metadata' ] = dict_col_metadata
-
+            
+            if self.use_locking : # if locking is used
+                # %% FILE LOCKING %%
+                # acquire the lock before initializing the column
+                self._zsls.release_lock( f'{path_folder_col}.lock' )
+            
             # add column to zdf (and update the associated metadata)
             self._add_column( name_col, dict_metadata_description ) 
     def __getitem__( self, args ) :
@@ -6039,10 +6072,8 @@ class ZarrDataFrame( ) :
             self.update_metadata( l_name_col_to_be_deleted = [ name_col ] ) # update metadata
             # delete the column from the disk ZarrDataFrame object
             
-            if self.use_locking : # if locking is used
-                # %% FILE LOCKING %%
-                # wait until the lock becomes available (the column is now ready for 'delete' operation)
-                self._zsls.wait_lock( f'{self._path_folder_zdf}{name_col}.lock' )
+            if self.use_locking : # %% FILE LOCKING %%
+                self._zsls.wait_lock( f'{self._path_folder_zdf}{name_col}.lock' ) # wait until the lock becomes available (the column is now ready for 'delete' operation)
             filesystem_operations( 'rm', f"{self._path_folder_zdf}{name_col}/" )
     def __repr__( self ) :
         """ # 2022-07-20 23:00:15 
@@ -9284,8 +9315,7 @@ class RamData( ) :
         """
         # [TEMP] add identifier
         if 'identifier' not in self._dict_metadata :
-            self._dict_metadata[ 'identifier' ] = bk.UUID( )
-            self._save_metadata_( )
+            self.update_metadata( dict_metadata_to_be_updated = { 'identifier' : bk.UUID( ) } )
         
         return self._dict_metadata[ 'identifier' ]
     def get_component( self, int_index = None, str_identifier : Union[ str, None ] = None ) :
@@ -9378,40 +9408,6 @@ class RamData( ) :
         """
         int_num_components = len( self._l_ramdata ) if self.is_combined else None
         return int_num_components
-    """ <Methods handling Metadata> """
-    @property
-    def metadata( self ) :
-        """ # 2022-07-21 00:45:12 
-        implement lazy-loading of metadata
-        """
-        # implement lazy-loading of metadata
-        if not hasattr( self, '_root' ) :
-            # open RamData as a Zarr object (group)
-            self._root = zarr.open( self._path_folder_ramdata ) 
-            
-            if self._path_folder_ramdata_mask is not None : # if mask is given, open the mask object as a zarr group to save/retrieve metadata
-                root_mask = zarr.open( self._path_folder_ramdata_mask ) # open the mask object as a zarr group
-                if len( list( root_mask.attrs ) ) == 0 : # if mask object does not have a ramdata attribute
-                    root_mask.attrs[ 'dict_metadata' ] = self._root.attrs[ 'dict_metadata' ] # copy the ramdata attribute of the current RamData to the mask object
-                self._root = root_mask # use the mask object zarr group to save/retrieve ramdata metadata
-                
-            # retrieve metadata 
-            self._dict_metadata = self._root.attrs[ 'dict_metadata' ]
-            self._dict_metadata[ 'layers' ] = set( self._dict_metadata[ 'layers' ] )
-        # return metadata
-        return self._dict_metadata
-    def _save_metadata_( self ) :
-        ''' # 2022-07-21 00:45:03 
-        a semi-private method for saving metadata to the disk 
-        '''
-        if not self._mode == 'r' : # update metadata only when the current RamData object is not read-only
-            if hasattr( self, '_dict_metadata' ) : # if metadata has been loaded
-                # convert 'columns' to list before saving attributes
-                temp = self._dict_metadata[ 'layers' ] # save the set as a temporary variable 
-                self._dict_metadata[ 'layers' ] = list( temp ) # convert to list
-                self._root.attrs[ 'dict_metadata' ] = self._dict_metadata # update metadata
-                self._dict_metadata[ 'layers' ] = temp # revert to set
-    """ </Methods handling Metadata> """
     @property
     def int_num_cpus_for_fetching_data( self ) :
         """ # 2022-07-21 23:32:24 
@@ -9424,7 +9420,7 @@ class RamData( ) :
         self._int_num_cpus_for_fetching_data = max( 1, int( val ) ) # set an integer value
         if self.layer is not None :
             self.layer.int_num_cpus = self._int_num_cpus_for_fetching_data # update 'int_num_cpus' attributes of RAMtxs
-    """ <Methods handling Paths> """
+    """ <Methods for handling Paths> """
     @property
     def is_remote( self ) :
         """ # 2022-09-03 17:17:32 
@@ -9451,7 +9447,7 @@ class RamData( ) :
         if mask is given, path to the mask will be returned.
         if current ramdata location cannot be modified and no mask has been given, None will be returned.
         """
-        if self._path_folder_ramdata_mask is not None and not is_remote_url( self._path_folder_ramdata_mask ) : # if mask is given and is located locally, use the mask
+        if self._path_folder_ramdata_mask is not None and not is_remote_url( self._path_folder_ramdata_mask ) : # if mask is given and is located locally, use the mask (it is unlikely that Amazon S3 object is used as a mask)
             return self._path_folder_ramdata_mask
         elif not self._flag_is_read_only : # if current object can be modified, create temp folder inside the current object
             return self._path_folder_ramdata
@@ -9470,24 +9466,460 @@ class RamData( ) :
         else :
             return None
     @property
+    def _path_folder_ramdata_active( self ) :
+        """ # 2022-12-13 21:31:51 
+        return path of the ramdata that is currently active in the current object. 
+        if mask is present, path to the mask will be given.
+        """
+        if self._path_folder_ramdata_mask is None : # if mask is given, use the mask, since mask is assumed to be present in the local file system.
+            return self._path_folder_ramdata_mask
+        else :
+            return self._path_folder_ramdata
+    @property
     def path_folder_temp( self ) :
         """ # 2022-12-06 23:41:31 
         return the path to the temporary folder (a read-only attribute)
         """
         return self._path_folder_temp
-    """ </Methods handling Paths> """
-    """ <Methods for Locking> """
-    def acquire_lock( self, type_resource : Literal[ 'metadata', 'layer', 'layer.metadata', 'r' ] ) :
-        """ # 2022-12-10 21:32:38 
-        acquire lock 
+    """ </Methods for handling Paths> """
+    """ <Methods for Synchronization> """
+    @property
+    def use_locking( self ) :
+        """ # 2022-12-12 02:45:43 
+        return True if a spin lock algorithm is being used for synchronization of operations on the current object
         """
-        pass
-    def release_lock( self ) :
-        """ # 2022-12-10 21:47:37 
+        return self._zsls is not None
+    @property
+    def metadata( self ) :
+        ''' # 2022-07-21 02:38:31 
+        '''
+        return self.get_metadata( )
+    def get_metadata( self ) :
+        """ # 2022-12-13 02:00:26 
+        read metadata with file-locking (also implement lazy-loading of metadata)
+        """        
+        if not hasattr( self, '_root' ) : # initialize the zarr group
+            # open RamData as a Zarr object (group)
+            self._root = zarr.open( self._path_folder_ramdata ) 
+            if self._path_folder_ramdata_mask is not None : # if mask is given, open the mask object as a zarr group to save/retrieve metadata
+                root_mask = zarr.open( self._path_folder_ramdata_mask ) # open the mask object as a zarr group
+                if len( list( root_mask.attrs ) ) == 0 : # if mask object does not have a ramdata attribute
+                    if self.use_locking : # %% FILE LOCKING %%
+                        self._zsls.wait_lock( f"{self._path_folder_ramdata}.zattrs.lock/" ) # wait until a lock is released before reading the metadata of the current RamData object
+                    root_mask.attrs[ 'dict_metadata' ] = self._root.attrs[ 'dict_metadata' ] # copy the ramdata attribute of the current RamData to the mask object
+                self._root = root_mask # use the mask object zarr group to save/retrieve ramdata metadata
+                    
+        path_folder = self._path_folder_ramdata_active # retrieve path to the active ramdata object         
+        if self.use_locking : # when locking has been enabled, read metadata from the storage, and update the metadata currently loaded in the memory
+            # %% FILE LOCKING %%
+            self._zsls.wait_lock( f"{path_folder}.zattrs.lock/" ) # wait until a lock is released
+            self._dict_metadata = self._zsls.zms.get_metadata( path_folder, 'dict_metadata' ) # retrieve metadata from the storage, and update the metadata stored in the object
+            
+            # 🐘TEMP🐘
+            if not isinstance( self._dict_metadata[ 'layers' ], dict ) :
+                self._dict_metadata[ 'layers' ] = dict( ( e, dict( ) ) for e in self._dict_metadata[ 'layers' ] )
+                self.set_metadata( self._dict_metadata )
+            
+        elif not hasattr( self, '_dict_metadata' ) : # when locking is not used but the metadata has not been loaded, read the metadata without using the locking algorithm
+            self._dict_metadata = self._root.attrs[ 'dict_metadata' ] # retrieve 'dict_metadata' from the storage
+        return self._dict_metadata # return the metadata
+    def set_metadata( self, dict_metadata : dict ) :
+        """ # 2022-12-11 22:08:05 
+        write metadata with file-locking
+        """
+        path_folder = self._path_folder_ramdata_active # retrieve path to the active ramdata object 
+        if self._flag_is_read_only : # save metadata only when it is not in the read-only mode 
+            return
+        self._dict_metadata = dict_metadata # update metadata stored in the memory
+        if self._zsls is None : # if locking is not used, return previously loaded metadata
+            self._root.attrs[ 'dict_metadata' ] = self._dict_metadata
+        else : # when locking has been enabled
+            self._zsls.acquire_lock( f"{path_folder}.zattrs.lock/" ) # acquire a lock
+            self._zsls.zms.set_metadata( path_folder, 'dict_metadata', self._dict_metadata ) # write metadata to the storage
+            self._zsls.release_lock( f"{path_folder}.zattrs.lock/" ) # release the lock
+    def update_metadata( self, dict_metadata_to_be_updated : dict = dict( ), l_name_layer_to_be_deleted : list = [ ], dict_rename_name_layer : dict = dict( ), l_id_model_to_be_deleted : list = [ ], dict_rename_id_model : dict = dict( ) ) :
+        """ # 2022-12-11 22:08:05 
+        write metadata with file-locking
         
+        dict_metadata_to_be_updated : dict # a dictionarty for updating 'dict_metadata' of the current object
+        l_name_layer_to_be_deleted : list = [ ] # a list of name of layers to be deleted from the metadata.
+        dict_rename_name_layer : dict = dict( ) # a dictionary mapping previous name_layer to new name_layer for renaming layers
+        l_id_model_to_be_deleted : list = [ ] # a list of id_models to be deleted
+        dict_rename_id_model : dict = dict( ) # a dictionary mapping previous id_model to new id_model for renaming models
         """
-        pass
-    """ </Methods for Locking> """
+        if self._flag_is_read_only : # update the metadata only when it is not in the read-only mode 
+            return
+        path_folder = self._path_folder_ramdata_active # retrieve path to the active ramdata object 
+        def __update_dict_metadata( dict_metadata : dict, dict_metadata_to_be_updated : dict, l_name_layer_to_be_deleted : list, dict_rename_name_layer : dict ) :
+            ''' # 2022-12-13 19:30:27 
+            update dict_metadata with dict_metadata_to_be_updated and return the updated dict_metadata
+            '''
+            if 'layers' in dict_metadata_to_be_updated :
+                dict_metadata_layers = dict_metadata[ 'layers' ]
+                dict_metadata_layers.update( dict_metadata_to_be_updated[ 'layers' ] )
+                dict_metadata_to_be_updated[ 'layers' ] = dict_metadata_layers
+                
+            # update 'dict_metadata'
+            dict_metadata.update( dict_metadata_to_be_updated )
+            
+            # delete layers from the 'dict_metadata'
+            for name_layer in l_name_layer_to_be_deleted :
+                if name_layer in dict_metadata[ 'layers' ] :
+                    dict_metadata[ 'layers' ].pop( name_layer )
+            
+            # rename layers of the 'dict_metadata'
+            for name_layer_prev in dict_rename_name_layer :
+                name_layer_new = dict_rename_name_layer[ name_layer_prev ]
+                if name_layer_prev in dict_metadata[ 'layers' ] and name_layer_new not in dict_metadata[ 'layers' ] : # for a valid pair of previous and new layer names
+                    dict_metadata[ 'layers' ][ name_layer_new ] = dict_metadata[ 'layers' ].pop( name_layer_prev ) # perform a renaming operation
+            
+            return dict_metadata
+        if self._zsls is None : # if locking is not used, return previously loaded metadata
+            self._dict_metadata = __update_dict_metadata( self._dict_metadata, dict_metadata_to_be_updated, l_name_layer_to_be_deleted, dict_rename_name_layer ) # update 'self._dict_metadata' with 'dict_metadata_to_be_updated'
+            self._root.attrs[ 'dict_metadata' ] = self._dict_metadata
+        else : # when locking has been enabled
+            self._zsls.acquire_lock( f"{path_folder}.zattrs.lock/" ) # acquire a lock
+            
+            self._dict_metadata = self._zsls.zms.get_metadata( path_folder, 'dict_metadata' ) # read metadata from the storage and update the metadata
+            self._dict_metadata = __update_dict_metadata( self._dict_metadata, dict_metadata_to_be_updated, l_name_layer_to_be_deleted, dict_rename_name_layer ) # update 'self._dict_metadata' with 'dict_metadata_to_be_updated'
+            self._zsls.zms.set_metadata( path_folder, 'dict_metadata', self._dict_metadata ) # write metadata to the storage
+            
+            self._zsls.release_lock( f"{path_folder}.zattrs.lock/" ) # release the lock
+    def _add_layer( self, name_layer : str, dict_metadata_description : Union[ dict, None ] = None ) :
+        """ # 2022-11-15 00:14:14 
+        a semi-private method for adding a layer to the current RamData
+        
+        dict_metadata_description : Union[ str, None ] = None # 'dict_metadata_description' of the layer. if None, no description metadata will be recorded
+        """
+        if name_layer not in self.layers_excluding_components : # if the layer is not present in the current object
+            self.update_metadata( dict_metadata_to_be_updated = { 'layers' : { name_layer : dict_metadata_description } } )
+    def _save_metadata_( self ) :
+        ''' # 2022-12-13 19:49:45 
+        save metadata of the current ZarrDataFrame
+        '''
+        if not self._flag_is_read_only : # save metadata only when it is not in the read-only mode
+            if hasattr( self, '_dict_metadata' ) : # if metadata has been loaded
+                self.set_metadata( dict_metadata = self._dict_metadata ) # update the metadata
+    ''' utility functions for saving/loading models '''
+    @property
+    def models( self ) :
+        """ # 2022-09-03 19:13:40 
+        show available models of the RamData, including models in the components and mask
+        """
+        if 'models' not in self.metadata :
+            self.update_metadata( dict_metadata_to_be_updated = { 'models' : dict( ) } )
+        models = deepcopy( self._dict_metadata[ 'models' ] ) # create a copy
+        if self.is_combined : 
+            # %% COMBINED %%
+            for ram in self._l_ramdata :
+                for type_model in ram.models :
+                    if type_model not in models :
+                        models[ type_model ] = dict( )
+                    models_of_component_of_current_type = ram.models[ type_model ]
+                    for name_model in models_of_component_of_current_type :
+                        if name_model not in models[ type_model ] : # update models only when the current model does not exist in the model
+                            models[ type_model ][ name_model ] = models_of_component_of_current_type[ name_model ]
+        return models
+    @property
+    def models_excluding_components( self ) :
+        """ # 2022-09-03 19:13:34 
+        show available models of the RamData excluding models from the RamData components.
+        """
+        if 'models' not in self.metadata :
+            self._dict_metadata[ 'models' ] = dict( )
+            self._save_metadata_( )
+        models = deepcopy( self._dict_metadata[ 'models' ] ) # create a copy
+        return models
+    def get_model_path( 
+        self, 
+        name_model : str, 
+        type_model : Literal[ 'ipca', 'pumap', 'hdbscan', 'knn_classifier', 'knn_embedder', 'knngraph', 'knnindex' ], 
+        index_component : Union[ int, None ] = None
+    ) :
+        """ # 2022-09-17 00:34:50 
+        get a valid path of the model (either remote or local) recursively from mask and components
+
+        name_model : str # the name of the model
+        type_model : Literal[ 'ipca', 'pumap', 'hdbscan', 'knn_classifier', 'knn_embedder', 'knngraph', 'knnindex' ] # the type of model
+        index_component : Union[ int, None ] = None # the index of the RamData component from which to retrieve models
+        """
+        if not self.check_model( name_model, type_model, flag_exclude_components = False ) : # if the model does not exist in the current ramdata, return None
+            return None
+
+        # handle inputs
+        if self.is_combined and index_component is not None :
+            if not( 0 <= index_component < self.int_num_components ) : # if invalid 'int_num_components' was given, set default value (0)
+                index_component = 0
+
+        # define internal functions
+        def __get_name_file_of_a_model( name_model, type_model ) :
+            """ # 2022-09-17 23:57:45 
+            get name of the file of a given model
+            """
+            if type_model in self._set_type_model_picklable : # handle picklable models
+                name_file_model = f"{name_model}.{type_model}.pickle"
+            else : # other models will be tar-gzipped
+                name_file_model = f"{name_model}.{type_model}.tar.gz"
+            return name_file_model
+        def __check_file_exists( path_file ) :
+            """ # 2022-09-17 23:18:13 
+            check whether the model file exists in the given ramdata
+            'flag_modifiable' : set this to True for checking whether a file exists in the modifiable path
+            """
+            if is_remote_url( path_file ) :
+                if is_s3_url( path_file ) :
+                    return s3_exists( path_file ) # check whether s3 file exists
+                elif is_http_url( path_file ) :
+                    return http_response_code( path_file ) == 200 # check whether http file exists
+            else :
+                return filesystem_operations( 'exists', path_file ) # check whether the file exists in the local file system
+                       
+        path_file = None # initialize the output value
+        name_model_file = __get_name_file_of_a_model( name_model, type_model ) # get the name of the file containing the model
+
+        if self.check_model( name_model, type_model, flag_exclude_components = True ) : # if the model does not exist in the component, file path from mask and current RamData
+            # check whether the model exists in the current RamData
+            _path_file = f"{self._path_folder_ramdata}models/{name_model_file}"
+            if __check_file_exists( _path_file ) :
+                path_file = _path_file
+
+            # if the current RamData has mask, check whether the model exists in the mask
+            if self.has_mask :
+                _path_file = f"{self._path_folder_ramdata_mask}models/{name_model_file}"
+                if __check_file_exists( _path_file ) :
+                    path_file = _path_file # overwrite the path of the model exists in the original RamData
+        else :
+            if self.is_combined :
+                # %% COMBINED %%
+                if index_component is not None : # if valid integer index of the target component has been given
+                    path_file = self._l_ramdata[ index_component ].get_model_path( name_model, type_model ) # retrieve model path from the 
+                else :
+                    for ram in self._l_ramdata : # iterate over component
+                        path_file = ram.get_model_path( name_model, type_model )
+                        if path_file is not None : # exit once a valid model path has been retrieved
+                            break
+        return path_file # return the path of the identified model
+    def load_model( 
+        self, 
+        name_model : str, 
+        type_model : Literal[ 'ipca', 'pumap', 'hdbscan', 'knn_classifier', 'knn_embedder', 'knngraph', 'knnindex' ], 
+        index_component : Union[ int, None ] = None,
+    ) :
+        """ # 2022-12-02 19:09:43 
+        load model from the current RamData
+
+        name_model : str # the name of the model
+        type_model : Literal[ 'ipca', 'pumap', 'hdbscan', 'knn_classifier', 'knn_embedder', 'knngraph', 'knnindex' ] # the type of model
+        index_component : Union[ int, None ] = None # the index of the RamData component from which to retrieve models
+        """
+        if not self.check_model( name_model, type_model, flag_exclude_components = False ) : # if the model does not exist in the current ramdata, return None
+            return None
+        
+        # handle inputs
+        if self.is_combined :
+            if index_component is not None :
+                if not( 0 <= index_component < self.int_num_components ) : # if invalid 'int_num_components' was given, set default value (0)
+                    index_component = 0
+            else :
+                index_component = self.int_index_component_reference # by default, use 'self.int_index_component_reference' as the index of the reference component
+
+        # load model only when modifiable ramdata exists (the model should be present in the local storage and should be in the 'modifiable' directory)
+        if self._path_folder_ramdata_modifiable is None :
+            return
+
+        # define a folder for storage of models
+        path_folder_models = f"{self._path_folder_ramdata_modifiable}models/" # define a folder to save/load model
+        filesystem_operations( 'mkdir', path_folder_models, exist_ok = True )
+
+        # define internal functions
+        def __search_and_download_model_file( name_model_file ) :
+            """ # 2022-12-02 19:09:39 
+            check availability of models and download model file from the remote location where RamData is being hosted.
+            """
+            # define the paths of the model files
+            path_file_dest = f"{path_folder_models}{name_model_file}" # local path
+            if filesystem_operations( 'exists', path_file_dest ) : # check whether the destination file already exists
+                return 
+            
+            path_file_src = self.get_model_path( name_model, type_model, index_component = index_component )
+            if path_file_src is None : # if source file is not available
+                return False 
+            
+            if is_remote_url( path_file_src ) :
+                if is_s3_url( path_file_src ) :
+                    s3_download_file( path_file_src, path_file_dest ) # download file from s3 object
+                elif is_http_url( path_file_src ) :
+                    http_download_file( path_file_src, path_file_dest ) # download file using HTTP
+            else : # if the source file is available locally
+                filesystem_operations( 'cp', path_file_src, path_file_dest ) # or copy file
+        # load model
+        if type_model in self._set_type_model_picklable : # handle picklable models
+            # define path
+            name_model_file = f"{name_model}.{type_model}.pickle"
+            path_file_model = f"{path_folder_models}{name_model_file}"
+
+            # download the model file
+            __search_and_download_model_file( name_model_file )
+
+            # exit if the file does not exists
+            if not filesystem_operations( 'exists', path_file_model ) :
+                return 
+
+            model = bk.PICKLE_Read( path_file_model )
+        elif type_model == 'pumap' : # parametric umap model
+            import umap.parametric_umap as pumap # parametric UMAP
+            
+            # define paths
+            name_model_file = f"{name_model}.{type_model}.tar.gz"
+            path_prefix_model = f"{path_folder_models}{name_model}.{type_model}"
+            path_file_model = path_prefix_model + '.tar.gz'
+
+            # download the model file
+            __search_and_download_model_file( name_model_file )
+
+            # exit if the file does not exists
+            if not filesystem_operations( 'exists', path_file_model ) :
+                return 
+
+            # extract tar.gz
+            if not filesystem_operations( 'exists', path_prefix_model ) : # if the model has not been extracted from the tar.gz archive
+                tar_extract( path_file_model, path_folder_models ) # extract tar.gz file of pumap object
+            model = pumap.load_ParametricUMAP( path_prefix_model ) # load pumap model
+
+            # fix 'load_ParametricUMAP' error ('decoder' attribute does not exist)
+            if not hasattr( model, 'decoder' ) : 
+                model.decoder = None
+        elif type_model in self._set_type_model_keras_model : # handle 'dict_model' containing 'dl_model'
+            import tensorflow as tf
+            
+            # define paths
+            name_model_file = f"{name_model}.{type_model}.tar.gz"
+            path_prefix_model = f"{path_folder_models}{name_model}.{type_model}"
+            path_file_model = path_prefix_model + '.tar.gz'
+
+            # download the model file
+            __search_and_download_model_file( name_model_file )
+
+            # exit if the file does not exists
+            if not filesystem_operations( 'exists', path_file_model ) :
+                return 
+
+            # extract tar.gz
+            if not filesystem_operations( 'exists', path_prefix_model ) : # if the model has not been extracted from the tar.gz archive
+                tar_extract( path_file_model, path_folder_models ) # extract tar.gz file of pumap object
+
+            model = bk.PICKLE_Read( f"{path_prefix_model}/metadata.pickle" ) # load metadata first
+            model[ 'dl_model' ] = tf.keras.models.load_model( f"{path_prefix_model}/dl_model.hdf5" ) # load keras model                
+        return model # return loaded model
+    def save_model( self, model, name_model : str, type_model : Literal[ 'ipca', 'pumap', 'hdbscan', 'knn_classifier', 'knn_embedder', 'knngraph' ] ) :
+        """ # 2022-09-15 11:11:01 
+        save model to RamData. if mask is available, save model to the mask
+        
+        'model' : input model 
+        'name_model' : the name of the model. if the same type of model with the same model name already exists, it will be overwritten
+        'type_model' : the type of models. currently [ 'ipca', 'pumap' ], for PCA transformation and UMAP embedding, are supported
+        """
+        # check validity of the name_model
+        assert '/' not in name_model # check validity of 'name_pumap_model'
+            
+        # save model only when mode != 'r'
+        if self._mode == 'r' :
+            return
+        # save model only when modifiable ramdata exists
+        if self._path_folder_ramdata_modifiable is None :
+            return
+        
+        # define a folder for storage of models
+        path_folder_models = f"{self._path_folder_ramdata_modifiable}models/" # define a folder to save/load model
+        filesystem_operations( 'mkdir', path_folder_models, exist_ok = True )
+        
+        # save model
+        if type_model in self._set_type_model_picklable : # handle picklable models
+            path_file_model = f"{path_folder_models}{name_model}.{type_model}.pickle"
+            bk.PICKLE_Write( path_file_model, model )
+        elif type_model == 'pumap' : # parametric umap model
+            path_prefix_model = f"{path_folder_models}{name_model}.pumap"
+            path_file_model = path_prefix_model + '.tar.gz'
+            model.save( path_prefix_model )
+            tar_create( path_file_model, path_prefix_model ) # create tar.gz file of pumap object for efficient retrieval and download
+        elif type_model in self._set_type_model_keras_model : # handle 'dict_model' containing 'dl_model'
+            path_prefix_model = f"{path_folder_models}{name_model}.{type_model}"
+            path_file_model = path_prefix_model + '.tar.gz'
+            dl_model = model.pop( 'dl_model' ) # remove the keras model 'dl_model' from dict_model, enable the remaining 'dict_model' to become picklable
+            dl_model.save( f"{path_prefix_model}/dl_model.hdf5" ) # save keras model
+            bk.PICKLE_Write( f"{path_prefix_model}/metadata.pickle", model ) # save metadata as a pickle file
+            tar_create( path_file_model, path_prefix_model ) # create tar.gz file of pumap object for efficient retrieval and download
+        int_file_size = os.path.getsize( path_file_model ) # retrieve file size of the saved model
+        
+        # update metadata
+        if type_model not in self._dict_metadata[ 'models' ] :
+            self._dict_metadata[ 'models' ][ type_model ] = dict( )
+        self._dict_metadata[ 'models' ][ type_model ][ name_model ] = int_file_size # record file size of the model # add model to the metadata
+        self._save_metadata_( ) # save metadata
+        
+        # report result
+        if self.verbose :
+            logging.info( f"{name_model}.{type_model} model saved." )
+        return int_file_size # return the number of bytes written
+    def check_model( self, name_model : str, type_model : Literal[ 'ipca', 'pumap', 'hdbscan', 'knn_classifier', 'knn_embedder', 'knngraph', 'knnindex' ], flag_exclude_components : bool = False ) :
+        """ # 2022-09-13 17:17:35 
+        
+        return True if the model exists in the current RamData, and return False if the model does not exist in the current RamData
+        
+        flag_exclude_components : bool = False # the exclude models that only exist in RamData components
+        """
+        models = self.models_excluding_components if flag_exclude_components else self.models # retrieve currently available models
+            
+        return type_model in models and name_model in models[ type_model ] # exists in the models of the current RamData
+    def delete_model( self, name_model : str, type_model : Literal[ 'ipca', 'pumap' ] ) :
+        """ # 2022-08-05 19:44:23 
+        delete model of the RamData if the model exists in the RamData
+        
+        'name_model' : the name of the model. if the same type of model with the same model name already exists, it will be overwritten
+        'type_model' : the type of models. currently [ 'ipca', 'pumap' ], for PCA transformation and UMAP embedding, are supported
+        """
+        # check validity of the name_model
+        assert '/' not in name_model # check validity of 'name_pumap_model'
+            
+        # save model only when mode != 'r'
+        if self._mode == 'r' :
+            return
+        # save model only when modifiable ramdata exists
+        if self._path_folder_ramdata_modifiable is None :
+            return
+        
+        # if the model does not exist in the current RamData, exit
+        if type_model not in self._dict_metadata[ 'models' ] or name_model not in self._dict_metadata[ 'models' ][ type_model ] :
+            return
+        
+        # define a folder for storage of models
+        path_folder_models = f"{self._path_folder_ramdata_modifiable}models/" # define a folder to save/load model
+        filesystem_operations( 'mkdir', path_folder_models, exist_ok = True )
+        
+        # save model
+        if type_model in self._set_type_model_picklable : # handle picklable models 
+            path_file_model = f"{path_folder_models}{name_model}.{type_model}.pickle"
+        else :
+            path_prefix_model = f"{path_folder_models}{name_model}.{type_model}"
+            path_file_model = path_prefix_model + '.tar.gz'
+            # if an extracted folder exists, delete the folder
+            if filesystem_operations( 'exists', path_prefix_model ) :
+                filesystem_operations( 'rm', path_prefix_model )
+        int_file_size = os.path.getsize( path_file_model ) # retrieve file size of the saved model
+        filesystem_operations( 'rm', path_file_model )
+        
+        # update metadata
+        del self._dict_metadata[ 'models' ][ type_model ][ name_model ] # delete model from the metadata
+        if len( self._dict_metadata[ 'models' ][ type_model ] ) == 0 : # if list is empty, delete the list, too
+            del self._dict_metadata[ 'models' ][ type_model ]
+        self._save_metadata_( ) # save metadata
+        
+        # report result
+        if self.verbose :
+            logging.info( f"{name_model}.{type_model} model deleted." )
+        return int_file_size # return the number of bytes of the deleted model file
+
+    """ </Methods for Synchronization> """
     """ <Layer Methods> """
     @property
     def layers( self ) :
@@ -9506,7 +9938,7 @@ class RamData( ) :
         ''' # 2022-06-24 00:14:45 
         return a set of available layers (excluding layers of the component RamData objects)
         '''
-        return self.metadata[ 'layers' ]
+        return set( self.metadata[ 'layers' ] )
     def __contains__( self, x ) -> bool :
         ''' # 2022-06-24 00:15:04 
         check whether an 'name_layer' is available in the current RamData '''
@@ -9559,7 +9991,7 @@ class RamData( ) :
                 if self.verbose :
                     logging.info( f"(RamData.layer) '{name_layer}' layer has been loaded" )
     def rename_layer( self, name_layer_current : str, name_layer_new : str, flag_allow_copying : bool = False ) :
-        """ # 2022-12-08 02:52:39 
+        """ # 2022-12-13 22:11:49 
         rename a layer
         
         name_layer_current : str # the name of the previous layer
@@ -9568,41 +10000,55 @@ class RamData( ) :
         """
         # check validity of inputs
         # check if the current layer name exists
-        if name_layer_current not in self.layers : 
+        if name_layer_current not in self.layers_excluding_components : 
             return
         # check if the new layer name already exists in the current object
-        if name_layer_new in self.layers : 
+        if name_layer_new in self.layers_excluding_components : 
             return
-        # rename layer
-        # handle exceptions
+        # rename layer # handle exceptions
         if is_s3_url( self._path_folder_ramdata_modifiable ) :
             logging.warning( 'the modifiable storage location of the current RamData is Amazon S3, which does not support folder renaming. renaming a folder in Amazon S3 involves copying and deleting of an entire directory.' )
             if not flag_allow_copying :
                 return
+        
+        # rename layer    
+        if self.use_locking : # %% FILE LOCKING %%
+            # acquire locks of both names of the layer
+            self._zsls.acquire_lock( f"{self._path_folder_ramdata_modifiable}{name_layer_current}.lock/" ) 
+            self._zsls.acquire_lock( f"{self._path_folder_ramdata_modifiable}{name_layer_new}.lock/" ) 
+            
         # perform a moving operation
         filesystem_operations( 'mv', f"{self._path_folder_ramdata_modifiable}{name_layer_current}", f"{self._path_folder_ramdata_modifiable}{name_layer_new}" ) # rename the folder containing the a layer
         
-        # update metadata
-        self.self.metadata[ 'layers' ].remove( name_layer_current )
-        self.self.metadata[ 'layers' ].add( name_layer_new )
-        self._save_metadata_( )
+        # update metadata (rename the name of the layer)
+        self.update_metadata( dict_rename_name_layer = { name_layer_current : name_layer_new } )
+        
+        if self.use_locking : # %% FILE LOCKING %%
+            self._zsls.release_lock( f"{self._path_folder_ramdata_modifiable}{name_layer_current}.lock/" ) 
+            self._zsls.release_lock( f"{self._path_folder_ramdata_modifiable}{name_layer_new}.lock/" )         
     def delete_layer( self, * l_name_layer ) :
-        """ # 2022-08-24 19:25:25 
+        """ # 2022-12-13 22:11:42 
         delete a given list of layers from the current RamData
         """
         # ignore if current mode is read-only
         if self._mode == 'r' :
             return
         for name_layer in l_name_layer : # for each name_layer
-            # ignore invalid 'name_layer'
-            if name_layer not in self.layers :
+            # only the layers present in the curren RamData (excluding the layers in the components) can be deleted.
+            if name_layer not in self.layers_excluding_components :
                 continue
+            
+            if self.use_locking : # %% FILE LOCKING %%
+                self._zsls.acquire_lock( f"{self._path_folder_ramdata}{name_layer}.lock/" ) 
+            
             # delete an entire layer
             filesystem_operations( 'rm', f"{self._path_folder_ramdata}{name_layer}/" )
             
             # remove the current layer from the metadata
-            self.layers.remove( name_layer ) 
-            self._save_metadata_( )
+            self.update_metadata( l_name_layer_to_be_deleted = [ name_layer ] )
+                
+            if self.use_locking : # %% FILE LOCKING %%
+                self._zsls.release_lock( f"{self._path_folder_ramdata}{name_layer}.lock/" ) 
     """ </Layer Methods> """
     def __repr__( self ) :
         """ # 2022-07-20 00:38:24 
@@ -10044,7 +10490,7 @@ class RamData( ) :
         # report results
         if self.verbose :
             logging.info( f"[RamData.summarize] summarize operation of {name_layer} in the '{'barcode' if flag_summarizing_barcode else 'feature'}' axis was completed" )
-    def apply( self, name_layer, name_layer_new, func = None, mode_instructions = 'sparse_for_querying_features', path_folder_ramdata_output = None, dtype_of_row_and_col_indices = np.int32, dtype_of_value = np.float64, int_num_threads = None, flag_survey_weights = True, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = True, int_num_of_records_in_a_chunk_zarr_matrix = 20000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, chunks_dense = ( 2000, 1000 ), dtype_dense_mtx = np.float64, dtype_sparse_mtx = np.float64, dtype_sparse_mtx_index = np.float64 ) :
+    def apply( self, name_layer, name_layer_new, func = None, mode_instructions = 'sparse_for_querying_features', path_folder_ramdata_output = None, dtype_of_row_and_col_indices = np.int32, dtype_of_value = np.float64, int_num_threads = None, flag_survey_weights = True, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = True, int_num_of_records_in_a_chunk_zarr_matrix = 20000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, chunks_dense = ( 2000, 1000 ), dtype_dense_mtx = np.float64, dtype_sparse_mtx = np.float64, dtype_sparse_mtx_index = np.float64, dict_metadata_description : Union[ dict, None ] = dict( ) ) :
         ''' # 2022-12-08 03:15:39 
         this function apply a function and/or filters to the records of the given data, and create a new data object with 'name_layer_new' as its name.
         
@@ -10117,6 +10563,7 @@ class RamData( ) :
         'dtype_of_row_and_col_indices', 'dtype_of_value' : the dtype of the output matrix
         int_num_of_records_in_a_chunk_zarr_matrix = 20000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, chunks_dense = ( 2000, 1000 ) : determines the chunk size of the output ramtx objects
         dtype_dense_mtx = np.float64, dtype_sparse_mtx = np.float64, dtype_sparse_mtx_index = np.float64 : determines the output dtype
+        dict_metadata_description : Union[ dict, None ] = dict( ) # the metadata (optional) of the newly created output layer.
         
         =================
         input attributes 
@@ -10617,8 +11064,7 @@ class RamData( ) :
         # update metadata of current RamData
         # update 'layers' if the layer has been saved in the current RamData object (or the mask of the current RamData object)
         if flag_new_layer_added_to_the_current_ramdata and not flag_update_a_layer :
-            self.layers_excluding_components.add( name_layer_new ) # add layer directly to the current ramdata
-            self._save_metadata_( )
+            self._add_layer( name_layer = name_layer_new, dict_metadata_description = dict_metadata_description ) # add layer to the current ramdata
         
         # report results
         if self.verbose :
@@ -11398,325 +11844,6 @@ class RamData( ) :
         self.bc.change_or_save_filter( name_col_filter if name_col_filter_bc is None else name_col_filter_bc ) # bc
         self.ft.change_or_save_filter( name_col_filter if name_col_filter_ft is None else name_col_filter_ft ) # ft
         return
-    ''' utility functions for saving/loading models '''
-    @property
-    def models( self ) :
-        """ # 2022-09-03 19:13:40 
-        show available models of the RamData, including models in the components and mask
-        """
-        if 'models' not in self.metadata :
-            self._dict_metadata[ 'models' ] = dict( )
-            self._save_metadata_( )
-        models = deepcopy( self._dict_metadata[ 'models' ] ) # create a copy
-        if self.is_combined : 
-            # %% COMBINED %%
-            for ram in self._l_ramdata :
-                for type_model in ram.models :
-                    if type_model not in models :
-                        models[ type_model ] = dict( )
-                    models_of_component_of_current_type = ram.models[ type_model ]
-                    for name_model in models_of_component_of_current_type :
-                        if name_model not in models[ type_model ] : # update models only when the current model does not exist in the model
-                            models[ type_model ][ name_model ] = models_of_component_of_current_type[ name_model ]
-        return models
-    @property
-    def models_excluding_components( self ) :
-        """ # 2022-09-03 19:13:34 
-        show available models of the RamData excluding models from the RamData components.
-        """
-        if 'models' not in self.metadata :
-            self._dict_metadata[ 'models' ] = dict( )
-            self._save_metadata_( )
-        models = deepcopy( self._dict_metadata[ 'models' ] ) # create a copy
-        return models
-    def get_model_path( 
-        self, 
-        name_model : str, 
-        type_model : Literal[ 'ipca', 'pumap', 'hdbscan', 'knn_classifier', 'knn_embedder', 'knngraph', 'knnindex' ], 
-        index_component : Union[ int, None ] = None
-    ) :
-        """ # 2022-09-17 00:34:50 
-        get a valid path of the model (either remote or local) recursively from mask and components
-
-        name_model : str # the name of the model
-        type_model : Literal[ 'ipca', 'pumap', 'hdbscan', 'knn_classifier', 'knn_embedder', 'knngraph', 'knnindex' ] # the type of model
-        index_component : Union[ int, None ] = None # the index of the RamData component from which to retrieve models
-        """
-        if not self.check_model( name_model, type_model, flag_exclude_components = False ) : # if the model does not exist in the current ramdata, return None
-            return None
-
-        # handle inputs
-        if self.is_combined and index_component is not None :
-            if not( 0 <= index_component < self.int_num_components ) : # if invalid 'int_num_components' was given, set default value (0)
-                index_component = 0
-
-        # define internal functions
-        def __get_name_file_of_a_model( name_model, type_model ) :
-            """ # 2022-09-17 23:57:45 
-            get name of the file of a given model
-            """
-            if type_model in self._set_type_model_picklable : # handle picklable models
-                name_file_model = f"{name_model}.{type_model}.pickle"
-            else : # other models will be tar-gzipped
-                name_file_model = f"{name_model}.{type_model}.tar.gz"
-            return name_file_model
-        def __check_file_exists( path_file ) :
-            """ # 2022-09-17 23:18:13 
-            check whether the model file exists in the given ramdata
-            'flag_modifiable' : set this to True for checking whether a file exists in the modifiable path
-            """
-            if is_remote_url( path_file ) :
-                if is_s3_url( path_file ) :
-                    return s3_exists( path_file ) # check whether s3 file exists
-                elif is_http_url( path_file ) :
-                    return http_response_code( path_file ) == 200 # check whether http file exists
-            else :
-                return filesystem_operations( 'exists', path_file ) # check whether the file exists in the local file system
-                       
-        path_file = None # initialize the output value
-        name_model_file = __get_name_file_of_a_model( name_model, type_model ) # get the name of the file containing the model
-
-        if self.check_model( name_model, type_model, flag_exclude_components = True ) : # if the model does not exist in the component, file path from mask and current RamData
-            # check whether the model exists in the current RamData
-            _path_file = f"{self._path_folder_ramdata}models/{name_model_file}"
-            if __check_file_exists( _path_file ) :
-                path_file = _path_file
-
-            # if the current RamData has mask, check whether the model exists in the mask
-            if self.has_mask :
-                _path_file = f"{self._path_folder_ramdata_mask}models/{name_model_file}"
-                if __check_file_exists( _path_file ) :
-                    path_file = _path_file # overwrite the path of the model exists in the original RamData
-        else :
-            if self.is_combined :
-                # %% COMBINED %%
-                if index_component is not None : # if valid integer index of the target component has been given
-                    path_file = self._l_ramdata[ index_component ].get_model_path( name_model, type_model ) # retrieve model path from the 
-                else :
-                    for ram in self._l_ramdata : # iterate over component
-                        path_file = ram.get_model_path( name_model, type_model )
-                        if path_file is not None : # exit once a valid model path has been retrieved
-                            break
-        return path_file # return the path of the identified model
-    def load_model( 
-        self, 
-        name_model : str, 
-        type_model : Literal[ 'ipca', 'pumap', 'hdbscan', 'knn_classifier', 'knn_embedder', 'knngraph', 'knnindex' ], 
-        index_component : Union[ int, None ] = None,
-    ) :
-        """ # 2022-12-02 19:09:43 
-        load model from the current RamData
-
-        name_model : str # the name of the model
-        type_model : Literal[ 'ipca', 'pumap', 'hdbscan', 'knn_classifier', 'knn_embedder', 'knngraph', 'knnindex' ] # the type of model
-        index_component : Union[ int, None ] = None # the index of the RamData component from which to retrieve models
-        """
-        if not self.check_model( name_model, type_model, flag_exclude_components = False ) : # if the model does not exist in the current ramdata, return None
-            return None
-        
-        # handle inputs
-        if self.is_combined :
-            if index_component is not None :
-                if not( 0 <= index_component < self.int_num_components ) : # if invalid 'int_num_components' was given, set default value (0)
-                    index_component = 0
-            else :
-                index_component = self.int_index_component_reference # by default, use 'self.int_index_component_reference' as the index of the reference component
-
-        # load model only when modifiable ramdata exists (the model should be present in the local storage and should be in the 'modifiable' directory)
-        if self._path_folder_ramdata_modifiable is None :
-            return
-
-        # define a folder for storage of models
-        path_folder_models = f"{self._path_folder_ramdata_modifiable}models/" # define a folder to save/load model
-        filesystem_operations( 'mkdir', path_folder_models, exist_ok = True )
-
-        # define internal functions
-        def __search_and_download_model_file( name_model_file ) :
-            """ # 2022-12-02 19:09:39 
-            check availability of models and download model file from the remote location where RamData is being hosted.
-            """
-            # define the paths of the model files
-            path_file_dest = f"{path_folder_models}{name_model_file}" # local path
-            if filesystem_operations( 'exists', path_file_dest ) : # check whether the destination file already exists
-                return 
-            
-            path_file_src = self.get_model_path( name_model, type_model, index_component = index_component )
-            if path_file_src is None : # if source file is not available
-                return False 
-            
-            if is_remote_url( path_file_src ) :
-                if is_s3_url( path_file_src ) :
-                    s3_download_file( path_file_src, path_file_dest ) # download file from s3 object
-                elif is_http_url( path_file_src ) :
-                    http_download_file( path_file_src, path_file_dest ) # download file using HTTP
-            else : # if the source file is available locally
-                filesystem_operations( 'cp', path_file_src, path_file_dest ) # or copy file
-        # load model
-        if type_model in self._set_type_model_picklable : # handle picklable models
-            # define path
-            name_model_file = f"{name_model}.{type_model}.pickle"
-            path_file_model = f"{path_folder_models}{name_model_file}"
-
-            # download the model file
-            __search_and_download_model_file( name_model_file )
-
-            # exit if the file does not exists
-            if not filesystem_operations( 'exists', path_file_model ) :
-                return 
-
-            model = bk.PICKLE_Read( path_file_model )
-        elif type_model == 'pumap' : # parametric umap model
-            import umap.parametric_umap as pumap # parametric UMAP
-            
-            # define paths
-            name_model_file = f"{name_model}.{type_model}.tar.gz"
-            path_prefix_model = f"{path_folder_models}{name_model}.{type_model}"
-            path_file_model = path_prefix_model + '.tar.gz'
-
-            # download the model file
-            __search_and_download_model_file( name_model_file )
-
-            # exit if the file does not exists
-            if not filesystem_operations( 'exists', path_file_model ) :
-                return 
-
-            # extract tar.gz
-            if not filesystem_operations( 'exists', path_prefix_model ) : # if the model has not been extracted from the tar.gz archive
-                tar_extract( path_file_model, path_folder_models ) # extract tar.gz file of pumap object
-            model = pumap.load_ParametricUMAP( path_prefix_model ) # load pumap model
-
-            # fix 'load_ParametricUMAP' error ('decoder' attribute does not exist)
-            if not hasattr( model, 'decoder' ) : 
-                model.decoder = None
-        elif type_model in self._set_type_model_keras_model : # handle 'dict_model' containing 'dl_model'
-            import tensorflow as tf
-            
-            # define paths
-            name_model_file = f"{name_model}.{type_model}.tar.gz"
-            path_prefix_model = f"{path_folder_models}{name_model}.{type_model}"
-            path_file_model = path_prefix_model + '.tar.gz'
-
-            # download the model file
-            __search_and_download_model_file( name_model_file )
-
-            # exit if the file does not exists
-            if not filesystem_operations( 'exists', path_file_model ) :
-                return 
-
-            # extract tar.gz
-            if not filesystem_operations( 'exists', path_prefix_model ) : # if the model has not been extracted from the tar.gz archive
-                tar_extract( path_file_model, path_folder_models ) # extract tar.gz file of pumap object
-
-            model = bk.PICKLE_Read( f"{path_prefix_model}/metadata.pickle" ) # load metadata first
-            model[ 'dl_model' ] = tf.keras.models.load_model( f"{path_prefix_model}/dl_model.hdf5" ) # load keras model                
-        return model # return loaded model
-    def save_model( self, model, name_model : str, type_model : Literal[ 'ipca', 'pumap', 'hdbscan', 'knn_classifier', 'knn_embedder', 'knngraph' ] ) :
-        """ # 2022-09-15 11:11:01 
-        save model to RamData. if mask is available, save model to the mask
-        
-        'model' : input model 
-        'name_model' : the name of the model. if the same type of model with the same model name already exists, it will be overwritten
-        'type_model' : the type of models. currently [ 'ipca', 'pumap' ], for PCA transformation and UMAP embedding, are supported
-        """
-        # check validity of the name_model
-        assert '/' not in name_model # check validity of 'name_pumap_model'
-            
-        # save model only when mode != 'r'
-        if self._mode == 'r' :
-            return
-        # save model only when modifiable ramdata exists
-        if self._path_folder_ramdata_modifiable is None :
-            return
-        
-        # define a folder for storage of models
-        path_folder_models = f"{self._path_folder_ramdata_modifiable}models/" # define a folder to save/load model
-        filesystem_operations( 'mkdir', path_folder_models, exist_ok = True )
-        
-        # save model
-        if type_model in self._set_type_model_picklable : # handle picklable models
-            path_file_model = f"{path_folder_models}{name_model}.{type_model}.pickle"
-            bk.PICKLE_Write( path_file_model, model )
-        elif type_model == 'pumap' : # parametric umap model
-            path_prefix_model = f"{path_folder_models}{name_model}.pumap"
-            path_file_model = path_prefix_model + '.tar.gz'
-            model.save( path_prefix_model )
-            tar_create( path_file_model, path_prefix_model ) # create tar.gz file of pumap object for efficient retrieval and download
-        elif type_model in self._set_type_model_keras_model : # handle 'dict_model' containing 'dl_model'
-            path_prefix_model = f"{path_folder_models}{name_model}.{type_model}"
-            path_file_model = path_prefix_model + '.tar.gz'
-            dl_model = model.pop( 'dl_model' ) # remove the keras model 'dl_model' from dict_model, enable the remaining 'dict_model' to become picklable
-            dl_model.save( f"{path_prefix_model}/dl_model.hdf5" ) # save keras model
-            bk.PICKLE_Write( f"{path_prefix_model}/metadata.pickle", model ) # save metadata as a pickle file
-            tar_create( path_file_model, path_prefix_model ) # create tar.gz file of pumap object for efficient retrieval and download
-        int_file_size = os.path.getsize( path_file_model ) # retrieve file size of the saved model
-        
-        # update metadata
-        if type_model not in self._dict_metadata[ 'models' ] :
-            self._dict_metadata[ 'models' ][ type_model ] = dict( )
-        self._dict_metadata[ 'models' ][ type_model ][ name_model ] = int_file_size # record file size of the model # add model to the metadata
-        self._save_metadata_( ) # save metadata
-        
-        # report result
-        if self.verbose :
-            logging.info( f"{name_model}.{type_model} model saved." )
-        return int_file_size # return the number of bytes written
-    def check_model( self, name_model : str, type_model : Literal[ 'ipca', 'pumap', 'hdbscan', 'knn_classifier', 'knn_embedder', 'knngraph', 'knnindex' ], flag_exclude_components : bool = False ) :
-        """ # 2022-09-13 17:17:35 
-        
-        return True if the model exists in the current RamData, and return False if the model does not exist in the current RamData
-        
-        flag_exclude_components : bool = False # the exclude models that only exist in RamData components
-        """
-        models = self.models_excluding_components if flag_exclude_components else self.models # retrieve currently available models
-            
-        return type_model in models and name_model in models[ type_model ] # exists in the models of the current RamData
-    def delete_model( self, name_model : str, type_model : Literal[ 'ipca', 'pumap' ] ) :
-        """ # 2022-08-05 19:44:23 
-        delete model of the RamData if the model exists in the RamData
-        
-        'name_model' : the name of the model. if the same type of model with the same model name already exists, it will be overwritten
-        'type_model' : the type of models. currently [ 'ipca', 'pumap' ], for PCA transformation and UMAP embedding, are supported
-        """
-        # check validity of the name_model
-        assert '/' not in name_model # check validity of 'name_pumap_model'
-            
-        # save model only when mode != 'r'
-        if self._mode == 'r' :
-            return
-        # save model only when modifiable ramdata exists
-        if self._path_folder_ramdata_modifiable is None :
-            return
-        
-        # if the model does not exist in the current RamData, exit
-        if type_model not in self._dict_metadata[ 'models' ] or name_model not in self._dict_metadata[ 'models' ][ type_model ] :
-            return
-        
-        # define a folder for storage of models
-        path_folder_models = f"{self._path_folder_ramdata_modifiable}models/" # define a folder to save/load model
-        filesystem_operations( 'mkdir', path_folder_models, exist_ok = True )
-        
-        # save model
-        if type_model in self._set_type_model_picklable : # handle picklable models 
-            path_file_model = f"{path_folder_models}{name_model}.{type_model}.pickle"
-        else :
-            path_prefix_model = f"{path_folder_models}{name_model}.{type_model}"
-            path_file_model = path_prefix_model + '.tar.gz'
-            # if an extracted folder exists, delete the folder
-            if filesystem_operations( 'exists', path_prefix_model ) :
-                filesystem_operations( 'rm', path_prefix_model )
-        int_file_size = os.path.getsize( path_file_model ) # retrieve file size of the saved model
-        filesystem_operations( 'rm', path_file_model )
-        
-        # update metadata
-        del self._dict_metadata[ 'models' ][ type_model ][ name_model ] # delete model from the metadata
-        if len( self._dict_metadata[ 'models' ][ type_model ] ) == 0 : # if list is empty, delete the list, too
-            del self._dict_metadata[ 'models' ][ type_model ]
-        self._save_metadata_( ) # save metadata
-        
-        # report result
-        if self.verbose :
-            logging.info( f"{name_model}.{type_model} model deleted." )
-        return int_file_size # return the number of bytes of the deleted model file
     ''' utility functions for retrieving expression values from layer and save them as metadata in axis  '''
     def get_expr( self, name_layer : str, queries, name_new_col = None, axis : Union[ int, str ] = 'barcodes' ) :
         """ # 2022-08-21 16:12:56
