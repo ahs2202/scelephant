@@ -12,7 +12,7 @@ with open(os.path.join(HERE, "README.md")) as fid:
 
 setup(
     name='scelephant',
-    version='0.0.9',
+    version='0.0.10',
     author="Hyunsu An",
     author_email="ahs2202@gm.gist.ac.kr",
     description="SCelephant (Single-Cell Extremely Large Data Analysis Platform)",

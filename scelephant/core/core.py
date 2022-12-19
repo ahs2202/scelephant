@@ -41,7 +41,7 @@ from tqdm import tqdm as progress_bar # for progress bar
 # import s3fs
 
 # set logging format
-logging.basicConfig( format = '%(asctime)s [%(name)s] <%(levelname)s> (%(funcName)s) - %(message)s' )
+logging.basicConfig( format = '%(asctime)s [%(name)s] <%(levelname)s> (%(funcName)s) - %(message)s', level = logging.INFO )
 logger = logging.getLogger( 'SC-Elephant' )
 
 # define version
@@ -3462,7 +3462,7 @@ def create_ramtx_from_adata(
     # check flag
     path_file_flag_completion = f"{path_folder_output}ramtx.completed.flag"
     if filesystem_operations( 'exists', path_file_flag_completion ) : # exit if a flag indicating the pipeline was completed previously.
-        print( 'return' )
+        return
 
     ''' prepare '''
     mode = mode.lower( ) # handle mode argument
@@ -6230,7 +6230,7 @@ class ZarrDataFrame( ) :
         
         for name_col in set( self.columns ).intersection( l_name_col ) : # copy column by column to the output ZarrDataFrame object
             if self.verbose :
-                print( f"saving '{name_col}' column ..." )
+                logger.info( f"saving '{name_col}' column ..." )
             zdf.initialize_column( name_col, zdf_template = self, name_col_template = name_col ) # initialize the column using the column of the current zdf object 
             zdf[ name_col ] = self[ name_col ] # copy data (with filter applied)
     def load_as_dict( self, * l_name_col, float_min_proportion_of_active_rows_for_using_array_as_dict = 0.1 ) :
@@ -9149,16 +9149,16 @@ class RamDataLayer( ) :
         self._ba_filter_barcodes = ba_filter
         for rtx in self :
             rtx.ba_filter_barcodes = ba_filter
-    def __contains__( self, x ) :
-        """ # 2022-07-30 18:41:51 
+    def __contains__( self, mode ) :
+        """ # 2022-12-17 08:32:04 
         check whether mode 'x' is available in the layer
         """
-        return x in self.modes
+        return hasattr( self, f"ramtx_{mode}" )
     def __iter__( self ) :
         """ # 2022-07-30 18:42:50 
         iterate through ramtx of the modes available in the layer
         """
-        return iter( list( self[ mode ] for mode in self.modes if self[ mode ] ) ) # return ramtx object that has been loaded in the current layer
+        return iter( list( getattr( self, attr ) for attr in vars( self ) if 'ramtx_' == attr[ : 6 ] ) ) # return ramtx object that has been loaded in the current layer
     def select_ramtx( self, ba_entry_bc, ba_entry_ft ) :
         """ # 2022-12-03 22:36:57 
         select appropriate ramtx based on the queryed barcode and features, given as a bitarray filters 'ba_entry_bc', 'ba_entry_ft'
@@ -9191,6 +9191,7 @@ class RamDataLayer( ) :
         # handle combined RAMtx
         if self.is_combined  :
             # %% COMBINED %%
+            # create the ramtx 
             # set default 'set_int_index_component_to_exclude'
             if set_int_index_component_to_exclude is None :
                 set_int_index_component_to_exclude = set( )
@@ -9214,6 +9215,7 @@ class RamDataLayer( ) :
             # apply filters
             rtx.ba_filter_features = self.ba_filter_features
             rtx.ba_filter_barcodes = self.ba_filter_barcodes
+            setattr( self, f"ramtx_{mode}", rtx ) # set the ramtx as an attribute to update the filter of the ramtx 
             return rtx
         
         mode_dense = f"dense_for_querying_{'features' if flag_is_for_querying_features else 'barcodes'}" # retrieve mode name for dense ramtx based on 'flag_is_for_querying_features'
@@ -10126,14 +10128,12 @@ class RamData( ) :
             path_col = ax.meta._get_column_path( name_col = name_col, flag_exclude_components = flag_exclude_components ) # exclude columns in the components, since components should be considered as 'read-only'
             path_lock = f'{path_col}.lock'
             if path_lock not in self._zsls.currently_held_locks : # if the lock has not been acquired by the current object
-                print( f'acquiring lock for {path_lock}' )
                 self._zsls.acquire_lock( path_lock ) # acquire locks for the columns that will be created
                 set_path_lock.add( path_lock ) # add 'path_lock' to the set of acquired locks
         
         zsls = self._zsls
         def release_locks( ) :
             for path_lock in set_path_lock :
-                print( f'releasing lock for {path_lock}' )
                 zsls.release_lock( path_lock )
         # return a function to release the acquired locks
         return release_locks
@@ -10479,18 +10479,20 @@ class RamData( ) :
         
         # compose filters from the queried entries
         ba_entry_bc, l_str_bc, ba_entry_ft, l_str_ft = self.compose_filters( l_entry_bc = l_entry_bc, l_entry_ft = l_entry_ft, flag_use_str_repr_bc = flag_use_str_repr_bc, flag_use_str_repr_ft = flag_use_str_repr_ft )
-        
-        # retrieve ramtx for retrieving data
-        rtx = self.layer.select_ramtx( ba_entry_bc, ba_entry_ft )
+
         
         # set barcode/feature filters for the queried entries
         self.bc.filter = ba_entry_bc
         self.ft.filter = ba_entry_ft
+        
+        # retrieve ramtx for retrieving data
+        rtx = self.layer.select_ramtx( ba_entry_bc, ba_entry_ft )
 
         # initialize and destroy the view after retrieving the count matrix
         with self as view : # load 'dict_change' for coordinate conversion according to the given filters, creating the view of the RamData
             # retrieve count data
             X = rtx.get_sparse_matrix( [ ] ) # retrieve count data for all entries currently active in the filter
+         
         
         # retrieve meta data as dataframes
         df_obs = self.bc.meta.get_df( * l_col_bc )
@@ -11018,7 +11020,12 @@ class RamData( ) :
                     za_mtx_dense.terminate( )
                 rtx_fork_safe.terminate_spawned_processes( )
             # initialize the progress bar
-            pbar = progress_bar( desc = f"{name_layer_new} ({rtx_fork_safe.mode})", total = rtx_fork_safe.get_total_num_records( int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ) )
+            l_mode_output = [ ]
+            if flag_dense_ramtx_output :
+                l_mode_output.append( 'dense' )
+            if flag_sparse_ramtx_output :
+                l_mode_output.append( mode_sparse )
+            pbar = progress_bar( desc = f"{name_layer}/{rtx_fork_safe.mode} > {name_layer_new}/{', '.join( l_mode_output )}", total = rtx_fork_safe.get_total_num_records( int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ) )
             """ %% SPARSE %% """
             if flag_sparse_ramtx_output :
                 ''' create a worker process for off-laoding works (mostly file I/O) asynchronously so that main process can delegate works to the working processes without being blocked during file I/O. '''
@@ -11295,8 +11302,8 @@ class RamData( ) :
         
         if self.use_locking : # %% FILE LOCKING %%
             # locks of the input and output layers
-            self._zsls.acquire_lock( path_lock_layer_input ) # release locks for the input layer
-            self._zsls.acquire_lock( path_lock_layer_output ) # release locks for the output layer
+            self._zsls.release_lock( path_lock_layer_input ) # release locks for the input layer
+            self._zsls.release_lock( path_lock_layer_output ) # release locks for the output layer
         
         """
         update the metadata
@@ -13466,7 +13473,7 @@ class RamData( ) :
         int_num_threads : int = 10, 
         int_index_component_reference : Union[ None, int ] = None
     ) :
-        """ # 2022-11-17 13:53:45 
+        """ # 2022-12-16 01:30:13 
         
         use knn index built from subsampled entries to classify (predict labels) or embed (predict embeddings) barcodes.
         
@@ -13537,7 +13544,7 @@ class RamData( ) :
             if self.verbose :
                 logger.info( f"[RamData.apply_knn] the nearest-neighbor search index '{name_model}' does not exist, exiting" )
                 return 
-        name_col_x_knnindex, _, ba_filter_knnindex, knnindex, identifier = model[ 'name_col_x' ], model[ 'int_num_components_x' ], model[ 'filter' ], model[ 'knnindex' ], model[ 'identifier' ] # parse the model
+        name_col_x_knnindex, _, ba_filter_knnindex, knnindex, identifier, arr_neighbors, arr_neighbors_index = model[ 'name_col_x' ], model[ 'int_num_components_x' ], model[ 'filter' ], model[ 'knnindex' ], model[ 'identifier' ], model[ 'arr_neighbors' ] if 'arr_neighbors' in model else None, model[ 'arr_neighbors_index' ] if 'arr_neighbors_index' in model else None  # parse the model
         
         # retrieve a setting for the number of nearest neighbors to use
         if int_num_nearest_neighbors is None or int_num_nearest_neighbors > knnindex.n_neighbors :
@@ -13618,7 +13625,7 @@ class RamData( ) :
             logging.info( f"[Info] [RamData.apply_label] the nearest-neighbor search started" )
         # define functions for multiprocessing step
         def process_batch( pipe_receiver_batch, pipe_sender_result ) :
-            ''' # 2022-09-06 17:05:15 
+            ''' # 2022-12-16 01:30:06 
             '''
             while True :
                 batch = pipe_receiver_batch.recv( )
@@ -13680,12 +13687,12 @@ class RamData( ) :
                 pipe_sender_result.send( ( l_int_entry_current_batch, l_res, ba_neighbors ) ) # send the result back to the main process
         pbar = progress_bar( total = ax.meta.n_rows ) # initialize the progress bar
         def post_process_batch( res ) :
-            """ # 2022-07-13 22:18:26 
+            """ # 2022-12-16 01:30:00 
             """
             # parse result 
             l_int_entry_current_batch, l_res, ba_neighbors = res
             int_num_retrieved_entries = len( l_int_entry_current_batch )
-
+            
             # write the result to the axis metadata
             ax.meta[ name_col_y_output, l_int_entry_current_batch ] = l_res
 
@@ -13719,6 +13726,14 @@ class RamData( ) :
                 fill_value = False, 
                 dict_metadata_description = { 'intended_function' : 'filter', 'intended_function.description' : 'record neighbors from knn search' }
             )
+            
+            if flag_include_secondary_neighbors_of_the_query and arr_neighbors is not None : # if flag has been set to True and valid 'arr_neighbors' is present 
+                set_int_entry_secondary_neighbors_of_the_query = set( ) # initialize the set
+                for i in BA.find( ns[ 'ba_for_recording_neighbors' ] ) : # for each entry in the knn index
+                    set_int_entry_secondary_neighbors_of_the_query.update( arr_neighbors[ arr_neighbors_index[ i ] : arr_neighbors_index[ i + 1 ] ] ) # retrieve 'secondary' neighbors of the entry in the knnindex
+                set_int_entry_secondary_neighbors_of_the_query.update( l_int_entry_of_collected_neighbors ) # add 'primary' neighbors, the neighbor entries in the knnindex
+                l_int_entry_of_collected_neighbors = np.sort( list( set_int_entry_secondary_neighbors_of_the_query ) ) # retrieve the sorted list of entries of collected neighbors
+            
             ax.meta[ name_col_filter_neighbors_of_the_query, l_int_entry_of_collected_neighbors ] = True # mark recorded neighbors to the filter
         
         # change back to the filter containing all target entries
