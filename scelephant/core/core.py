@@ -47,241 +47,242 @@ logger = logging.getLogger( 'SC-Elephant' )
 # define version
 _version_ = '0.0.10'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-12-14 01:20:50'
+_last_modified_time_ = '2022-12-21 23:01:01'
 
-""" # 2022-07-21 10:35:42  realease note
+str_release_note = [
+    """ # 2022-07-21 10:35:42  realease note
+    HTTP hosted RamData subclustering tested and verified.
+    identified problems: Zarr HTTP Store is not thread-safe (crashes the program on run time) nor process-safe (dead lock... why?).
+    Therefore, serializing access to Zarr HTTP Store is required 
 
-HTTP hosted RamData subclustering tested and verified.
-identified problems: Zarr HTTP Store is not thread-safe (crashes the program on run time) nor process-safe (dead lock... why?).
-Therefore, serializing access to Zarr HTTP Store is required 
+    TODO: do not use fork when store is Zarr HTTP Store
+    TODO: use Pynndescent for efficient HDBSCAN cluster label assignment, even when program is single-threaded (when Zarr HTTP store is used)
+    TODO: use Pynndescent for better subsampling of cells before UMAP embedding
 
-TODO: do not use fork when store is Zarr HTTP Store
-TODO: use Pynndescent for efficient HDBSCAN cluster label assignment, even when program is single-threaded (when Zarr HTTP store is used)
-TODO: use Pynndescent for better subsampling of cells before UMAP embedding
+    if these implementations are in place, subclustering on HTTP-hosted RamData will be efficient and accurate.
 
-if these implementations are in place, subclustering on HTTP-hosted RamData will be efficient and accurate.
+    # 2022-07-28 16:00:50 
 
-# 2022-07-28 16:00:50 
+    Hard dependency on entries sorted by string representations ('id_feature' and 'id_cell') will be dropped. 
+    This decision was made to make integration of datasets (especially datasets fetched from the web with dataset exists locally) more efficient.
+    Also, this change will make the RamData construction process more time- and memory-efficient
 
-Hard dependency on entries sorted by string representations ('id_feature' and 'id_cell') will be dropped. 
-This decision was made to make integration of datasets (especially datasets fetched from the web with dataset exists locally) more efficient.
-Also, this change will make the RamData construction process more time- and memory-efficient
+    Also, hard dependency on feature/barcode sorted ramtx will be dropped, and a new ramtx, dense ramtx will be introduced
 
-Also, hard dependency on feature/barcode sorted ramtx will be dropped, and a new ramtx, dense ramtx will be introduced
+    # 2022-07-30 17:24:25 
+    metadata naming convention changed, removing backward compatibility.
 
-# 2022-07-30 17:24:25 
-metadata naming convention changed, removing backward compatibility.
+    dense ramtx was introduced, and the dependency on the existence of a paired sparse ramtx object was dropped. 
+    below is a short description about the different types of ramtx objects:
 
-dense ramtx was introduced, and the dependency on the existence of a paired sparse ramtx object was dropped. 
-below is a short description about the different types of ramtx objects:
+        # 'mode' of RAMtx objects
+        There are three valid 'mode' (or internal structures) for RAMtx object : {'dense' or 'sparse_sorted_by_barcodes', 'sparse_sorted_by_features'}
 
-    # 'mode' of RAMtx objects
-    There are three valid 'mode' (or internal structures) for RAMtx object : {'dense' or 'sparse_sorted_by_barcodes', 'sparse_sorted_by_features'}
+        (sparse_sorted_by_barcodes) <---> (dense) <---> (sparse_sorted_by_features)
+        *fast barcode data retrieval                    *fast feature data retrieval
+
+        As shown above, RAMtx objects are interconvertible. Of note, for the converion between sparse ramtx sorted by barcodes and features, 'dense' ramtx object should be used in the conversion process.
+        - dense ramtx object can be used to retrieve data of a single barcode or feature (with moderate efficiency)
+        - sparse ramtx object can only be used data of either a single barcode ('sparse_sorted_by_barcodes') or a single feature ('sparse_sorted_by_features') very efficiently.
+
+    # 2022-08-01 20:38:54 
+
+    RamData.apply has been implemented
+    RAMtx.__getitem__ function has been improved to allow read data respecting chunk boundaries
+    RAMtx.batch_generator now respect chunk boundaries when creating batches
+
+    # 2022-08-03 00:39:12 
+    wrote a method in RamData for fast exploratory analysis of count data stored in dense, which enables normalizations/scaling of highly/variable genes of 200k single-cell data in 3~4 minutes from the count data
+    now ZarrDataFrame supports multi-dimensional data as a 'column'
+    also, mask, coordinate array, and orthogonal selections (all methods supported by Zarr) is also supported in ZarrDataFrame.
+
+    # 2022-08-05 01:53:22 
+    RAMtx.batch_generator was modified so that for dense matrix, appropriate batch that does not overwhelm the system memory
+    RamData.apply was modified to allow synchronization across processes. it is a bit slow than writing chunks by chunk, but consums far less memory.
+
+    # 2022-08-05 17:24:17 
+    improved RamData.__getitem__ method to set obsm and varm properties in the returned AnnData object
+
+    # 2022-08-05 17:42:03 
+    RamData dimension reduction methods were re-structured
+
+    # 2022-08-06 22:24:19 
+    RamData.pca was split into RamData.train_pca and RamData.apply_pca
+
+    # 2022-08-07 03:15:06 
+    RAMtx.batch_generator was modified to support progress_bar functionality (backed by 'tqdm')
+    RAMtx.get_total_num_records method was added to support progress_bar functionality (backed by 'tqdm')
+
+    # 2022-08-07 17:00:53 
+    RamData.umap has been split into RamData.train_umap and RamData.apply_umap
+
+    # 2022-08-08 00:49:58 
+    RamData._repr_html_ was added for more interactive visualization of RamData in an interactive IPython environment (such as Jupyter Notebook).
+
+    # 2022-08-08 23:14:16 
+    implemented PyNNdescent-backed implementation of cluster label assignments using labels assigned to subsampled barcodes, adding RamData.
+
+    # 2022-08-09 03:13:15 
+    implemented leiden clustering algorithm using 'leidenalg.find_partition' method
+
+    # 2022-08-10 04:51:54 
+    implemented subsampling method using iterative community detection and density-based subsampling algorithms (RamData.subsample)
+
+    # 2022-08-10 10:02:18 
+    RamData.delete_model error corrected
+
+    # 2022-08-12 01:51:27 
+    resolved error in RamData.summarize
+
+    # 2022-08-16 02:32:51 
+    resolved RAMtx.__getitem__ performance issues for dense RAMtx data when the length of axis not for querying is extremely large.
+    New algorithm uses sub-batches to convert dense matrix to sparse matrix in a memory-efficient conversion.
+
+    # 2022-08-16 11:21:53 
+    resolved an issue in RAMtx.survey_number_of_records_for_each_entry
+
+    # 2022-08-18 15:30:22 
+    bumped version to v0.0.5
+
+    # 2022-08-21 16:13:08 
+    RamData.get_expr function was implemented.
+        possible usages: (1) calculating gene_set/pathway activities across cells, which can subsequently used for filtering cells for subclustering
+                         (2) calculating pseudo-bulk expression profiles of a subset of cells across all active features 
+
+    # 2022-08-23 11:36:32 
+    RamData.find_markers : finding markers for each cluster using AUROC, log2fc, and statistical test methods in memory-efficient method, built on top of RamData.summarize
+    RamData.get_marker_table : retrieve markers as table from the results produced by 'RamData.find_markers'
+
+    # 2022-08-25 16:18:04 
+    initialized ZarrDataFrame class with an additional functionality (combined mode)
+
+    # 2022-08-27 10:21:45 
+    ZarrDataFrame class now support combined mode, where data are retrieved across multiple zdf conmponents, either sharing rows ('interleaved' type) or each has unique rows ('stacked' type).
+    currently supported operations are __getitem__
+    Also, fill_value of categorical column is now -1, interpreting empty values as np.nan by default
+
+    # 2022-08-29 12:46:18 
+    RamDataAxis now supports combined mode, either sharing rows ('interleaved' type) or each has unique rows ('stacked' type), backed by the combined ZarrDataFrame object.
+    RamDataAxis can automatically determines combined type, and build index mapping dictionaries for the 'interleaved' type.
+
+    # 2022-09-05 23:49:37
+    RAMtx, RamDataLayer, RamData now supports combined mode.
+    RamData.load_model now can search and download models from component RamData
+
+    # 2022-09-06 20:21:27 
+    multiprocessing and load-balancing algorithm was improved (biobookshelf.bk.Multiprocessing_Batch_Generator_and_Workers)
+
+    # 2022-09-07 21:13:29 
+    a multiprocessing support for HTTP-stored RamData objects was implemented by hosting zarr objects in spawned processes, making them thread-safe by isolating zarr objects from each other.
+
+    # 2022-09-08 18:18:13 
+    RamDataAxis.select_component method was added.
+
+    # 2022-09-09 14:58:02 
+    RamDataAxis.iterate_str method was added 
+
+    # 2022-09-11 23:53:36 
+    ZarrDataFrame.lazy_load method draft implementation completed 
+
+    # 2022-09-12 15:51:48 
+    - lazy loading implementation for remotely-located combined ZarrDataFrame :
+        combined ZarrDataFrame should be optimized more. When only a subset of data is needed, a filter will be assigned to combined column indicating which entry contains data and data of entries will be downloaded as it is accessed (lazy loading). 
+    - lazy loading implementation of string representation of Axis objects :
+        similar mechanism to ZarrDataFrame's lazy-loading will be used
+
+    # 2022-09-12 17:50:10 
+    RamDataAxis object will be no longer modify filter using current RamDataLayer's active entries
+
+    # 2022-09-14 10:11:34 
+    - KNN models will be combined in to a single model, and associated filter and column name will be saved together in order to check validity of the model.
+    - RamData.train_knn method was implemented, for building knnindex using the given X
+    - RamData.apply_knn method was implemented for knnindex-based embedding and classification
+
+    # 2022-09-15 22:06:09 
+    - RamData.train_dl method was implemented, for training deep-learning based model for classification/embedding tasks
+    - RamData.apply_dl method was implemented, for applying the trained deep-learning model across the entries
+
+    # 2022-09-18 01:00:28 
+    - an issue in the RAMtx.get_fork_safe_version method was resolved (mask was not properly set)
+    - RamData.get_model_path method was implemented. it uses recursive solution for retrieving (remote) path of the given model from components and masks
+    - RamData.load_model method was re-implemented using RamData.get_model_path
+    - RamData.prepare_dimension_reduction_from_raw was modified to support fast embedding of barcodes of the non-reference RamData components with the reference barcodes of the reference RamData component.
+
+    # 2022-09-18 16:54:20 
+    - an issue in the RamData.load_model resolved.
+
+    # 2022-09-24 11:46:09 
+    - RamData.apply_knn method 'embedder' algorithm was improved in order to avoid averaging embeddings of very distant 'neighbors'. standard deviations of embedding of the neighbors are used to identify outliers
+
+    # 2022-09-24 22:20:38 
+    finalized version of 0.0.7 released
+
+    # 2022-10-19 13:16:19 
+    combined RamData will exclude RAMtx of the reference RamData for weight calculation / data retrieval
+        - RAMtx.survey_number_of_records_for_each_entry was updated
+
+    # 2022-10-29 18:08:59 
+    RamData.subset draft implementation completed
+    RamData.apply was updated so that file I/O operations on sparse matrix will be off-loaded to a seperate process for asynchronous operations. (much faster since main process will not be blocked from distributing works in order to post-process sparse matrix outputs)
+
+    # 2022-10-29 23:57:53 
+    RamDataAxis.update, RamDataAxis.get_df methods were implemented, and ZarrDataFrame.update and ZarrDataFrame.get_df methods were re-implemented.
+
+    # 2022-10-30 18:05:30 
+    ZarrDataFrame.__setitem__ method updated for processing categorical data
+
+    # 2022-11-08 19:34:38 
+    RamData.apply_knn embedding algorithm was improved so that outliers are detected using the distance from the closest point.
+
+    # 2022-11-17 13:53:56 
+    an error in RamData.apply_knn resolved
+
+    # 2022-11-22 23:45:40 
+    a critical error in RamData.scale was resolved (values were not capped for RAMtx for querying barcodes)
+
+    # 2022-11-24 04:45:52 
+    an issue in RamData.summarize was detected, where the last record has exceptionally large values when summarizing dense matrix.
+    It was due to reading the description line of the input matrix (# rows, # cols, # records) and writing it to the dense matrix.
+    'create_zarr_from_mtx' method was corrected.
+
+    # 2022-12-02 00:14:34 
+    dependency on biobookshelf was dropped by migrating necessary functions to scelephant core/biobookshelf.py
+    also, heavy packages (tensorflow, pynndescent, etc.) will not be loaded by default
+
+    # 2022-12-03 11:42:43 
+    an error in the RAMtx.survey_number_of_records_for_each_entry method was detected and corrected
+
+    # 2022-12-05 13:25:20 
+    support for Amazon S3 was added. currently adding ZDF metadata columns, deleting columns, updating metadata are supported and tested. supports for RamData.summarize and RamData.apply was added, too, but not yet tested.
+    added methods in ZarrDataFrame to add and update 'dict_col_metadata_description' of the column metadata to annotate columns better
+
+    # 2022-12-05 22:59:31 
+    methods for file-system operations independent of the file system (local, Amazon S3 file system, or other file systems) were implemented.
+    It appears Amazon S3 file system access using the S3FS package is not fork-safe. In order to access and modify files in the forked process, a FileSystemServer class was implemented. 
+        For more consistent interactions and API structures, ZarrServer class was also modified so that it can perform zarr operations in either a spawned process or the current process.
+
+    # 2022-12-07 20:22:44 
+    To read and write zarr meta information in forked processes, ZarrMetadataServer was implemented.
+    RamData.apply support was added to Amazon S3 file system.
+    RamData.rename_layer method was added
+
+    # 2022-12-11 17:11:25 
+    RamData.summarize support was added to the Amazon S3 file system.
+    a class ZarrSpinLockServer was implemented to support file-locking of ZarrDataFrame, RamData, and associated components. Methods of RamData and other objects utilizing the object ZarrSpinLockServer is being implemented.
+
+    # 2022-12-13 03:30:26 
+    A functioning version of 'create_ramtx_from_adata', 'create_ramdata_from_adata' methods were implemented, which uses multiprocessing to export count matrix to a RAMtx object. An AnnData can be exported to a RamData object using these functions.
+
+    # 2022-12-14 01:21:04 
+    the draft version of sychronization methods for ZarrDataFrame and RamData classes were implemented.
+    (a commit prior to a major revision for RamData.models methods)
     
-    (sparse_sorted_by_barcodes) <---> (dense) <---> (sparse_sorted_by_features)
-    *fast barcode data retrieval                    *fast feature data retrieval
-    
-    As shown above, RAMtx objects are interconvertible. Of note, for the converion between sparse ramtx sorted by barcodes and features, 'dense' ramtx object should be used in the conversion process.
-    - dense ramtx object can be used to retrieve data of a single barcode or feature (with moderate efficiency)
-    - sparse ramtx object can only be used data of either a single barcode ('sparse_sorted_by_barcodes') or a single feature ('sparse_sorted_by_features') very efficiently.
-    
-# 2022-08-01 20:38:54 
+    # 2022-12-21 22:59:51 
+    RamData.apply_knn method was improved by using agglomerative clustering to detect outliers during the embedding process
 
-RamData.apply has been implemented
-RAMtx.__getitem__ function has been improved to allow read data respecting chunk boundaries
-RAMtx.batch_generator now respect chunk boundaries when creating batches
-
-# 2022-08-03 00:39:12 
-wrote a method in RamData for fast exploratory analysis of count data stored in dense, which enables normalizations/scaling of highly/variable genes of 200k single-cell data in 3~4 minutes from the count data
-now ZarrDataFrame supports multi-dimensional data as a 'column'
-also, mask, coordinate array, and orthogonal selections (all methods supported by Zarr) is also supported in ZarrDataFrame.
-
-# 2022-08-05 01:53:22 
-RAMtx.batch_generator was modified so that for dense matrix, appropriate batch that does not overwhelm the system memory
-RamData.apply was modified to allow synchronization across processes. it is a bit slow than writing chunks by chunk, but consums far less memory.
-
-# 2022-08-05 17:24:17 
-improved RamData.__getitem__ method to set obsm and varm properties in the returned AnnData object
-
-# 2022-08-05 17:42:03 
-RamData dimension reduction methods were re-structured
-
-# 2022-08-06 22:24:19 
-RamData.pca was split into RamData.train_pca and RamData.apply_pca
-
-# 2022-08-07 03:15:06 
-RAMtx.batch_generator was modified to support progress_bar functionality (backed by 'tqdm')
-RAMtx.get_total_num_records method was added to support progress_bar functionality (backed by 'tqdm')
-
-# 2022-08-07 17:00:53 
-RamData.umap has been split into RamData.train_umap and RamData.apply_umap
-
-# 2022-08-08 00:49:58 
-RamData._repr_html_ was added for more interactive visualization of RamData in an interactive IPython environment (such as Jupyter Notebook).
-
-# 2022-08-08 23:14:16 
-implemented PyNNdescent-backed implementation of cluster label assignments using labels assigned to subsampled barcodes, adding RamData.
-
-# 2022-08-09 03:13:15 
-implemented leiden clustering algorithm using 'leidenalg.find_partition' method
-
-# 2022-08-10 04:51:54 
-implemented subsampling method using iterative community detection and density-based subsampling algorithms (RamData.subsample)
-
-# 2022-08-10 10:02:18 
-RamData.delete_model error corrected
-
-# 2022-08-12 01:51:27 
-resolved error in RamData.summarize
-
-# 2022-08-16 02:32:51 
-resolved RAMtx.__getitem__ performance issues for dense RAMtx data when the length of axis not for querying is extremely large.
-New algorithm uses sub-batches to convert dense matrix to sparse matrix in a memory-efficient conversion.
-
-# 2022-08-16 11:21:53 
-resolved an issue in RAMtx.survey_number_of_records_for_each_entry
-
-# 2022-08-18 15:30:22 
-bumped version to v0.0.5
-
-# 2022-08-21 16:13:08 
-RamData.get_expr function was implemented.
-    possible usages: (1) calculating gene_set/pathway activities across cells, which can subsequently used for filtering cells for subclustering
-                     (2) calculating pseudo-bulk expression profiles of a subset of cells across all active features 
-
-# 2022-08-23 11:36:32 
-RamData.find_markers : finding markers for each cluster using AUROC, log2fc, and statistical test methods in memory-efficient method, built on top of RamData.summarize
-RamData.get_marker_table : retrieve markers as table from the results produced by 'RamData.find_markers'
-
-# 2022-08-25 16:18:04 
-initialized ZarrDataFrame class with an additional functionality (combined mode)
-
-# 2022-08-27 10:21:45 
-ZarrDataFrame class now support combined mode, where data are retrieved across multiple zdf conmponents, either sharing rows ('interleaved' type) or each has unique rows ('stacked' type).
-currently supported operations are __getitem__
-Also, fill_value of categorical column is now -1, interpreting empty values as np.nan by default
-
-# 2022-08-29 12:46:18 
-RamDataAxis now supports combined mode, either sharing rows ('interleaved' type) or each has unique rows ('stacked' type), backed by the combined ZarrDataFrame object.
-RamDataAxis can automatically determines combined type, and build index mapping dictionaries for the 'interleaved' type.
-
-# 2022-09-05 23:49:37
-RAMtx, RamDataLayer, RamData now supports combined mode.
-RamData.load_model now can search and download models from component RamData
-
-# 2022-09-06 20:21:27 
-multiprocessing and load-balancing algorithm was improved (biobookshelf.bk.Multiprocessing_Batch_Generator_and_Workers)
-
-# 2022-09-07 21:13:29 
-a multiprocessing support for HTTP-stored RamData objects was implemented by hosting zarr objects in spawned processes, making them thread-safe by isolating zarr objects from each other.
-
-# 2022-09-08 18:18:13 
-RamDataAxis.select_component method was added.
-
-# 2022-09-09 14:58:02 
-RamDataAxis.iterate_str method was added 
-
-# 2022-09-11 23:53:36 
-ZarrDataFrame.lazy_load method draft implementation completed 
-
-# 2022-09-12 15:51:48 
-- lazy loading implementation for remotely-located combined ZarrDataFrame :
-    combined ZarrDataFrame should be optimized more. When only a subset of data is needed, a filter will be assigned to combined column indicating which entry contains data and data of entries will be downloaded as it is accessed (lazy loading). 
-- lazy loading implementation of string representation of Axis objects :
-    similar mechanism to ZarrDataFrame's lazy-loading will be used
-
-# 2022-09-12 17:50:10 
-RamDataAxis object will be no longer modify filter using current RamDataLayer's active entries
-
-# 2022-09-14 10:11:34 
-- KNN models will be combined in to a single model, and associated filter and column name will be saved together in order to check validity of the model.
-- RamData.train_knn method was implemented, for building knnindex using the given X
-- RamData.apply_knn method was implemented for knnindex-based embedding and classification
-
-# 2022-09-15 22:06:09 
-- RamData.train_dl method was implemented, for training deep-learning based model for classification/embedding tasks
-- RamData.apply_dl method was implemented, for applying the trained deep-learning model across the entries
-
-# 2022-09-18 01:00:28 
-- an issue in the RAMtx.get_fork_safe_version method was resolved (mask was not properly set)
-- RamData.get_model_path method was implemented. it uses recursive solution for retrieving (remote) path of the given model from components and masks
-- RamData.load_model method was re-implemented using RamData.get_model_path
-- RamData.prepare_dimension_reduction_from_raw was modified to support fast embedding of barcodes of the non-reference RamData components with the reference barcodes of the reference RamData component.
-
-# 2022-09-18 16:54:20 
-- an issue in the RamData.load_model resolved.
-
-# 2022-09-24 11:46:09 
-- RamData.apply_knn method 'embedder' algorithm was improved in order to avoid averaging embeddings of very distant 'neighbors'. standard deviations of embedding of the neighbors are used to identify outliers
-
-# 2022-09-24 22:20:38 
-finalized version of 0.0.7 released
-
-# 2022-10-19 13:16:19 
-combined RamData will exclude RAMtx of the reference RamData for weight calculation / data retrieval
-    - RAMtx.survey_number_of_records_for_each_entry was updated
-    
-# 2022-10-29 18:08:59 
-RamData.subset draft implementation completed
-RamData.apply was updated so that file I/O operations on sparse matrix will be off-loaded to a seperate process for asynchronous operations. (much faster since main process will not be blocked from distributing works in order to post-process sparse matrix outputs)
-
-# 2022-10-29 23:57:53 
-RamDataAxis.update, RamDataAxis.get_df methods were implemented, and ZarrDataFrame.update and ZarrDataFrame.get_df methods were re-implemented.
-
-# 2022-10-30 18:05:30 
-ZarrDataFrame.__setitem__ method updated for processing categorical data
-
-# 2022-11-08 19:34:38 
-RamData.apply_knn embedding algorithm was improved so that outliers are detected using the distance from the closest point.
-
-# 2022-11-17 13:53:56 
-an error in RamData.apply_knn resolved
-
-# 2022-11-22 23:45:40 
-a critical error in RamData.scale was resolved (values were not capped for RAMtx for querying barcodes)
-
-# 2022-11-24 04:45:52 
-an issue in RamData.summarize was detected, where the last record has exceptionally large values when summarizing dense matrix.
-It was due to reading the description line of the input matrix (# rows, # cols, # records) and writing it to the dense matrix.
-'create_zarr_from_mtx' method was corrected.
-
-# 2022-12-02 00:14:34 
-dependency on biobookshelf was dropped by migrating necessary functions to scelephant core/biobookshelf.py
-also, heavy packages (tensorflow, pynndescent, etc.) will not be loaded by default
-
-# 2022-12-03 11:42:43 
-an error in the RAMtx.survey_number_of_records_for_each_entry method was detected and corrected
-
-# 2022-12-05 13:25:20 
-support for Amazon S3 was added. currently adding ZDF metadata columns, deleting columns, updating metadata are supported and tested. supports for RamData.summarize and RamData.apply was added, too, but not yet tested.
-added methods in ZarrDataFrame to add and update 'dict_col_metadata_description' of the column metadata to annotate columns better
-
-# 2022-12-05 22:59:31 
-methods for file-system operations independent of the file system (local, Amazon S3 file system, or other file systems) were implemented.
-It appears Amazon S3 file system access using the S3FS package is not fork-safe. In order to access and modify files in the forked process, a FileSystemServer class was implemented. 
-    For more consistent interactions and API structures, ZarrServer class was also modified so that it can perform zarr operations in either a spawned process or the current process.
-
-# 2022-12-07 20:22:44 
-To read and write zarr meta information in forked processes, ZarrMetadataServer was implemented.
-RamData.apply support was added to Amazon S3 file system.
-RamData.rename_layer method was added
-
-# 2022-12-11 17:11:25 
-RamData.summarize support was added to the Amazon S3 file system.
-a class ZarrSpinLockServer was implemented to support file-locking of ZarrDataFrame, RamData, and associated components. Methods of RamData and other objects utilizing the object ZarrSpinLockServer is being implemented.
-
-# 2022-12-13 03:30:26 
-A functioning version of 'create_ramtx_from_adata', 'create_ramdata_from_adata' methods were implemented, which uses multiprocessing to export count matrix to a RAMtx object. An AnnData can be exported to a RamData object using these functions.
-
-# 2022-12-14 01:21:04 
-the draft version of sychronization methods for ZarrDataFrame and RamData classes were implemented.
-(a commit prior to a major revision for RamData.models methods)
-
-##### Future implementations #####
-# 2022-12-10 20:59:46 
-For synchronization of operations on a RamData by multiple processes (or 'users' for collaborative research), locking methods will be implemented (based on file-system locks). 
-
-"""
+    ##### Future implementations #####
+    """
+]
 
 ''' previosuly written for biobookshelf '''
 def CB_Parse_list_of_id_cell( l_id_cell, dropna = True ) :
@@ -12414,7 +12415,7 @@ class RamData( ) :
 
                 pipe_sender_result.send( ( int_num_processed_records, l_int_entry_current_batch, rtx_fork_safe.get_sparse_matrix( l_int_entry_current_batch )[ int_num_of_previously_returned_entries : int_num_of_previously_returned_entries + int_num_retrieved_entries ] ) ) # retrieve data as a sparse matrix and send the result of PCA transformation # send the integer representations of the barcodes for PCA value update
         pipe_sender, pipe_receiver = mp.Pipe( ) # create a communication link between the main process and the worker for saving zarr objects
-        pbar = progress_bar( desc = f"{int_num_components} PCs from {len( self.ft.meta )} features", total = rtx.get_total_num_records( int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ) )
+        pbar = progress_bar( desc = f"{ipca.n_components} PCs from {len( self.ft.meta )} features", total = rtx.get_total_num_records( int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ) )
         def post_process_batch( res ) :
             """ # 2022-07-13 22:18:26 
             perform PCA transformation for each batch
@@ -13469,11 +13470,13 @@ class RamData( ) :
         int_num_nearest_neighbors : Union[ int, None ] = None,
         operation : Literal[ 'classifier', 'embedder' ] = 'embedder', 
         float_std_ratio_for_outlier_detection : float = 0.1, axis : Union[ int, str ] = 'barcodes', 
+        linkage_for_agglomerative_clustering_of_embeddings_of_neighbors : Literal[ 'single', 'complete', 'ward', 'average' ] = 'complete',
+        flag_use_agglomerative_clustering_of_embeddings_of_neighbors_for_outlier_detection : bool = True,
         int_num_entries_in_a_batch : int = 10000, 
         int_num_threads : int = 10, 
         int_index_component_reference : Union[ None, int ] = None
     ) :
-        """ # 2022-12-16 01:30:13 
+        """ # 2022-12-21 00:43:32 
         
         use knn index built from subsampled entries to classify (predict labels) or embed (predict embeddings) barcodes.
         
@@ -13494,7 +13497,8 @@ class RamData( ) :
         === embedder ===
         'float_std_ratio_for_outlier_detection' : float = 0.1 # when standard deviation of embeddings of the neighbor is larger than standard deviation values of the embeddings of all the points used in the KNN-index times this parameter, identify the point as an outlier.
             weighted-averaging will not be used for points that are classified as 'outliers' (very distant points identified as 'neighbors'). instead, the embedding of the closest point will be used.
-        
+        linkage_for_agglomerative_clustering_of_embeddings_of_neighbors : Literal[ 'single', 'complete', 'ward', 'average' ] = 'complete' # a method for calculating linkage for agglomerative clustering for identifying outliers
+        flag_use_agglomerative_clustering_of_embeddings_of_neighbors_for_outlier_detection : bool = True # if set to 'True', use agglomerative clustering to identify outliers. if False, identify outliers by excluding neighbors based on the distance of the embeddings to the embedding of the closest neighbor
             
         === when reference ramdata is used ===
         int_index_component_reference : Union[ None, int ] = None # the index of the reference component RamData to use. By default, 'index_component_reference' attribute of the current RamData will be used.
@@ -13545,6 +13549,7 @@ class RamData( ) :
                 logger.info( f"[RamData.apply_knn] the nearest-neighbor search index '{name_model}' does not exist, exiting" )
                 return 
         name_col_x_knnindex, _, ba_filter_knnindex, knnindex, identifier, arr_neighbors, arr_neighbors_index = model[ 'name_col_x' ], model[ 'int_num_components_x' ], model[ 'filter' ], model[ 'knnindex' ], model[ 'identifier' ], model[ 'arr_neighbors' ] if 'arr_neighbors' in model else None, model[ 'arr_neighbors_index' ] if 'arr_neighbors_index' in model else None  # parse the model
+        int_num_neighbors = knnindex.n_neighbors # retrieve the number of neighbors
         
         # retrieve a setting for the number of nearest neighbors to use
         if int_num_nearest_neighbors is None or int_num_nearest_neighbors > knnindex.n_neighbors :
@@ -13595,7 +13600,6 @@ class RamData( ) :
         if flag_name_col_y_input_and_output_are_same :
             ax.filter = ax.filter & ( ~ ba_filter_knnindex )
             
-        
         # retrieve y values for the entries used for building knnindex
         y_knnindex = ax.meta[ name_col_y_input, ba_filter_knnindex ]
         
@@ -13617,6 +13621,9 @@ class RamData( ) :
             y_knnindex_std = y_knnindex.std( axis = 0 )
             y_std_threshold = float_std_ratio_for_outlier_detection * y_knnindex_std
             y_dist_threshold = math.sqrt( ( y_std_threshold ** 2 ).sum( ) ) # calculate the distance threshold for detecting outliers (using euclidean distance)
+            # initialize 'AgglomerativeClustering' instance
+            if flag_use_agglomerative_clustering_of_embeddings_of_neighbors_for_outlier_detection :
+                from sklearn.cluster import AgglomerativeClustering
             
         """
         assign labels or retrieve embeddings
@@ -13627,6 +13634,20 @@ class RamData( ) :
         def process_batch( pipe_receiver_batch, pipe_sender_result ) :
             ''' # 2022-12-16 01:30:06 
             '''
+            # define functions
+            def __find_label_with_largest_sum_of_weights( labels, weights ) :
+                ''' # 2022-12-20 23:49:05 
+                fine labels with the largest sum of weights
+                '''
+                # sum weights for each label
+                dict_label_to_weight = dict( )
+                for label, weight in zip( labels, weights ) :
+                    if label not in dict_label_to_weight :
+                        dict_label_to_weight[ label ] = weight
+                    else :
+                        dict_label_to_weight[ label ] += weight
+                return bk.DICTIONARY_Find_keys_with_max_value( dict_label_to_weight )[ 0 ][ 0 ] # find the label with the maximum weight
+
             while True :
                 batch = pipe_receiver_batch.recv( )
                 if batch is None :
@@ -13654,7 +13675,7 @@ class RamData( ) :
                     # collect neighbors
                     for e in set( neighbors.ravel( ) ) :
                         ba_neighbors[ e ] = True
-
+                        
                 # knn-index based assignment of label/embedding
                 l_res = [ ]
                 for neighbors_of_an_entry, distances_of_an_entry in zip( neighbors, distances ) :
@@ -13663,24 +13684,27 @@ class RamData( ) :
                     if ( mask_zero_distance ).sum( ) : # if there is 'neighbor' with 0 distance, use the y of the 0-distance neighbor
                         res = y_knnindex[ neighbors_of_an_entry ][ mask_zero_distance ][ 0 ] # use the y of the first 0-distance neighbor (there should be at most 1 0-distance neighbor)
                     else : # when there is no neighbors with 0-distance (all distance values should be larger than 0)
+                        weights = 1 / distances_of_an_entry # calculate weights based on distances
                         if flag_embedder : # %% EMBEDDER %%
-                            weights = 1 / distances_of_an_entry # calculate weights based on distances
                             y_knnindex_of_an_entry = y_knnindex[ neighbors_of_an_entry ] # retrieve y-values of an entry
                             if sum( y_knnindex_of_an_entry.std( axis = 0 ) > y_std_threshold ) : # detect whether outliers are included in the neighbors (since knnindex is linear, but most embeddings are non-linear, knn-distance based method can identify very distant points in the embedding, and averaging these points should be avoided)
-                                # when very distant points are identified as 'neighbors', use the embedding of the closest point, in order to avoid weighted averaging of embeddings of distant points
-                                mask_not_outlier = np.sqrt( ( ( y_knnindex_of_an_entry - y_knnindex_of_an_entry[ 0 ] ) ** 2 ).sum( axis = 1 ) ) < y_dist_threshold # retrieve points that are in the radius of the threshold distance from the closest point
+                                if flag_use_agglomerative_clustering_of_embeddings_of_neighbors_for_outlier_detection :
+                                    ac = AgglomerativeClustering( n_clusters = None, distance_threshold = y_dist_threshold, linkage = linkage_for_agglomerative_clustering_of_embeddings_of_neighbors ) # initialize the clustering instance
+                                    arr_labels = ac.fit_predict( y_knnindex_of_an_entry ) # perform agglomerative clustering of the embeddings of the neighbors to exclude embeddings of the outliers
+                                    mask_not_outlier = arr_labels == __find_label_with_largest_sum_of_weights( arr_labels, weights ) # retrieve the mask of neighbors belonging to the cluster with the largest sum of weights
+                                else :
+                                    # when very distant points are identified as 'neighbors', use the embedding of the closest point, in order to avoid weighted averaging of the embeddings including those of the distant points
+                                    mask_not_outlier = np.sqrt( ( ( y_knnindex_of_an_entry - y_knnindex_of_an_entry[ 0 ] ) ** 2 ).sum( axis = 1 ) ) < y_dist_threshold # retrieve points that are in the radius of the threshold distance from the closest point
+                                # exclude embeddings of the outliers
                                 weights = weights[ mask_not_outlier ]
                                 y_knnindex_of_an_entry = y_knnindex_of_an_entry[ mask_not_outlier ]
+                                if len( weights ) == int_num_neighbors :
+                                    print( 'outliers not filtered out' )
+                                    plt.plot( * y_knnindex_of_an_entry.T, '.' )
+                                    plt.show()
                             res = ( y_knnindex_of_an_entry.T * weights ).sum( axis = 1 ) / weights.sum( ) # calculate weighted average of the y values for embedding mode
                         else : # %% CLASSIFIER %%
-                            # sum weights for each label
-                            dict_label_to_weight = dict( )
-                            for label, dist in zip( y_knnindex[ neighbors_of_an_entry ], distances_of_an_entry ) :
-                                if label not in dict_label_to_weight :
-                                    dict_label_to_weight[ label ] = dist
-                                else :
-                                    dict_label_to_weight[ label ] += dist
-                            res = bk.DICTIONARY_Find_keys_with_max_value( dict_label_to_weight )[ 0 ][ 0 ] # find the label with the maximum weight
+                            res = __find_label_with_largest_sum_of_weights( y_knnindex[ neighbors_of_an_entry ], weights ) # find the label with the maximum weight
                     l_res.append( res ) # collect a result
                 del neighbors, distances
 
@@ -14159,7 +14183,7 @@ class RamData( ) :
             self.ft.meta.initialize_column( name_col, dtype = np.float64, shape_not_primary_axis = ( int_num_cluster_labels, ), chunks = ( int_chunk_size_secondary, ), fill_value = fill_value ) 
             dict_metadata = self.ft.meta.get_column_metadata( name_col ) # retrieve metadata
             dict_metadata[ 'l_labels_1' ] = l_unique_cluster_label # add cluster label information
-            self.ft.meta._set_column_metadata( name_col, dict_metadata ) # update column metadata
+            self.ft.meta.set_column_metadata( name_col, dict_metadata ) # update column metadata
             
         # create view
         flag_view_was_not_active = not self.bc.is_view_active # retrieve a flag indicating a view was not active
