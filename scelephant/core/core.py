@@ -6,7 +6,7 @@ from . import biobookshelf as bk
 # from biobookshelf import BA
 # import biobookshelf as bk
 
-from typing import Union, List, Literal
+from typing import Union, List, Literal, Dict
 import os
 import pandas as pd
 import numpy as np
@@ -280,6 +280,9 @@ str_release_note = [
     # 2022-12-21 22:59:51 
     RamData.apply_knn method was improved by using agglomerative clustering to detect outliers during the embedding process
 
+    # 2022-12-24 14:13:32 
+    RamData.run_scanpy_using_pca method was improved by allowing parallelized run of leiden clusterings with multiple resoultion values on a single adjacency graph (shared by all the processes)
+    
     ##### Future implementations #####
     """
 ]
@@ -4346,22 +4349,36 @@ def zarr_metadata_server( pipe_receiver_input, pipe_sender_output, dict_kwargs_c
     a function for getting and setting zarr object metadata dictionaries
     
     dict_kwargs_credentials_s3 : dict = dict( ) # the credentials for the Amazon S3 file system as keyworded arguments
+    
+    'method' : 
+        'get_or_set_metadata' : set the metadata. if key does not exist in the metadata, return None. if a key is already available, return the value instead.
     """
     import zarr
     while True :
         ins = pipe_receiver_input.recv( )
         if ins is None : # exit if None is received
             break
-        method, path_folder_zarr, key, value = ins # parse the input
+        method, path_folder_zarr, key, value, mode = ins # parse the input
         
         outs = None # set default output
+        try :
+            za = zarr.open( path_folder_zarr, mode = mode )
+        except :
+            pipe_sender_output.send( outs ) # return the result
+            continue
+
+        if method == 'get_or_set_metadata' : 
+            if key in za.attrs :
+                outs = za.attrs[ key ]
+            else :
+                za.attrs[ key ] = value
+                outs = value # return the value that was successfully set
         if method == 'set_metadata' :
-            zarr.open( path_folder_zarr ).attrs[ key ] = value
+            za.attrs[ key ] = value
+            outs = value # return the value that was successfully set
         elif method == 'get_metadata' :
-            try : # try to retrieve the value of the 'key'
-                outs = zarr.open( path_folder_zarr ).attrs[ key ]
-            except : 
-                outs = None 
+            if key in za.attrs : # try to retrieve the value of the 'key'
+                outs = za.attrs[ key ]
         pipe_sender_output.send( outs ) # return the result
 class ZarrMetadataServer( ) :
     """ # 2022-12-07 18:57:38 
@@ -4400,32 +4417,78 @@ class ZarrMetadataServer( ) :
         return a flag indicating whether a process has been spawned and interacting with the current object or not.
         """
         return self._flag_spawn
-    def get_metadata( self, path_folder_zarr : str, key : str ) :
+    def get_or_set_metadata( self, path_folder_zarr : str, key : str, value, mode : str = 'a' ) :
+        """ # 2022-12-07 18:59:43 
+        a (possibly) fork-safe method for getting or setting zarr group metadata
+        
+        === return ===
+        None : None will be returned if the operation has failed.
+        """
+        if self.flag_spawn :
+            # %% PROCESS SPAWNING %%
+            self._pipe_sender_input.send( ( 'get_or_set_metadata', path_folder_zarr, key, value, mode ) ) # send input
+            return self._pipe_receiver_output.recv( ) # retrieve result and return
+        else :
+            # run a zarr operation in the current process
+            outs = None # set default output
+            try :
+                za = zarr.open( path_folder_zarr, mode = mode )
+            except : # if opening the zarr object fails, return None
+                return outs
+            
+            # 'get_or_set_metadata' operation
+            if key in za.attrs :
+                outs = za.attrs[ key ]
+            else :
+                za.attrs[ key ] = value
+                outs = value # return the value that was successfully set
+            return outs
+    def get_metadata( self, path_folder_zarr : str, key : str, mode : str = 'r' ) :
         """ # 2022-12-07 18:59:43 
         a (possibly) fork-safe method for getting zarr group metadata
+        
+        === return ===
+        None : None will be returned if the operation has failed.
         """
         if self.flag_spawn :
             # %% PROCESS SPAWNING %%
-            self._pipe_sender_input.send( ( 'get_metadata', path_folder_zarr, key, None ) ) # send input
+            self._pipe_sender_input.send( ( 'get_metadata', path_folder_zarr, key, None, mode ) ) # send input
             return self._pipe_receiver_output.recv( ) # retrieve result and return
         else :
             # run a zarr operation in the current process
+            outs = None # set default output
             try :
-                # try to retrieve the value of the 'key'
-                return zarr.open( path_folder_zarr ).attrs[ key ]
-            except :
-                return None
-    def set_metadata( self, path_folder_zarr : str, key : str, value ) :
+                za = zarr.open( path_folder_zarr, mode = mode )
+            except : # if opening the zarr object fails, return None
+                return outs
+            
+            # 'get_metadata' operation
+            if key in za.attrs : # try to retrieve the value of the 'key'
+                outs = za.attrs[ key ]
+            return outs
+    def set_metadata( self, path_folder_zarr : str, key : str, value, mode : str = 'a' ) :
         """ # 2022-12-07 18:59:43 
         a (possibly) fork-safe method for setting zarr group metadata
+        
+        === return ===
+        None : None will be returned if the operation has failed.
         """
         if self.flag_spawn :
             # %% PROCESS SPAWNING %%
-            self._pipe_sender_input.send( ( 'set_metadata', path_folder_zarr, key, value ) ) # send input
+            self._pipe_sender_input.send( ( 'set_metadata', path_folder_zarr, key, value, mode ) ) # send input
             return self._pipe_receiver_output.recv( ) # retrieve result and return
         else :
             # run a zarr operation in the current process
-            zarr.open( path_folder_zarr ).attrs[ key ] = value
+            outs = None # set default output
+            try :
+                za = zarr.open( path_folder_zarr, mode = mode )
+            except : # if opening the zarr object fails, return None
+                return outs
+            
+            # 'set_metadata' operation
+            za.attrs[ key ] = value
+            outs = value # return the value that was successfully set
+            return outs
     def terminate( self ) :
         """ # 2022-09-06 23:16:22 
         terminate the server
@@ -4454,6 +4517,7 @@ class ZarrSpinLockServer( ) :
     dict_kwargs_credentials_s3 : dict = dict( ) # the credentials for the Amazon S3 file system as keyworded arguments
     filesystem_server : Union[ None, FileSystemServer ] = None # a FileSystemServer object to use. if None is given, start the new server based on the setting
     zarrmetadata_server : Union[ None, ZarrMetadataServer ] = None # a FileSystemServer object to use. if None is given, start the new server based on the setting
+    verbose : bool = False # an arugment for debugging purpose
     
     flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock : bool = False # if True, does not wait and raise 'RuntimeError' when a modification of a RamData cannot be made due to the resource that need modification is temporarily unavailable, locked by other processes
     float_second_to_wait_before_checking_availability_of_a_spin_lock : float = 0.5 # number of seconds to wait before repeatedly checking the availability of a spin lock if the lock has been acquired by other operations.
@@ -4467,12 +4531,14 @@ class ZarrSpinLockServer( ) :
         filesystem_server : Union[ None, FileSystemServer ] = None, 
         zarrmetadata_server : Union[ None, ZarrMetadataServer ] = None,
         template = None,
+        verbose : bool = False,
     ) :
         """ # 2022-12-11 14:03:53  
         """
         # set read-only attributes
         self._flag_spawn = flag_spawn # indicate that a process has been spawned
         self._str_uuid_lock = bk.UUID( ) # a unique id of the current ZarrSpinLockServer object. This id will be used to acquire and release locks so that lock can only be released by the object that acquired the lock
+        self.verbose = verbose 
         
         # set attributes that can be changed anytime during the lifetime of the object
         if isinstance( template, ZarrSpinLockServer ) :
@@ -4551,6 +4617,8 @@ class ZarrSpinLockServer( ) :
         
         path_folder_lock : str # an absolute (full-length) path to the lock (an absolute path to the zarr object, representing a spin lock)
         """
+        #if self.verbose :
+        #    logger.info( f"the current ZarrSpinLockServer ({self.str_uuid_lock}) is trying to wait for the lock '{path_folder_lock}', with currently_held_locks '{self.currently_held_locks}'" )
         # process 'path_folder_lock'
         path_folder_lock = self.process_path_folder_lock( path_folder_lock )
         
@@ -4565,7 +4633,7 @@ class ZarrSpinLockServer( ) :
         while self.check_lock( path_folder_lock ) : # until a lock is released
             time.sleep( self.float_second_to_wait_before_checking_availability_of_a_spin_lock ) # wait for 'float_second_to_wait_before_checking_availability_of_a_spin_lock' second
     def acquire_lock( self, path_folder_lock : str ) :
-        """ # 2022-12-10 21:32:38 
+        """ # 2022-12-23 23:19:14 
         acquire the lock, based on the file system where the current lock object resides.
         
         === arguments ===
@@ -4574,36 +4642,59 @@ class ZarrSpinLockServer( ) :
         === returns ===
         return str_uuid_lock # return 'str_uuid_lock' that is required for releasing the created lock
         """
+        #if self.verbose :
+        #    logger.info( f"the current ZarrSpinLockServer ({self.str_uuid_lock}) is trying to acquire the lock '{path_folder_lock}', with currently_held_locks '{self.currently_held_locks}'" )
         # process 'path_folder_lock'
         path_folder_lock = self.process_path_folder_lock( path_folder_lock )
         if path_folder_lock not in self.currently_held_locks : # if the lock object has not been previously acquired by the current object
-            # wait until the lock becomes available
-            self.wait_lock( path_folder_lock )
-
-            # acquire a lock
             # create the lock zarr object
-            self.zms.set_metadata( path_folder_lock, 'dict_metadata', { 'str_uuid_lock' : self.str_uuid_lock, 'time' : int( time.time( ) ) } )
+            while True :
+                # attempts to acquire a lock
+                res = self.zms.set_metadata( path_folder_lock, 'dict_metadata', { 'str_uuid_lock' : self.str_uuid_lock, 'time' : int( time.time( ) ) }, 'w-' ) # if the lock object already exists, acquiring lock would fail
+                # if a lock appear to be acquired (a positive response that a zarr object has been create), check again that the written lock belongs to the current object 
+                # when two processes attempts to acquire the same lock object within a time window of 1 ms, two processes will write the same lock object, but one will be overwritten by another. 
+                # therefore, the content of the lock should be checked again in order to ensure then the lock has been actually acquired.
+                if res is not None : 
+                    lock_metadata = self.zms.get_metadata( path_folder_lock, 'dict_metadata' ) # read the content of the written lock
+                    if lock_metadata is not None and 'str_uuid_lock' in lock_metadata and lock_metadata[ 'str_uuid_lock' ] == self.str_uuid_lock : # if the lock has been written by the current object
+                        break # consider the lock has been acquired by the current object
+            
+                # wait until the lock becomes available
+                # if lock is available and 'flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock' is True, raise a RuntimeError
+                if self.flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock :
+                    raise RuntimeError( f'a lock is present at ({path_folder_lock}), exiting' )
+                # implement a spin lock using the sleep function
+                time.sleep( self.float_second_to_wait_before_checking_availability_of_a_spin_lock ) # wait for 'float_second_to_wait_before_checking_availability_of_a_spin_lock' second
 
             # record the 'path_folder_lock' of the acquired lock object
             self._set_path_folder_lock.add( path_folder_lock )
+            if self.verbose :
+                logger.info( f"the current ZarrSpinLockServer ({self.str_uuid_lock}) acquired the lock '{path_folder_lock}', with currently_held_locks '{self.currently_held_locks}'" )
     def release_lock( self, path_folder_lock : str ) :
         """ # 2022-12-10 21:32:38 
         release the lock, based on the file system where the current lock object resides
         
         path_folder_lock : str # an absolute (full-length) path to the lock (an absolute path to the zarr object, representing a spin lock)
         """
+        #if self.verbose :
+        #    logger.info( f"the current ZarrSpinLockServer ({self.str_uuid_lock}) is trying to release_lock the lock '{path_folder_lock}', with currently_held_locks '{self.currently_held_locks}'" )
         # process 'path_folder_lock'
         path_folder_lock = self.process_path_folder_lock( path_folder_lock )
         if path_folder_lock in self.currently_held_locks : # if the lock object has been previously acquired by the current object
-            # if the lock is available, release lock using the given 'str_uuid_lock'
-            if self.check_lock( path_folder_lock ) :
-                # check 'str_uuid_lock' of the lock and release the lock if 'str_uuid_lock' of the current ZarrSpinLockServer object is matched with that of the lock zarr object
-                if self.zms.get_metadata( path_folder_lock, 'dict_metadata' )[ 'str_uuid_lock' ] == self.str_uuid_lock :
-                    self.fs.filesystem_operations( 'rm', path_folder_lock )
-                    # remove the released lock's 'path_folder_lock' from the list of the acquired lock objects
-                    self._set_path_folder_lock.remove( path_folder_lock )
+            
+            lock_metadata = self.zms.get_metadata( path_folder_lock, 'dict_metadata', 'r' ) # retrieve the lock metadata
+            if lock_metadata is not None and 'str_uuid_lock' in lock_metadata :
+                if lock_metadata[ 'str_uuid_lock' ] == self.str_uuid_lock : # if the lock has been acquired by the current object
+                    self.fs.filesystem_operations( 'rm', path_folder_lock ) # release the lock
+                    if self.verbose :
+                        logger.info( f"the current ZarrSpinLockServer ({self.str_uuid_lock}) released the lock '{path_folder_lock}'" )
                 else :
-                    raise KeyError( f"{str_uuid_lock} of the current ZarrSpinLockServer does not match that of the lock object" )
+                    logger.error( f"the current ZarrSpinLockServer ({self.str_uuid_lock}) have acquired the lock {path_folder_lock} but it appears the lock belongs to another ZarrSpinLockServer ({lock_metadata[ 'str_uuid_lock' ]})." )
+                    # raise KeyError( f"the current ZarrSpinLockServer ({self.str_uuid_lock}) have acquired the lock {path_folder_lock} but it appears the lock belongs to another ZarrSpinLockServer ({lock_metadata[ 'str_uuid_lock' ]})." )
+            else :
+                logger.error( f"the current ZarrSpinLockServer ({self.str_uuid_lock}) have acquired the lock {path_folder_lock} but the lock object does not exist." )
+                # raise FileNotFoundError( f"the current ZarrSpinLockServer ({self.str_uuid_lock}) have acquired the lock {path_folder_lock} but the lock object does not exist." )
+            self._set_path_folder_lock.remove( path_folder_lock ) # remove the released lock's 'path_folder_lock' from the list of the acquired lock objects
     """ </Methods for Locking> """
     
 ''' a class for Zarr-based DataFrame object '''
@@ -6014,7 +6105,7 @@ class ZarrDataFrame( ) :
             # if dtype changed from the previous zarr object, re-write the entire Zarr object with changed dtype. (this will happens very rarely, and will not significantly affect the performance)
             if dtype != za.dtype : # dtype should be larger than za.dtype if they are not equal (due to increased number of bits required to encode categorical data)
                 if self.verbose :
-                    logger.info( f'{za.dtype} will be changed to {dtype}' )
+                    logger.info( f'[categorical data] {za.dtype} will be changed to {dtype}' )
                 path_folder_col_new = f"{self._path_folder_zdf}{name_col}_{bk.UUID( )}/" # compose the new output folder
                 za_new = zarr.open( path_folder_col_new, mode = 'w', shape = za.shape, chunks = za.chunks, dtype = dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object using the new dtype
                 za_new[ : ] = za[ : ] # copy the data 
@@ -6703,6 +6794,18 @@ class RamDataAxis( ) :
         self._dict_kw_view = dict_kw_view
         self.dict_change = None # initialize view
         self._dict_change_backup = None
+    @property
+    def locking_server( self ) :
+        """ # 2022-12-23 00:02:37 
+        return 'ZarrSpinLockServer' object
+        """
+        return self._zsls
+    @locking_server.setter
+    def locking_server( self, locking_server_new ) :
+        """ # 2022-12-23 00:02:43 
+        """
+        self._zsls = locking_server_new # set 'ZarrSpinLockServer' of the current object
+        self.meta._zsls = locking_server_new # set 'ZarrSpinLockServer' of the metadata ZDF
     @property
     def n_components( self ) :
         """ # 2022-09-08 18:07:55 
@@ -7674,6 +7777,17 @@ class RAMtx( ) :
         # if 'flag_spawn' is True, start the new 'ZarrMetadataServer' object with spawned processes
         if flag_spawn :
             self._zsls = ZarrMetadataServer( flag_spawn = flag_spawn, filesystem_server = self.fs, template = self._zsls )
+    @property
+    def locking_server( self ) :
+        """ # 2022-12-23 00:02:37 
+        return 'ZarrSpinLockServer' object
+        """
+        return self._zsls
+    @locking_server.setter
+    def locking_server( self, locking_server_new ) :
+        """ # 2022-12-23 00:02:43 
+        """
+        self._zsls = locking_server_new # set 'ZarrSpinLockServer' of the current object
     @property
     def flag_spawn( self ) :
         """ # 2022-12-06 02:37:31 
@@ -8931,6 +9045,21 @@ class RamDataLayer( ) :
         # load ramtx
         self._load_ramtx_objects( )
     @property
+    def locking_server( self ) :
+        """ # 2022-12-23 00:02:37 
+        return 'ZarrSpinLockServer' object
+        """
+        return self._zsls
+    @locking_server.setter
+    def locking_server( self, locking_server_new ) :
+        """ # 2022-12-23 00:02:43 
+        """
+        self._zsls = locking_server_new # set 'ZarrSpinLockServer' of the current object
+        
+        # propagate 'locking_server' change to the loaded rtx objects
+        for rtx in self :
+            rtx.locking_server = locking_server_new
+    @property
     def path_folder_ramdata_layer( self ) :
         """ # 2022-12-14 18:57:27 
         return the folder where the RamDataLayer object resides
@@ -9304,6 +9433,7 @@ class RamData( ) :
     flag_enable_synchronization_through_locking : bool = True # if True, enable sycnrhonization of modifications on RamData using file-system-based locking.
     flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock : bool = False # if True, does not wait and raise 'RuntimeError' when a modification of a RamData cannot be made due to the resource that need modification is temporarily unavailable, locked by other processes
     float_second_to_wait_before_checking_availability_of_a_spin_lock : float = 0.5 # number of seconds to wait before repeatedly checking the availability of a spin lock if the lock has been acquired by other operations.
+    flag_spawn : bool = False # use a spawned process for file-locking for fork-safe operations
 
     === AnnDataContainer ===
     flag_load_anndata_container : bool = False # load anndata container to load/save anndata objects stored in the curren RamData object
@@ -9341,6 +9471,7 @@ class RamData( ) :
         flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock : bool = False,
         float_second_to_wait_before_checking_availability_of_a_spin_lock : float = 0.5,
         flag_enable_synchronization_through_locking : bool = True,
+        flag_spawn : bool = False,
         verbose : bool = True, 
         flag_debugging : bool = False
     ) :
@@ -9353,6 +9484,8 @@ class RamData( ) :
         
         ''' soft-coded settings '''
         # changable settings (settings that can be changed anytime in the lifetime of a RamData object)
+        self._dict_kwargs_credentials_s3 = dict_kwargs_credentials_s3 # save 'dict_kwargs_credentials_s3'
+        self._flag_spawn = flag_spawn
         self._flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock = flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock
         self._float_second_to_wait_before_checking_availability_of_a_spin_lock = float_second_to_wait_before_checking_availability_of_a_spin_lock
         self.verbose = verbose
@@ -9409,11 +9542,11 @@ class RamData( ) :
                     logger.info( 'The current RamData object cannot be modified yet no mask location is given. Therefore, the current RamData object will be "read-only"' )
                     
         ''' set 'path_folder_temp' '''
-        path_folder_temp = path_folder_temp_local_default_for_remote_ramdata if is_remote_url( self._path_folder_ramdata_modifiable ) else f'{self._path_folder_ramdata_modifiable}/temp/' # define a temporary directory in the current working directory if modifiable RamData resides locally. if the modifiable RamData resides remotely, use 'path_folder_temp_local_default_for_remote_ramdata' as a the temporary folder
+        path_folder_temp = path_folder_temp_local_default_for_remote_ramdata if is_remote_url( self._path_folder_ramdata_modifiable ) else f'{self._path_folder_ramdata_modifiable}temp/' # define a temporary directory in the current working directory if modifiable RamData resides locally. if the modifiable RamData resides remotely, use 'path_folder_temp_local_default_for_remote_ramdata' as a the temporary folder
         self._path_folder_temp = path_folder_temp # set path of the temporary folder as an attribute
         
         ''' start a spin lock server (if 'flag_enable_synchronization_through_locking' is True) '''
-        self._zsls = ZarrSpinLockServer( flag_spawn = False, dict_kwargs_credentials_s3 = dict_kwargs_credentials_s3, flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock = flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock, float_second_to_wait_before_checking_availability_of_a_spin_lock = float_second_to_wait_before_checking_availability_of_a_spin_lock ) if flag_enable_synchronization_through_locking else None
+        self._zsls = ZarrSpinLockServer( flag_spawn = self._flag_spawn, dict_kwargs_credentials_s3 = dict_kwargs_credentials_s3, flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock = flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock, float_second_to_wait_before_checking_availability_of_a_spin_lock = float_second_to_wait_before_checking_availability_of_a_spin_lock ) if flag_enable_synchronization_through_locking else None
         
         # initialize axis objects
         self.bc = RamDataAxis( path_folder_ramdata, 'barcodes', l_ax = list( ram.bc for ram in self._l_ramdata ) if self._l_ramdata is not None else None, index_ax_data_source_when_interleaved = index_ramdata_source_for_combined_barcodes_shared_across_ramdata, flag_check_combined_type = flag_check_combined_type, flag_is_interleaved = flag_combined_ramdata_barcodes_shared_across_ramdata, ba_filter = None, ramdata = self, dict_kw_zdf = dict_kw_zdf, dict_kw_view = dict_kw_view, int_index_str_rep = int_index_str_rep_for_barcodes, verbose = verbose, mode = self._mode, path_folder_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only, zarrspinlockserver = self._zsls )
@@ -9454,6 +9587,38 @@ class RamData( ) :
         else : # initialize anndatacontainer and shelvecontainer in the memory using a dicitonary (a fallback)
             self.ad = dict( )
             self.ns = dict( )
+    @property
+    def locking_server( self ) :
+        """ # 2022-12-23 00:02:37 
+        return 'ZarrSpinLockServer' object
+        """
+        return self._zsls
+    @locking_server.setter
+    def locking_server( self, locking_server_new ) :
+        """ # 2022-12-23 00:02:43 
+        """
+        self._zsls = locking_server_new # set 'ZarrSpinLockServer' of the current object
+        self.bc.locking_server = locking_server_new # set 'ZarrSpinLockServer' of the 'bc' axis
+        self.ft.locking_server = locking_server_new # set 'ZarrSpinLockServer' of the 'ft' axis
+        
+        if self.layer is not None : # if the layer has been loaded
+            self.layer.locking_server = locking_server_new # set 'ZarrSpinLockServer' of the layer 
+    def get_fork_safe_version( self ) :
+        """ # 2022-12-22 23:35:12 
+        return a fork-safe version by creating a new 'ZarrSpinLockServer' object and replace the previous 'ZarrSpinLockServer'
+        """
+        # create a new 'ZarrSpinLockServer'
+        zsls = ZarrSpinLockServer( flag_spawn = True, dict_kwargs_credentials_s3 = self._dict_kwargs_credentials_s3, flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock = self._flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock, float_second_to_wait_before_checking_availability_of_a_spin_lock = self._float_second_to_wait_before_checking_availability_of_a_spin_lock )
+        
+        self.locking_server = zsls
+        return self
+    def terminate_spawned_processes( self ) :
+        """ # 2022-12-26 08:19:57 
+        destroy spawned processes
+        """
+        if self._zsls is not None : # if file-locking is used
+            # terminate the locking server
+            self._zsls.terminate( )
     @property
     def identifier( self ) :
         """ # 2022-09-23 17:26:18 
@@ -11946,7 +12111,7 @@ class RamData( ) :
         dict_kw_subsample : dict = dict( ), 
         flag_skip_pca : bool = False, 
         str_embedding_method : Literal[ 'pumap', 'scanpy-umap', 'scanpy-tsne', 'knn_embedder', 'knngraph' ] = 'pumap',
-        dict_kw_for_run_scanpy_using_pca = { 'int_neighbors_n_neighbors' : 10, 'int_neighbors_n_pcs' : 30, 'set_method' : { 'leiden', 'umap' }, 'dict_kw_umap' : dict( ),'dict_leiden' : { 'resolution' : 1 },'dict_kw_tsne' : dict( ) }
+        dict_kw_for_run_scanpy_using_pca = { 'int_neighbors_n_neighbors' : 10, 'int_neighbors_n_pcs' : 30, 'set_method' : { 'leiden', 'umap' }, 'dict_kw_umap' : dict( ), 'dict_kw_leiden' : { 'resolution' : 1 },'dict_kw_tsne' : dict( ) }
     ) :
         """ # 2022-11-16 17:53:57 
         perform dimension rediction and clustering 
@@ -13255,13 +13420,15 @@ class RamData( ) :
         int_neighbors_n_neighbors : int = 10, 
         int_neighbors_n_pcs : int = 30, 
         set_method : set = { 'leiden', 'umap' }, 
+        path_file_adata : Union[ None, str ] = None,
         str_suffix : str = '_scanpy', 
         dict_kw_neighbors : dict = dict( ),
-        dict_kw_umap : dict = dict( ),
-        dict_kw_leiden : dict = dict( ),
-        dict_kw_tsne : dict = dict( )
+        dict_kw_umap : Union[ Dict, List[ Dict ] ] = dict( ),
+        dict_kw_leiden : Union[ Dict, List[ Dict ] ] = dict( ),
+        dict_kw_tsne : Union[ Dict, List[ Dict ] ] = dict( ),
+        int_num_processes : int = 5
     ) :
-        """ # 2022-11-29 09:05:36 
+        """ # 2022-12-24 12:36:46 
         run scanpy methods using the PCA values calculated using scelephant
 
         name_col_pca : str = 'X_pca' #
@@ -13270,42 +13437,127 @@ class RamData( ) :
         int_neighbors_n_pcs : int = 30 # the number of PCA components for building the neighborhood graph
         set_method = { 'leiden', 'umap' } # scanpy methods to use
         str_suffix = '_scanpy' # suffix for the output column names of the 'barcodes' metadata
+        path_file_adata : Union[ None, str ] = None # if a non-None value is given, write AnnData object containing connectivities (adjacency matrix) to the given path. if '.h5ad' suffix is not present, the suffix will be added.
         dict_kw_neighbors = dict( ) # keyworded arguments for scanpy umap method
-        dict_kw_umap = dict( ) # keyworded arguments for scanpy umap method
-        dict_kw_leiden = dict( ) # keyworded arguments for scanpy leiden method
-        dict_kw_tsne = dict( ) # keyworded arguments for scanpy tsne method
-        """
+        dict_kw_umap : Union[ Dict, List[ Dict ] ] = dict( ) # a dictionary containing keyworded arguments for scanpy umap method*. 
+        dict_kw_tsne : Union[ Dict, List[ Dict ] ] = dict( ) # a dictionary containing keyworded arguments for scanpy tsne method*. 
+        dict_kw_leiden : Union[ Dict, List[ Dict ] ] = dict( ) # a dictionary containing keyworded arguments for scanpy leiden method*.
+            *when a list of dictionaries are given, analysis will be performed multiple times. If a list of dictionaries are given, each dictionary should include 'str_suffix_run' for adding run-specific suffix to the output column
+
+        int_num_processes : int = 5 # the number of processes for running leiden clustering process in parallel. actual number of processes that will perform the leiden clustering will be 'int_num_processes' - 2, considering processes for generating work load and post-processing of the output (for more information, please refer to biobookshelf.main.Multiprocessing_Batch_Generator_and_Workers)
+        """ 
         import scanpy as sc
-        
+
         # if no set_method was given, exit early 
         if len( set_method ) == 0 :
             return
 
-        # retrieve anndata for embedding
-        adata = self[ :, [ { name_col_pca } ], [ ], [ ] ] # load all barcodes in the filter, no feature in the filter, load PCA data only, load no feature metadata
-        if self.verbose :
-            logger.info( '[RamData.run_scanpy_using_pca] anndata retrieved.' )
+        # process 'path_file_adata' input
+        if path_file_adata is not None :
+            path_file_adata = path_file_adata if path_file_adata[ - 5 : ].lower( ) == '.h5ad' else f"{path_file_adata}.h5ad" # add '.h5ad' suffix if the suffix is not present
         
-        # build a neighborhood graph
-        sc.pp.neighbors( adata, n_neighbors = int_neighbors_n_neighbors, n_pcs = int_neighbors_n_pcs, use_rep = name_col_pca, ** dict_kw_neighbors )
-        if self.verbose :
-            logger.info( '[RamData.run_scanpy_using_pca] K-nearest neighbor graphs calculation completed.' )
+        # attemps to read adjacency matrix from an existing file (if given)
+        flag_adata_loaded = False # initialize the flag
+        if path_file_adata is not None and filesystem_operations( 'exists', path_file_adata ) : # if a path to the given anndata was given appears to be not empty
+            try : # attemps to read the adjacency matrix
+                adata = sc.read_h5ad( path_file_adata )
+                flag_adata_loaded = True # the flag
+                if self.verbose :
+                    logger.info( f'[RamData.run_scanpy_using_pca] AnnData was loaded from {path_file_adata}' )
+            except :
+                pass
+        
+        # fetch PCA values from RamData and calculate adjacency matrix
+        if not flag_adata_loaded : # if adjacency matrix is not available, calculate adjacency matrix
+            # retrieve anndata and calculate the neighborhood graph
+            adata = self[ :, [ { name_col_pca } ], [ ], [ ] ] # load all barcodes in the filter, no feature in the filter, load PCA data only, load no feature metadata
+            if self.verbose :
+                logger.info( '[RamData.run_scanpy_using_pca] anndata retrieved.' )
+
+            # build a neighborhood graph
+            sc.pp.neighbors( adata, n_neighbors = int_neighbors_n_neighbors, n_pcs = int_neighbors_n_pcs, use_rep = name_col_pca, ** dict_kw_neighbors )
+            if self.verbose :
+                logger.info( '[RamData.run_scanpy_using_pca] K-nearest neighbor graphs calculation completed.' )
+            if path_file_adata is not None : # if a valid value has been given for 'path_file_adata'
+                adata.write( path_file_adata )
+                if self.verbose :
+                    logger.info( f'[RamData.run_scanpy_using_pca] AnnData containing the calculated adjacency matrix has been saved to {path_file_adata}' )
         # perform analysis
         if 'umap' in set_method :
-            sc.tl.umap( adata, ** dict_kw_umap ) # perform analysis using scanpy
-            self.bc.meta[ f'X_umap{str_suffix}' ] = adata.obsm[ 'X_umap' ] # save result to RamData
-            if self.verbose :
-                logger.info( '[RamData.run_scanpy_using_pca] UMAP calculation completed, and resulting UMAP-embedding was saved to RamData.' )
-        if 'leiden' in set_method :
-            sc.tl.leiden( adata, ** dict_kw_leiden ) # perform analysis using scanpy
-            self.bc.meta[ f'leiden{str_suffix}' ] = adata.obs[ 'leiden' ].values.astype( int ) # save result to RamData
-            if self.verbose :
-                logger.info( '[RamData.run_scanpy_using_pca] leiden clustering completed, and resulting cluster membership information was saved to RamData.' )
+            if isinstance( dict_kw_umap, dict ) : # wrap a single dictionary with a list the 
+                dict_kw_umap = [ dict_kw_umap ]
+            for dict_kw in dict_kw_umap :
+                str_suffix_run = dict_kw.pop( 'str_suffix_run', '' ) # retrieve 'str_suffix_run' (default is '')
+                sc.tl.umap( adata, ** dict_kw ) # perform analysis using scanpy
+                name_col = f'X_umap{str_suffix}{str_suffix_run}' # compose the column name
+                self.bc.meta[ name_col ] = adata.obsm[ 'X_umap' ] # save result to RamData
+                if self.verbose :
+                    logger.info( f"[RamData.run_scanpy_using_pca] UMAP calculation completed, and the resulting UMAP-embedding was saved to the '{name_col}' column of the RamData." )
+        # perform analysis
         if 'tsne' in set_method :
-            sc.tl.tsne( adata, use_rep = name_col_pca, ** dict_kw_tsne ) # perform analysis using scanpy
-            self.bc.meta[ f'X_tsne{str_suffix}' ] = adata.obsm[ 'X_tsne' ] # save result to RamData
-            if self.verbose :
-                logger.info( '[RamData.run_scanpy_using_pca] tSNE embedding completed, and embedding was saved to RamData.' )
+            if isinstance( dict_kw_tsne, dict ) : # wrap a single dictionary with a list the 
+                dict_kw_tsne = [ dict_kw_tsne ]
+            for dict_kw in dict_kw_tsne :
+                str_suffix_run = dict_kw.pop( 'str_suffix_run', '' ) # retrieve 'str_suffix_run' (default is '')
+                sc.tl.tsne( adata, use_rep = name_col_pca, ** dict_kw ) # perform analysis using scanpy
+                name_col = f'X_tsne{str_suffix}{str_suffix_run}' # compose the column name
+                self.bc.meta[ name_col ] = adata.obsm[ 'X_tsne' ] # save result to RamData
+                if self.verbose :
+                    logger.info( f"[RamData.run_scanpy_using_pca] calculation of tSNE embedding completed, and the resulting embedding was saved to the '{name_col}' column of the RamData." )
+        if 'leiden' in set_method :
+            if isinstance( dict_kw_leiden, dict ) : # wrap a single dictionary with a list the 
+                dict_kw_leiden = [ dict_kw_leiden ]
+
+            if len( dict_kw_leiden ) == 1 : # when only a single run will be performed
+                dict_kw = dict_kw_leiden[ 0 ]
+                str_suffix_run = dict_kw.pop( 'str_suffix_run', '' ) # retrieve 'str_suffix_run' (default is '')
+                name_col = f'leiden{str_suffix}{str_suffix_run}' # compose the column name
+                sc.tl.leiden( adata, key_added = name_col, ** dict_kw ) # perform leiden clustering
+                self.bc.meta[ name_col ] = adata.obs[ name_col ] # save result to RamData
+                if self.verbose :
+                    logger.info( f"[RamData.run_scanpy_using_pca] leiden clustering completed, and the resulting cluster membership information was saved to the '{name_col}' column of the RamData." )
+            else : # when multiple clustering runs should be run
+                import joblib # for persistent, reference-counting-free memory
+
+                # save the adjacency matrix for persistent access
+                path_file_X = f"{self.path_folder_temp}{bk.UUID( )}.pickle"
+                joblib.dump( adata.obsp[ 'connectivities' ], path_file_X ) # dump the sparse matrix for paralleled access
+
+                # delete the adjacency matrix from the input AnnData object to avoid a redundant data copying
+                del adata.obsp[ 'distances' ]
+                del adata.obsp[ 'connectivities' ]
+
+                X = joblib.load( path_file_X ) # load the sparse matrix
+                ram = self # retrieve the reference to the self
+                def __run_leiden( pipe_receiver, pipe_sender ) :
+                    """ # 2022-12-24 03:10:58 
+                    """
+                    ram_fork_safe = ram.get_fork_safe_version( ) # retrieve a fork-safe version of the RamData (for file-locking)
+                    while True :
+                        ins = pipe_receiver.recv( )
+                        if ins is None :
+                            break
+                        dict_kw = ins # parse input
+
+                        str_suffix_run = dict_kw.pop( 'str_suffix_run', '' ) # retrieve 'str_suffix_run' (default is '')
+                        name_col = f'leiden{str_suffix}{str_suffix_run}' # compose the column name
+
+                        sc.tl.leiden( adata, adjacency = X, key_added = name_col, ** dict_kw ) # perform leiden clustering
+                        ram_fork_safe.bc.meta[ name_col ] = adata.obs[ name_col ].values.astype( str ).astype( object ) # save result to the current RamData
+
+                        if self.verbose :
+                            logger.info( f"[RamData.run_scanpy_using_pca] leiden clustering completed, and the resulting cluster membership information was saved to the '{name_col}' column of the RamData." )
+
+                        pipe_sender.send( 'completed' ) # report the completion of the work
+                    self.terminate_spawned_processes( ) # terminate the spawned processes
+
+                # run works using multiple workers
+                bk.Multiprocessing_Batch_Generator_and_Workers( 
+                    gen_batch = iter( dict_kw_leiden ),
+                    process_batch = __run_leiden,
+                    int_num_threads = int_num_processes,
+                )
+                filesystem_operations( 'rm', path_file_X ) # delete the temporary file
         return adata # return the resulting anndata
     ''' knn-index based embedding/classification '''
     def train_knn( 
