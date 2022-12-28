@@ -47,17 +47,15 @@ logger = logging.getLogger( 'SC-Elephant' )
 # define version
 _version_ = '0.0.10'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-12-21 23:01:01'
+_last_modified_time_ = '2022-12-28 23:35:10'
 
 str_release_note = [
-    """ # 2022-07-21 10:35:42  realease note
+    """
+    # %% RELEASE NOTE %%
+    # 2022-07-21 10:35:42 
     HTTP hosted RamData subclustering tested and verified.
     identified problems: Zarr HTTP Store is not thread-safe (crashes the program on run time) nor process-safe (dead lock... why?).
     Therefore, serializing access to Zarr HTTP Store is required 
-
-    TODO: do not use fork when store is Zarr HTTP Store
-    TODO: use Pynndescent for efficient HDBSCAN cluster label assignment, even when program is single-threaded (when Zarr HTTP store is used)
-    TODO: use Pynndescent for better subsampling of cells before UMAP embedding
 
     if these implementations are in place, subclustering on HTTP-hosted RamData will be efficient and accurate.
 
@@ -4534,7 +4532,7 @@ class ZarrSpinLockServer( ) :
         filesystem_server : Union[ None, FileSystemServer ] = None, 
         zarrmetadata_server : Union[ None, ZarrMetadataServer ] = None,
         template = None,
-        verbose : bool = False,
+        verbose : bool = True,
     ) :
         """ # 2022-12-11 14:03:53  
         """
@@ -4620,8 +4618,8 @@ class ZarrSpinLockServer( ) :
         
         path_folder_lock : str # an absolute (full-length) path to the lock (an absolute path to the zarr object, representing a spin lock)
         """
-        #if self.verbose :
-        #    logger.info( f"the current ZarrSpinLockServer ({self.str_uuid_lock}) is trying to wait for the lock '{path_folder_lock}', with currently_held_locks '{self.currently_held_locks}'" )
+        if self.verbose :
+            logger.info( f"the current ZarrSpinLockServer ({self.str_uuid_lock}) is trying to wait for the lock '{path_folder_lock}', with currently_held_locks '{self.currently_held_locks}'" )
         # process 'path_folder_lock'
         path_folder_lock = self.process_path_folder_lock( path_folder_lock )
         
@@ -4645,8 +4643,8 @@ class ZarrSpinLockServer( ) :
         === returns ===
         return str_uuid_lock # return 'str_uuid_lock' that is required for releasing the created lock
         """
-        #if self.verbose :
-        #    logger.info( f"the current ZarrSpinLockServer ({self.str_uuid_lock}) is trying to acquire the lock '{path_folder_lock}', with currently_held_locks '{self.currently_held_locks}'" )
+        if self.verbose :
+            logger.info( f"the current ZarrSpinLockServer ({self.str_uuid_lock}) is trying to acquire the lock '{path_folder_lock}', with currently_held_locks '{self.currently_held_locks}'" )
         # process 'path_folder_lock'
         path_folder_lock = self.process_path_folder_lock( path_folder_lock )
         if path_folder_lock not in self.currently_held_locks : # if the lock object has not been previously acquired by the current object
@@ -4679,8 +4677,8 @@ class ZarrSpinLockServer( ) :
         
         path_folder_lock : str # an absolute (full-length) path to the lock (an absolute path to the zarr object, representing a spin lock)
         """
-        #if self.verbose :
-        #    logger.info( f"the current ZarrSpinLockServer ({self.str_uuid_lock}) is trying to release_lock the lock '{path_folder_lock}', with currently_held_locks '{self.currently_held_locks}'" )
+        if self.verbose :
+            logger.info( f"the current ZarrSpinLockServer ({self.str_uuid_lock}) is trying to release_lock the lock '{path_folder_lock}', with currently_held_locks '{self.currently_held_locks}'" )
         # process 'path_folder_lock'
         path_folder_lock = self.process_path_folder_lock( path_folder_lock )
         if path_folder_lock in self.currently_held_locks : # if the lock object has been previously acquired by the current object
@@ -13639,7 +13637,7 @@ class RamData( ) :
                         name_col = f'leiden{str_suffix}{str_suffix_run}' # compose the column name
 
                         sc.tl.leiden( adata, adjacency = X, key_added = name_col, ** dict_kw ) # perform leiden clustering
-                        ram_fork_safe.bc.meta[ name_col ] = adata.obs[ name_col ].values.astype( str ).astype( object ) # save result to the current RamData
+                        ram_fork_safe.bc.meta[ name_col ] = adata.obs[ name_col ].values.astype( str ).astype( object ) # save result to the current RamData # convert integer values to string values
 
                         if self.verbose :
                             logger.info( f"[RamData.run_scanpy_using_pca] leiden clustering completed, and the resulting cluster membership information was saved to the '{name_col}' column of the RamData." )
@@ -13664,11 +13662,13 @@ class RamData( ) :
         axis : Union[ int, str ] = 'barcodes', 
         int_num_components_x : Union[ None, int ] = None, 
         n_neighbors : int = 10, 
+        int_num_entries_in_a_batch : int = 10000, 
+        int_num_threads : int = 10, 
         dict_kw_pynndescent : dict = { 'low_memory' : True, 'n_jobs' : None, 'compressed' : False },
         name_col_filter_for_collecting_neighbors : Union[ None, str ] = None,
         int_num_nearest_neighbors_to_collect : int = 3,
     ) :
-        """ # 2022-09-13 10:43:47 
+        """ # 2022-12-28 21:19:29 
         
         use knn index built from subsampled entries to classify (predict labels) or embed (predict embeddings) barcodes.
         
@@ -13683,6 +13683,7 @@ class RamData( ) :
         === for recording neighbors of the entries of the index === 
         name_col_filter_for_collecting_neighbors : Union[ None, str ] = None # the name of the column containing filter for entries that will be queried against the built knnindex to identify neighbors of the entries that were used to build the index
         int_num_nearest_neighbors_to_collect : int = 3 # the number of nearest neighbors to collect 
+        int_num_entries_in_a_batch : int = 10000 # the number of entries in a batch for each process. the larger the batch size is, the larger memory each process consumes.
         """
         import pynndescent
         
@@ -13693,7 +13694,7 @@ class RamData( ) :
         
         # set filters for operation
         if name_col_filter_training is not None :
-            self.change_or_save_filter( name_col_filter_training )
+            ax.change_or_save_filter( name_col_filter_training )
 
         # retrieve flags
         flag_collect_neighbors = name_col_filter_for_collecting_neighbors in ax.meta.columns and int_num_nearest_neighbors_to_collect > 0 and not ax.are_all_entries_active # in order to collect neighbors, knnindex should only contains a subset of entries in the axis
@@ -13800,8 +13801,13 @@ class RamData( ) :
             arr_neighbors, arr_neighbors_index = np.array( l ), np.array( l_index )
             del l, l_index
             
+            # reset the axis filter
+            ax.filter = ba_filter_knnindex
+            
         # save trained model
-        self.save_model( { 'name_col_x' : name_col_x, 'int_num_components_x' : int_num_components_x, 'int_num_entries_in_the_knnindex' : int_num_entries_in_the_knnindex, 'filter' : ba_filter_knnindex, 'identifier' : self.identifier, 'knnindex' : knnindex, 'arr_neighbors' : arr_neighbors, 'arr_neighbors_index' : arr_neighbors_index }, name_model, type_model ) # save model to the RamData # save filter along with index (compressed filter for 20M entries is ~ 3MB) # save identifer of the current RamData, too
+        model = { 'name_col_x' : name_col_x, 'int_num_components_x' : int_num_components_x, 'int_num_entries_in_the_knnindex' : int_num_entries_in_the_knnindex, 'filter' : ba_filter_knnindex, 'identifier' : self.identifier, 'knnindex' : knnindex, 'arr_neighbors' : arr_neighbors, 'arr_neighbors_index' : arr_neighbors_index }
+        return model, name_model, type_model
+        self.save_model( model, name_model, type_model ) # save model to the RamData # save filter along with index (compressed filter for 20M entries is ~ 3MB) # save identifer of the current RamData, too
         
         # report
         if self.verbose :
