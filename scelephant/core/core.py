@@ -283,6 +283,9 @@ str_release_note = [
     # 2022-12-24 14:13:32 
     RamData.run_scanpy_using_pca method was improved by allowing parallelized run of leiden clusterings with multiple resoultion values on a single adjacency graph (shared by all the processes)
     
+    # 2022-12-28 18:45:09 
+    RamData.rename_model method was added (with file-locking feature)
+    
     ##### Future implementations #####
     """
 ]
@@ -9542,7 +9545,7 @@ class RamData( ) :
                     logger.info( 'The current RamData object cannot be modified yet no mask location is given. Therefore, the current RamData object will be "read-only"' )
                     
         ''' set 'path_folder_temp' '''
-        path_folder_temp = path_folder_temp_local_default_for_remote_ramdata if is_remote_url( self._path_folder_ramdata_modifiable ) else f'{self._path_folder_ramdata_modifiable}temp/' # define a temporary directory in the current working directory if modifiable RamData resides locally. if the modifiable RamData resides remotely, use 'path_folder_temp_local_default_for_remote_ramdata' as a the temporary folder
+        path_folder_temp = f"{path_folder_temp_local_default_for_remote_ramdata}tmp_{bk.UUID( )}/" if is_remote_url( self._path_folder_ramdata_modifiable ) else f'{self._path_folder_ramdata_modifiable}temp/' # define a temporary directory in the current working directory if modifiable RamData resides locally. if the modifiable RamData resides remotely, create a temp folder in the 'path_folder_temp_local_default_for_remote_ramdata' use the folder as a the temporary folder
         self._path_folder_temp = path_folder_temp # set path of the temporary folder as an attribute
         
         ''' start a spin lock server (if 'flag_enable_synchronization_through_locking' is True) '''
@@ -10050,8 +10053,8 @@ class RamData( ) :
         type_model : Literal[ 'ipca', 'pumap', 'hdbscan', 'knn_classifier', 'knn_embedder', 'knngraph', 'knnindex', 'deep_learning.keras.classifier', 'deep_learning.keras.embedder' ], 
         index_component : Union[ int, None ] = None,
     ) :
-        """ # 2022-12-02 19:09:43 
-        load model from the current RamData
+        """ # 2022-12-28 19:30:34 
+        load model from the current RamData.
 
         name_model : str # the name of the model
         type_model : Literal[ 'ipca', 'pumap', 'hdbscan', 'knn_classifier', 'knn_embedder', 'knngraph', 'knnindex' ] # the type of model
@@ -10089,6 +10092,11 @@ class RamData( ) :
             path_file_src = self.get_model_path( name_model, type_model, index_component = index_component )
             if path_file_src is None : # if source file is not available
                 return False 
+        
+            # file-locking (simply checking the presense of the lock)
+            if self.use_locking : # %% FILE LOCKING %%
+                path_folder_model_src = f"{path_file_src.rsplit( '/', 1 )[ 0 ]}/" # retrieve the folder path of the models of the source RamData
+                self._zsls.wait_lock( f"{path_folder_model_src}{name_model}.{type_model}.lock/" ) 
             
             if is_remote_url( path_file_src ) :
                 if is_s3_url( path_file_src ) :
@@ -10157,7 +10165,7 @@ class RamData( ) :
             model[ 'dl_model' ] = tf.keras.models.load_model( f"{path_prefix_model}/dl_model.hdf5" ) # load keras model                
         return model # return loaded model
     def save_model( self, model, name_model : str, type_model : Literal[ 'ipca', 'pumap', 'hdbscan', 'knn_classifier', 'knn_embedder', 'knngraph', 'knnindex', 'deep_learning.keras.classifier', 'deep_learning.keras.embedder' ], dict_metadata_description : dict = dict( ) ) :
-        """ # 2022-12-14 12:32:03 
+        """ # 2022-12-28 19:27:04 
         save model to RamData. if mask is available, save model to the mask
         
         'model' : input model 
@@ -10179,37 +10187,46 @@ class RamData( ) :
         path_folder_models = f"{self._path_folder_ramdata_modifiable}models/" # define a folder to save/load model
         filesystem_operations( 'mkdir', path_folder_models, exist_ok = True )
         
-        # use temporary folder when the destination folder is located remotely
-        flag_use_temp_folder = is_remote_url( self._path_folder_ramdata_modifiable ) # retrieve a flag indicating whether temp folder should be used when saving models. when the destination folder is located remotely, the local folder should be used.
-        if flag_use_temp_folder :
-            path_folder_models_local = f"{self._path_folder_temp}tmp_{bk.UUID( )}/" # define a local folder to save/load model
-        
-        # retrieve a flag indicating whether the model already exists in the current RamData 
-        flag_model_already_exists = self.check_model( name_model = name_model, type_model = type_model, flag_exclude_components = True ) # exclude components
-        
-        # save model
-        if type_model in self._set_type_model_picklable : # handle picklable models
-            path_file_model = f"{path_folder_models}{name_model}.{type_model}.pickle"
-            if flag_model_already_exists : # delete the existing model prior to saving the new one
-                filesystem_operations( 'rm', path_file_model )
-            bk.PICKLE_Write( path_file_model, model )
-        elif type_model == 'pumap' : # parametric umap model
-            path_prefix_model = f"{path_folder_models}{name_model}.pumap"
-            path_file_model = path_prefix_model + '.tar.gz'
-            model.save( path_prefix_model )
-            if flag_model_already_exists : # delete the existing model prior to saving the new one
-                filesystem_operations( 'rm', path_file_model )
-            tar_create( path_file_model, path_prefix_model ) # create tar.gz file of pumap object for efficient retrieval and download
-        elif type_model in self._set_type_model_keras_model : # handle 'dict_model' containing 'dl_model'
-            path_prefix_model = f"{path_folder_models}{name_model}.{type_model}"
-            path_file_model = path_prefix_model + '.tar.gz'
-            dl_model = model.pop( 'dl_model' ) # remove the keras model 'dl_model' from dict_model, enable the remaining 'dict_model' to become picklable
-            dl_model.save( f"{path_prefix_model}/dl_model.hdf5" ) # save keras model
-            bk.PICKLE_Write( f"{path_prefix_model}/metadata.pickle", model ) # save metadata as a pickle file
-            if flag_model_already_exists : # delete the existing model prior to saving the new one
-                filesystem_operations( 'rm', path_file_model )
-            tar_create( path_file_model, path_prefix_model ) # create tar.gz file of pumap object for efficient retrieval and download
-        int_file_size = os.path.getsize( path_file_model ) # retrieve file size of the saved model
+        try :
+            # locking
+            if self.use_locking : # %% FILE LOCKING %%
+                self._zsls.acquire_lock( f"{path_folder_models}{name_model}.{type_model}.lock/" ) 
+            # use temporary folder when the destination folder is located remotely
+            path_folder_models_local = path_folder_models # set default 'path_folder_models_local'
+            if is_remote_url( self._path_folder_ramdata_modifiable ) : # when the destination folder is located remotely, the temporary local folder should be used.
+                path_folder_models_local = f"{self._path_folder_temp}models/" # define a local folder to save/load model
+                filesystem_operations( 'mkdir', path_folder_models_local ) # create a local folder
+
+            # if the model already exists in the current RamData (excluding components), delete the model
+            if self.check_model( name_model = name_model, type_model = type_model, flag_exclude_components = True ) : # exclude components
+                self.delete_model( name_model = name_model, type_model = type_model ) 
+
+            # save model (assume 'path_folder_models_local' is located in the local storage)
+            if type_model in self._set_type_model_picklable : # handle picklable models
+                path_file_model = f"{path_folder_models_local}{name_model}.{type_model}.pickle"
+                bk.PICKLE_Write( path_file_model, model )
+            elif type_model == 'pumap' : # parametric umap model
+                path_prefix_model = f"{path_folder_models_local}{name_model}.pumap"
+                path_file_model = path_prefix_model + '.tar.gz'
+                model.save( path_prefix_model )
+                tar_create( path_file_model, path_prefix_model ) # create tar.gz file of pumap object for efficient retrieval and download
+            elif type_model in self._set_type_model_keras_model : # handle 'dict_model' containing 'dl_model'
+                path_prefix_model = f"{path_folder_models_local}{name_model}.{type_model}"
+                path_file_model = path_prefix_model + '.tar.gz'
+                dl_model = model.pop( 'dl_model' ) # remove the keras model 'dl_model' from dict_model, enable the remaining 'dict_model' to become picklable
+                dl_model.save( f"{path_prefix_model}/dl_model.hdf5" ) # save keras model
+                bk.PICKLE_Write( f"{path_prefix_model}/metadata.pickle", model ) # save metadata as a pickle file
+                tar_create( path_file_model, path_prefix_model ) # create tar.gz file of pumap object for efficient retrieval and download
+            int_file_size = os.path.getsize( path_file_model ) # retrieve file size of the saved model
+
+            # if a temporary location was used for saving models (for remote RamData), upload the model to the remote location
+            if path_folder_models_local != path_folder_models :
+                filesystem_operations( 'cp', path_file_model, path_file_model.replace( path_folder_models_local, path_folder_models ) ) # upload the model
+                filesystem_operations( 'rm', path_file_model ) # delete the local copy
+        finally :
+            # locking
+            if self.use_locking : # %% FILE LOCKING %%
+                self._zsls.release_lock( f"{path_folder_models}{name_model}.{type_model}.lock/" ) 
         
         # update the metadata
         dict_metadata_description[ 'file_size_in_bytes' ] = int_file_size
@@ -10220,11 +10237,11 @@ class RamData( ) :
             logger.info( f"{name_model}|{type_model} model saved." )
         return int_file_size # return the number of bytes written
     def delete_model( self, name_model : str, type_model : Literal[ 'ipca', 'pumap', 'hdbscan', 'knn_classifier', 'knn_embedder', 'knngraph', 'knnindex', 'deep_learning.keras.classifier', 'deep_learning.keras.embedder' ] ) :
-        """ # 2022-08-05 19:44:23 
+        """ # 2022-12-28 19:26:58 
         delete model of the RamData if the model exists in the RamData
         
         'name_model' : the name of the model. if the same type of model with the same model name already exists, it will be overwritten
-        'type_model' : the type of models. currently [ 'ipca', 'pumap' ], for PCA transformation and UMAP embedding, are supported
+        'type_model' : the type of models.
         """
         # check validity of the name_model
         assert '/' not in name_model # check validity of 'name_pumap_model'
@@ -10244,17 +10261,26 @@ class RamData( ) :
         path_folder_models = f"{self._path_folder_ramdata_modifiable}models/" # define a folder to save/load model
         filesystem_operations( 'mkdir', path_folder_models, exist_ok = True )
         
-        # save model
-        if type_model in self._set_type_model_picklable : # handle picklable models 
-            path_file_model = f"{path_folder_models}{name_model}.{type_model}.pickle"
-        else :
-            path_prefix_model = f"{path_folder_models}{name_model}.{type_model}"
-            path_file_model = path_prefix_model + '.tar.gz'
-            # if an extracted folder exists, delete the folder
-            if filesystem_operations( 'exists', path_prefix_model ) :
-                filesystem_operations( 'rm', path_prefix_model )
-        int_file_size = os.path.getsize( path_file_model ) # retrieve file size of the saved model
-        filesystem_operations( 'rm', path_file_model )
+        try :
+            # locking
+            if self.use_locking : # %% FILE LOCKING %%
+                self._zsls.acquire_lock( f"{path_folder_models}{name_model}.{type_model}.lock/" ) 
+                
+            # delete model
+            if type_model in self._set_type_model_picklable : # handle picklable models 
+                path_file_model = f"{path_folder_models}{name_model}.{type_model}.pickle"
+            else :
+                path_prefix_model = f"{path_folder_models}{name_model}.{type_model}"
+                path_file_model = path_prefix_model + '.tar.gz'
+                # if an extracted folder exists, delete the folder
+                if filesystem_operations( 'exists', path_prefix_model ) :
+                    filesystem_operations( 'rm', path_prefix_model )
+            int_file_size = os.path.getsize( path_file_model ) # retrieve file size of the model
+            filesystem_operations( 'rm', path_file_model )
+        finally :
+            # locking
+            if self.use_locking : # %% FILE LOCKING %%
+                self._zsls.release_lock( f"{path_folder_models}{name_model}.{type_model}.lock/" ) 
         
         # update the metadata
         self.update_metadata( l_id_model_to_be_deleted = [ f"{name_model}|{type_model}" ] )
@@ -10263,6 +10289,76 @@ class RamData( ) :
         if self.verbose :
             logger.info( f"{name_model}|{type_model} model deleted." )
         return int_file_size # return the number of bytes of the deleted model file
+    def rename_model( self, name_model : str, type_model : Literal[ 'ipca', 'pumap', 'hdbscan', 'knn_classifier', 'knn_embedder', 'knngraph', 'knnindex', 'deep_learning.keras.classifier', 'deep_learning.keras.embedder' ], name_model_new : str, flag_allow_copying : bool = False ) :
+        """ # 2022-12-28 18:19:10 
+        rename a model
+        
+        name_layer_current : str # the name of the previous layer
+        type_model : the type of the model
+        name_layer_new : str # the name of the new layer
+        flag_allow_copying : bool = False # for some storage systems, folder and directory cannot be renamed, and an entire folder should be copied and deleted in order to 'change' a folder name. in order to allow copying of an entire folder for renaming operations, set this flag to True
+        """
+        # check validity of the name_model_new
+        assert '/' not in name_model_new # check validity of 'name_model_new'
+            
+        # save model only when mode != 'r'
+        if self._mode == 'r' :
+            return
+        # save model only when modifiable ramdata exists
+        if self._path_folder_ramdata_modifiable is None :
+            return
+        
+        # check validity of inputs
+        # if the model does not exist in the current RamData, exit
+        if not self.check_model( name_model = name_model, type_model = type_model, flag_exclude_components = True ) :
+            logger.error( f"'name_model' {name_model} does not exist in the current RamData object (excluding components), exiting" )
+            return
+        
+        # if the model does not exist in the current RamData, exit
+        if self.check_model( name_model = name_model_new, type_model = type_model, flag_exclude_components = True ) :
+            logger.error( f"the new 'name_model' {name_model_new} already exists in the current RamData object (excluding components), exiting" )
+            return
+        
+        # rename layer # handle exceptions
+        if is_s3_url( self._path_folder_ramdata_modifiable ) :
+            logger.warning( 'the modifiable storage location of the current RamData is Amazon S3, which does not support file renaming. renaming a file in Amazon S3 involves copying and deleting of an entire file.' )
+            if not flag_allow_copying :
+                return
+            
+        # define a folder for storage of models
+        path_folder_models = f"{self._path_folder_ramdata_modifiable}models/" # define a folder to save/load model
+        
+        try :
+            # locking
+            if self.use_locking : # %% FILE LOCKING %%
+                self._zsls.acquire_lock( f"{path_folder_models}{name_model}.{type_model}.lock/" ) 
+                self._zsls.acquire_lock( f"{path_folder_models}{name_model_new}.{type_model}.lock/" ) 
+
+            # rename a model
+            if type_model in self._set_type_model_picklable : # handle picklable models 
+                path_file_model = f"{path_folder_models}{name_model}.{type_model}.pickle"
+                path_file_model_new = f"{path_folder_models}{name_model_new}.{type_model}.pickle"
+            else :
+                path_prefix_model = f"{path_folder_models}{name_model}.{type_model}"
+                path_prefix_model_new = f"{path_folder_models}{name_model_new}.{type_model}"
+                path_file_model = path_prefix_model + '.tar.gz'
+                path_file_model_new = path_prefix_model_new + '.tar.gz'
+                # if an extracted folder exists, rename the folder
+                if filesystem_operations( 'exists', path_prefix_model ) :
+                    filesystem_operations( 'mv', path_prefix_model, path_prefix_model_new )
+            filesystem_operations( 'mv', path_file_model, path_file_model_new )
+        finally :
+            # locking
+            if self.use_locking : # %% FILE LOCKING %%
+                self._zsls.release_lock( f"{path_folder_models}{name_model}.{type_model}.lock/" ) 
+                self._zsls.release_lock( f"{path_folder_models}{name_model_new}.{type_model}.lock/" ) 
+        
+        # update metadata (rename the id_model)
+        self.update_metadata( dict_rename_id_model = { f"{name_model}|{type_model}" : f"{name_model_new}|{type_model}" } )
+        
+        # report result
+        if self.verbose :
+            logger.info( f"{name_model}|{type_model} model was rename to {name_model_new}|{type_model}" )
     ''' utility functions for columns '''
     def acquire_locks_for_metadata_columns( self, axis : Union[ int, str ], l_name_col : list = [ ], flag_exclude_components : bool = True ) : 
         """ # 2022-12-14 19:22:45 
