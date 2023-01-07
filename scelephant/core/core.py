@@ -47,7 +47,7 @@ logger = logging.getLogger( 'SC-Elephant' )
 # define version
 _version_ = '0.0.10'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2022-12-28 23:35:10'
+_last_modified_time_ = '2023-01-04 13:01:35'
 
 str_release_note = [
     """
@@ -284,8 +284,14 @@ str_release_note = [
     # 2022-12-28 18:45:09 
     RamData.rename_model method was added (with file-locking feature)
     
+    # 2022-12-29 01:16:30 
+    [ZarrDataFrame] support for string data type was added for compatibility with certain annotations
+    
     ##### Future implementations #####
+    [RamDataAxis] a function for changing 'int_num_entries_in_a_chunk' of StringChunks and ZarrDataFrame metadata will be implemented to increase performance in remote access setting.
+    [ZarrDataFrame] chunk size for bool datatype, categorical datatype will be set separately. by default, (10000, ) will be used. ( 1000000, ) for bool, ( 100000, ) for categorical data will be used.
     """
+    
 ]
 
 ''' previosuly written for biobookshelf '''
@@ -3169,7 +3175,28 @@ def create_zarr_from_mtx( path_file_input_mtx, path_folder_zarr, int_buffer_size
         p.start( )
     for p in l_p : 
         p.join( )
-def create_ramtx_from_mtx( path_folder_mtx_10x_input, path_folder_output, mode = 'dense', int_num_records_in_a_chunk = 10000000, int_buffer_size = 300, compresslevel = 6, flag_dtype_is_float = False, int_num_threads_for_chunking = 5, int_num_threads_for_writing = 1, int_max_num_input_files_for_each_merge_sort_worker = 8, int_num_chunks_to_combine_before_concurrent_merge_sorting = 8, dtype_dense_mtx = np.uint32, dtype_sparse_mtx = np.float64, dtype_sparse_mtx_index = np.float64, int_num_of_records_in_a_chunk_zarr_matrix = 20000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, chunks_dense = ( 2000, 1000 ), int_num_of_entries_in_a_chunk_metadata = 1000, verbose = False, flag_debugging = False ) :
+def create_ramtx_from_mtx( 
+    path_folder_mtx_10x_input : str, 
+    path_folder_output : str, 
+    mode : Literal[ 'dense', 'sparse_for_querying_barcodes', 'sparse_for_querying_features' ] = 'dense', 
+    int_num_records_in_a_chunk : int = 10000000, 
+    int_buffer_size : int = 300, 
+    compresslevel : int = 6, 
+    flag_dtype_is_float : bool = False, 
+    int_num_threads_for_chunking : int = 5, 
+    int_num_threads_for_writing : int = 1, 
+    int_max_num_input_files_for_each_merge_sort_worker : int = 8, 
+    int_num_chunks_to_combine_before_concurrent_merge_sorting : int = 8, 
+    dtype_dense_mtx = np.uint32, 
+    dtype_sparse_mtx = np.float64, 
+    dtype_sparse_mtx_index = np.float64, 
+    int_num_of_records_in_a_chunk_zarr_matrix : int = 20000, 
+    int_num_of_entries_in_a_chunk_zarr_matrix_index : int = 1000, 
+    chunks_dense : tuple = ( 2000, 1000 ), 
+    int_num_of_entries_in_a_chunk_metadata : int = 10000, 
+    verbose : bool = False, 
+    flag_debugging : bool = False
+) :
     """ # 2022-07-30 15:05:58 
     sort a given mtx file in a very time- and memory-efficient manner, and create sparse (sorted by barcode/feature).
     when 'type' == 'dense', create a dense ramtx object in the given output folder without sorting the input mtx file in the given axis ('flag_mtx_sorted_by_id_feature')
@@ -3293,7 +3320,29 @@ def create_ramtx_from_mtx( path_folder_mtx_10x_input, path_folder_output, mode =
     ''' write a flag indicating the export has been completed '''
     with open( path_file_flag_completion, 'w' ) as file :
         file.write( bk.TIME_GET_timestamp( True ) )
-def create_ramdata_from_mtx( path_folder_mtx_10x_input, path_folder_ramdata_output, set_modes = { 'dense' }, name_layer = 'raw', int_num_records_in_a_chunk = 10000000, int_buffer_size = 300, compresslevel = 6, flag_dtype_is_float = False, int_num_threads_for_chunking = 5, int_num_threads_for_writing = 1, int_max_num_input_files_for_each_merge_sort_worker = 8, int_num_chunks_to_combine_before_concurrent_merge_sorting = 8, dtype_dense_mtx = np.uint32, dtype_sparse_mtx = np.float64, dtype_sparse_mtx_index = np.float64, int_num_of_records_in_a_chunk_zarr_matrix = 20000, int_num_of_entries_in_a_chunk_zarr_matrix_index = 1000, chunks_dense = ( 2000, 1000 ), int_num_of_entries_in_a_chunk_metadata = 1000, flag_multiprocessing = True, verbose = False, flag_debugging = False ) :
+def create_ramdata_from_mtx( 
+    path_folder_mtx_10x_input : str, 
+    path_folder_ramdata_output : str, 
+    set_modes : set = { 'dense' }, 
+    name_layer : str = 'raw', 
+    int_num_records_in_a_chunk : int = 10000000, 
+    int_buffer_size : int = 300, 
+    compresslevel : int = 6, 
+    flag_dtype_is_float : bool = False, 
+    int_num_threads_for_chunking : int = 5, 
+    int_num_threads_for_writing : int = 1, 
+    int_max_num_input_files_for_each_merge_sort_worker : int = 8, 
+    int_num_chunks_to_combine_before_concurrent_merge_sorting : int = 8, 
+    dtype_dense_mtx = np.uint32, 
+    dtype_sparse_mtx = np.float64, dtype_sparse_mtx_index = np.float64, 
+    int_num_of_records_in_a_chunk_zarr_matrix : int = 20000, 
+    int_num_of_entries_in_a_chunk_zarr_matrix_index : int = 1000, 
+    chunks_dense : tuple = ( 2000, 1000 ), 
+    int_num_of_entries_in_a_chunk_metadata : int = 10000, 
+    flag_multiprocessing : bool = True, 
+    verbose : bool = False, 
+    flag_debugging : bool = False
+) :
     """ # 2022-12-13 22:25:38 
     sort a given mtx file in a very time- and memory-efficient manner, and create sparse (sorted by barcode/feature).
     when 'type' == 'dense', create a dense ramtx object in the given output folder without sorting the input mtx file in the given axis ('flag_mtx_sorted_by_id_feature')
@@ -3425,7 +3474,7 @@ def create_ramtx_from_adata(
     int_num_of_entries_in_a_batch_for_writing_sparse_matrix : int = 350,
     float_ratio_padding_for_zarr_sparse_matrix_output : float = 0.5,
     chunks_dense : tuple = ( 2000, 1000 ),
-    int_num_of_entries_in_a_chunk_metadata : int = 1000,
+    int_num_of_entries_in_a_chunk_metadata : int = 10000,
     int_max_num_categories_in_metadata : int = 10000 ,
     dict_kw_zdf : dict = { 'flag_store_string_as_categorical' : True, 'flag_load_data_after_adding_new_column' : False, 'flag_store_64bit_integer_as_float' : True },
     int_num_str_repr_bc : int = 1,
@@ -3705,7 +3754,7 @@ def create_ramdata_from_adata(
     int_num_of_entries_in_a_batch_for_writing_sparse_matrix : int = 350,
     float_ratio_padding_for_zarr_sparse_matrix_output : float = 0.5,
     chunks_dense : tuple = ( 2000, 1000 ),
-    int_num_of_entries_in_a_chunk_metadata : int = 1000,
+    int_num_of_entries_in_a_chunk_metadata : int = 10000,
     int_max_num_categories_in_metadata : int = 10000 ,
     dict_kw_zdf : dict = { 'flag_store_string_as_categorical' : True, 'flag_load_data_after_adding_new_column' : False, 'flag_store_64bit_integer_as_float' : True },
     int_num_str_repr_bc : int = 1,
@@ -4532,7 +4581,7 @@ class ZarrSpinLockServer( ) :
         filesystem_server : Union[ None, FileSystemServer ] = None, 
         zarrmetadata_server : Union[ None, ZarrMetadataServer ] = None,
         template = None,
-        verbose : bool = True,
+        verbose : bool = False,
     ) :
         """ # 2022-12-11 14:03:53  
         """
@@ -4634,14 +4683,14 @@ class ZarrSpinLockServer( ) :
         while self.check_lock( path_folder_lock ) : # until a lock is released
             time.sleep( self.float_second_to_wait_before_checking_availability_of_a_spin_lock ) # wait for 'float_second_to_wait_before_checking_availability_of_a_spin_lock' second
     def acquire_lock( self, path_folder_lock : str ) :
-        """ # 2022-12-23 23:19:14 
+        """ # 2022-12-29 03:12:52 
         acquire the lock, based on the file system where the current lock object resides.
         
         === arguments ===
         path_folder_lock : str # an absolute (full-length) path to the lock (an absolute path to the zarr object, representing a spin lock)
         
         === returns ===
-        return str_uuid_lock # return 'str_uuid_lock' that is required for releasing the created lock
+        return True if a lock has been acquired (a lock object was created).
         """
         if self.verbose :
             logger.info( f"the current ZarrSpinLockServer ({self.str_uuid_lock}) is trying to acquire the lock '{path_folder_lock}', with currently_held_locks '{self.currently_held_locks}'" )
@@ -4659,7 +4708,7 @@ class ZarrSpinLockServer( ) :
                     lock_metadata = self.zms.get_metadata( path_folder_lock, 'dict_metadata' ) # read the content of the written lock
                     if lock_metadata is not None and 'str_uuid_lock' in lock_metadata and lock_metadata[ 'str_uuid_lock' ] == self.str_uuid_lock : # if the lock has been written by the current object
                         break # consider the lock has been acquired by the current object
-            
+
                 # wait until the lock becomes available
                 # if lock is available and 'flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock' is True, raise a RuntimeError
                 if self.flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock :
@@ -4671,6 +4720,9 @@ class ZarrSpinLockServer( ) :
             self._set_path_folder_lock.add( path_folder_lock )
             if self.verbose :
                 logger.info( f"the current ZarrSpinLockServer ({self.str_uuid_lock}) acquired the lock '{path_folder_lock}', with currently_held_locks '{self.currently_held_locks}'" )
+            return True # return True if a lock has been acquired
+        else :
+            return False # return False if a lock has been already acquired prior to this function call
     def release_lock( self, path_folder_lock : str ) :
         """ # 2022-12-10 21:32:38 
         release the lock, based on the file system where the current lock object resides
@@ -5271,20 +5323,22 @@ class ZarrDataFrame( ) :
                 return self._mask.set_column_metadata( name_col = name_col, dict_col_metadata = dict_col_metadata )
             
             # %% FILE LOCKING %%
-            if self._zsls is not None : # if locking is used, acquire the lock
-                self._zsls.acquire_lock( f"{self._path_folder_zdf}{name_col}.lock/" ) # wait until a lock is released
+            if self.use_locking : # if locking is used, acquire the lock
+                flag_lock_acquired = self._zsls.acquire_lock( f"{self._path_folder_zdf}{name_col}.lock/" ) # wait until a lock is released
             
-            # read column metadata
-            za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'a' ) # read data from the Zarr object
-            za.attrs[ 'dict_col_metadata' ] = dict_col_metadata # retrieve metadata of the current column
-            
-            if 'dict_metadata_description' in dict_col_metadata :
-                # update metadata (sycn. with metadata of the current object)
-                self.update_metadata( { 'columns' : { name_col : dict_col_metadata[ 'dict_metadata_description' ] } } )
-            
-            # %% FILE LOCKING %%
-            if self._zsls is not None : # if locking is used, release the lock
-                self._zsls.release_lock( f"{self._path_folder_zdf}{name_col}.lock/" ) # wait until a lock is released
+            try :
+                # read column metadata
+                za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'a' ) # read data from the Zarr object
+                za.attrs[ 'dict_col_metadata' ] = dict_col_metadata # retrieve metadata of the current column
+
+                if 'dict_metadata_description' in dict_col_metadata :
+                    # update metadata (sycn. with metadata of the current object)
+                    self.update_metadata( { 'columns' : { name_col : dict_col_metadata[ 'dict_metadata_description' ] } } )
+            finally :
+                # %% FILE LOCKING %%
+                if self.use_locking : # if locking is used, release the lock
+                    if flag_lock_acquired :
+                        self._zsls.release_lock( f"{self._path_folder_zdf}{name_col}.lock/" ) # wait until a lock is released
     def update_column_metadata( self, name_col : str, dict_col_metadata_to_be_updated : dict, flag_relpace_dict_metadata_description : bool = False ) :
         """ # 2022-12-12 02:39:05 
         a method for setting metadata of a given column (and the metadata of the current object)
@@ -5298,33 +5352,35 @@ class ZarrDataFrame( ) :
                 return self._mask.update_column_metadata( name_col = name_col, dict_col_metadata_to_be_updated = dict_col_metadata_to_be_updated )
             
             # %% FILE LOCKING %%
-            if self._zsls is not None : # if locking is used, acquire the lock
-                self._zsls.acquire_lock( f"{self._path_folder_zdf}{name_col}.lock/" ) # wait until a lock is released
+            if self.use_locking : # if locking is used, acquire the lock
+                flag_lock_acquired = self._zsls.acquire_lock( f"{self._path_folder_zdf}{name_col}.lock/" ) # wait until a lock is released
             
-            # read metadata
-            za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'a' ) # read data from the Zarr object
-            dict_col_metadata = za.attrs[ 'dict_col_metadata' ] # read 'dict_col_metadata'
-            
-            # update 'dict_col_metadata_description'
-            if 'dict_metadata_description' in dict_col_metadata_to_be_updated : # if 'dict_col_metadata_to_be_updated' contains 'dict_metadata_description' for the update
-                dict_metadata_description = dict_col_metadata[ 'dict_metadata_description' ] if 'dict_metadata_description' in dict_col_metadata else dict( )  # retrieve 'dict_col_metadata_description' from 'dict_col_metadata'
-                if isinstance( dict_col_metadata_to_be_updated[ 'dict_metadata_description' ], dict ) : # if dict_col_metadata_to_be_updated[ 'dict_metadata_description' ] contains valid value
-                    if not isinstance( dict_metadata_description, dict ) : # initialize 'dict_metadata_description'
-                        dict_metadata_description = dict( )
-                    dict_metadata_description.update( dict_col_metadata_to_be_updated[ 'dict_metadata_description' ] ) # update 'dict_col_metadata_description' using the 'dict_col_metadata_description' from the 'dict_col_metadata_to_be_updated'
-                else : # reset 'dict_metadata_description'
-                    dict_metadata_description = None
-                dict_col_metadata_to_be_updated[ 'dict_metadata_description' ] = dict_metadata_description # set the updated 'dict_col_metadata_description'
-                
-                # update metadata (sycn. with metadata of the current object)
-                self.update_metadata( { 'columns' : { name_col : dict_metadata_description } } )
-            
-            dict_col_metadata.update( dict_col_metadata_to_be_updated ) # update 'dict_col_metadata'
-            za.attrs[ 'dict_col_metadata' ] = dict_col_metadata # save the column metadata
-            
-            # %% FILE LOCKING %%
-            if self._zsls is not None : # if locking is used, release the lock
-                self._zsls.release_lock( f"{self._path_folder_zdf}{name_col}.lock/" ) # wait until a lock is released
+            try :
+                # read metadata
+                za = zarr.open( f"{self._path_folder_zdf}{name_col}/", mode = 'a' ) # read data from the Zarr object
+                dict_col_metadata = za.attrs[ 'dict_col_metadata' ] # read 'dict_col_metadata'
+
+                # update 'dict_col_metadata_description'
+                if 'dict_metadata_description' in dict_col_metadata_to_be_updated : # if 'dict_col_metadata_to_be_updated' contains 'dict_metadata_description' for the update
+                    dict_metadata_description = dict_col_metadata[ 'dict_metadata_description' ] if 'dict_metadata_description' in dict_col_metadata else dict( )  # retrieve 'dict_col_metadata_description' from 'dict_col_metadata'
+                    if isinstance( dict_col_metadata_to_be_updated[ 'dict_metadata_description' ], dict ) : # if dict_col_metadata_to_be_updated[ 'dict_metadata_description' ] contains valid value
+                        if not isinstance( dict_metadata_description, dict ) : # initialize 'dict_metadata_description'
+                            dict_metadata_description = dict( )
+                        dict_metadata_description.update( dict_col_metadata_to_be_updated[ 'dict_metadata_description' ] ) # update 'dict_col_metadata_description' using the 'dict_col_metadata_description' from the 'dict_col_metadata_to_be_updated'
+                    else : # reset 'dict_metadata_description'
+                        dict_metadata_description = None
+                    dict_col_metadata_to_be_updated[ 'dict_metadata_description' ] = dict_metadata_description # set the updated 'dict_col_metadata_description'
+
+                    # update metadata (sycn. with metadata of the current object)
+                    self.update_metadata( { 'columns' : { name_col : dict_metadata_description } } )
+
+                dict_col_metadata.update( dict_col_metadata_to_be_updated ) # update 'dict_col_metadata'
+                za.attrs[ 'dict_col_metadata' ] = dict_col_metadata # save the column metadata
+            finally:
+                # %% FILE LOCKING %%
+                if self.use_locking : # if locking is used, release the lock
+                    if flag_lock_acquired:
+                        self._zsls.release_lock( f"{self._path_folder_zdf}{name_col}.lock/" ) # wait until a lock is released
     def get_column_metadata_description( self, name_col : str ) :
         """ # 2022-12-05 12:00:53 
         retrieve description metadata of a given column. (might not be up-to-date.)
@@ -5612,7 +5668,7 @@ class ZarrDataFrame( ) :
 #             logger.info( f'[ZarrDataFrame] a column for quering integer indices was written' )
         return self[ '__index__', queries ] # return integer indices of the queries
     def initialize_column( self, name_col : str, dtype = np.float64, shape_not_primary_axis = ( ), chunks = ( ), categorical_values = None, fill_value = 0, dict_metadata_description : dict = dict( ), zdf_template = None, name_col_template : Union[ str, None ] = None, path_col_template : Union[ str, None ] = None ) : 
-        """ # 2022-12-13 19:15:36 
+        """ # 2022-12-29 03:55:33 
         initialize columns with a given shape and given dtype
         'dtype' : initialize the column with this 'dtype'
         'shape_not_primary_axis' : initialize the column with this shape excluding the dimension of the primary axis. if an empty tuple or None is given, a 1D array will be initialized. 
@@ -5658,79 +5714,81 @@ class ZarrDataFrame( ) :
             dict_col_metadata = za.attrs[ 'dict_col_metadata' ]
             dict_metadata_description = dict_col_metadata[ 'dict_metadata_description' ] if 'dict_metadata_description' in dict_col_metadata else None # retrieve 'dict_metadata_description' # handle old version of 'dict_col_metadata'
             categorical_values = dict_col_metadata[ 'l_value_unique' ] if 'flag_categorical' in dict_col_metadata and dict_col_metadata[ 'flag_categorical' ] else None # retrieve categorical values
-            
+        
         if name_col not in self.columns_excluding_components : # if the column does not exists in the current ZarrDataFrame (excluding component zdf objects )
-            # retrieve path of the column
-            path_folder_col = f"{self._path_folder_zdf}{name_col}/"
-            if self.use_locking : # if locking is used
-                # %% FILE LOCKING %%
-                # if a lock is present, exit the function, since the column has been already initialized
-                if self._zsls.check_lock( f'{path_folder_col}.lock' ) :
-                    if self.verbose :
-                        logger.error( f'a lock is present for {path_folder_col} column, indicating that the column has been already initialized by other processes, exiting' )
-                    return
-                # acquire the lock before initializing the column
-                self._zsls.acquire_lock( f'{path_folder_col}.lock' )
-            
-            # check whether the given name_col contains invalid characters(s)
-            for char_invalid in self._str_invalid_char :
-                if char_invalid in name_col :
-                    raise TypeError( f"the character '{char_invalid}' cannot be used in 'name_col'. Also, the 'name_col' cannot contains the following characters: {self._str_invalid_char}" )
-            
-            # compose metadata
-            dict_col_metadata = { 'flag_categorical' : False, 'dict_metadata_description' : dict_metadata_description } # set a default value for 'flag_categorical' metadata attribute # also, add 'dict_metadata_description'
-            dict_col_metadata[ 'flag_filtered' ] = self.filter is not None # mark the column containing filtered data
-            
-            # initialize a column containing categorical data
-            if categorical_values is not None : # if 'categorical_values' has been given
-                dict_col_metadata[ 'flag_categorical' ] = True # set metadata for categorical datatype
-                set_value_unique = set( categorical_values ) # retrieve a set of unique values
-                # handle when np.nan value exist 
-                if np.nan in set_value_unique : # when np.nan value was detected
-                    if 'flag_contains_nan' not in dict_col_metadata : # update metadata
-                        dict_col_metadata[ 'flag_contains_nan' ] = True # mark that the column contains np.nan values
-                    set_value_unique.remove( np.nan ) # removes np.nan from the category
+            try :
+                # retrieve path of the column
+                path_folder_col = f"{self._path_folder_zdf}{name_col}/"
+                if self.use_locking : # if locking is used
+                    # %% FILE LOCKING %%
+                    # if a lock is present, exit the function, since the column has been already initialized
+                    if self._zsls.check_lock( f'{path_folder_col}.lock' ) :
+                        if self.verbose :
+                            logger.error( f'a lock is present for {path_folder_col} column, indicating that the column has been already initialized by other processes, exiting' )
+                        return
+                    # acquire the lock before initializing the column
+                    flag_lock_acquired = self._zsls.acquire_lock( f'{path_folder_col}.lock' )
 
-                if 'l_value_unique' not in dict_col_metadata :
-                    l_value_unique = list( set_value_unique ) # retrieve a list of unique values # can contain mixed types (int, float, str)
-                    dict_col_metadata[ 'l_value_unique' ] = list( str( e ) for e in l_value_unique ) # update metadata # convert entries to string (so that all values with mixed types can be interpreted as strings)
-                else :
-                    set_value_unique_previously_set = set( dict_col_metadata[ 'l_value_unique' ] )
-                    l_value_unique = dict_col_metadata[ 'l_value_unique' ] + list( val for val in list( set_value_unique ) if val not in set_value_unique_previously_set ) # extend 'l_value_unique'
-                    dict_col_metadata[ 'l_value_unique' ] = l_value_unique # update metadata
-                
-                # retrieve appropriate datatype for encoding unique categorical values
-                int_min_number_of_bits = int( np.ceil( math.log2( len( l_value_unique ) ) ) ) + 1 # since signed int will be used, an additional bit is required to encode the data
-                if int_min_number_of_bits <= 8 :
-                    dtype = np.int8
-                elif int_min_number_of_bits <= 16 :
-                    dtype = np.int16
-                else :
-                    dtype = np.int32
-            else :
-                if self.flag_store_64bit_integer_as_float : # if 'flag_store_64bit_integer_as_float' flag is set to True, avoid using np.int64 dtype due to its compatibility with the JavaScript
-                    if np.issubdtype( dtype, np.int64 ) : # the np.int64 dtype will be saved using the np.float64 dtype
-                        dtype = np.float64
-                    if dtype == int : # the general 'int' dtype will be saved using the np.int32 dtype
+                # check whether the given name_col contains invalid characters(s)
+                for char_invalid in self._str_invalid_char :
+                    if char_invalid in name_col :
+                        raise TypeError( f"the character '{char_invalid}' cannot be used in 'name_col'. Also, the 'name_col' cannot contains the following characters: {self._str_invalid_char}" )
+
+                # compose metadata
+                dict_col_metadata = { 'flag_categorical' : False, 'dict_metadata_description' : dict_metadata_description } # set a default value for 'flag_categorical' metadata attribute # also, add 'dict_metadata_description'
+                dict_col_metadata[ 'flag_filtered' ] = self.filter is not None # mark the column containing filtered data
+
+                # initialize a column containing categorical data
+                if categorical_values is not None : # if 'categorical_values' has been given
+                    dict_col_metadata[ 'flag_categorical' ] = True # set metadata for categorical datatype
+                    set_value_unique = set( categorical_values ) # retrieve a set of unique values
+                    # handle when np.nan value exist 
+                    if np.nan in set_value_unique : # when np.nan value was detected
+                        if 'flag_contains_nan' not in dict_col_metadata : # update metadata
+                            dict_col_metadata[ 'flag_contains_nan' ] = True # mark that the column contains np.nan values
+                        set_value_unique.remove( np.nan ) # removes np.nan from the category
+
+                    if 'l_value_unique' not in dict_col_metadata :
+                        l_value_unique = list( set_value_unique ) # retrieve a list of unique values # can contain mixed types (int, float, str)
+                        dict_col_metadata[ 'l_value_unique' ] = list( str( e ) for e in l_value_unique ) # update metadata # convert entries to string (so that all values with mixed types can be interpreted as strings)
+                    else :
+                        set_value_unique_previously_set = set( dict_col_metadata[ 'l_value_unique' ] )
+                        l_value_unique = dict_col_metadata[ 'l_value_unique' ] + list( val for val in list( set_value_unique ) if val not in set_value_unique_previously_set ) # extend 'l_value_unique'
+                        dict_col_metadata[ 'l_value_unique' ] = l_value_unique # update metadata
+
+                    # retrieve appropriate datatype for encoding unique categorical values
+                    int_min_number_of_bits = int( np.ceil( math.log2( len( l_value_unique ) ) ) ) + 1 # since signed int will be used, an additional bit is required to encode the data
+                    if int_min_number_of_bits <= 8 :
+                        dtype = np.int8
+                    elif int_min_number_of_bits <= 16 :
+                        dtype = np.int16
+                    else :
                         dtype = np.int32
-                    
-            # initialize the zarr objects
-            shape = tuple( [ self._n_rows_unfiltered ] + list( shape_not_primary_axis ) ) # compose 'shape' of the zarr object
-            chunks = tuple( chunks ) if len( chunks ) == len( shape ) else tuple( [ self.int_num_rows_in_a_chunk ] + list( chunks ) ) # compose 'chunks' of the zarr object
-            assert len( chunks ) == len( shape ) # the length of chunks and shape should be the same
-            
-            za = zarr.open( path_folder_col, mode = 'w', shape = shape, chunks = chunks, dtype = dtype, fill_value = fill_value, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object if the object does not exist.
-            
-            # write metadata
-            za.attrs[ 'dict_col_metadata' ] = dict_col_metadata
-            
-            if self.use_locking : # if locking is used
-                # %% FILE LOCKING %%
-                # acquire the lock before initializing the column
-                self._zsls.release_lock( f'{path_folder_col}.lock' )
-            
-            # add column to zdf (and update the associated metadata)
-            self._add_column( name_col, dict_metadata_description ) 
+                else :
+                    if self.flag_store_64bit_integer_as_float : # if 'flag_store_64bit_integer_as_float' flag is set to True, avoid using np.int64 dtype due to its compatibility with the JavaScript
+                        if np.issubdtype( dtype, np.int64 ) : # the np.int64 dtype will be saved using the np.float64 dtype
+                            dtype = np.float64
+                        if dtype == int : # the general 'int' dtype will be saved using the np.int32 dtype
+                            dtype = np.int32
+
+                # initialize the zarr objects
+                shape = tuple( [ self._n_rows_unfiltered ] + list( shape_not_primary_axis ) ) # compose 'shape' of the zarr object
+                chunks = tuple( chunks ) if len( chunks ) == len( shape ) else tuple( [ self.int_num_rows_in_a_chunk ] + list( chunks ) ) # compose 'chunks' of the zarr object
+                assert len( chunks ) == len( shape ) # the length of chunks and shape should be the same
+
+                za = zarr.open( path_folder_col, mode = 'a', shape = shape, chunks = chunks, dtype = dtype, fill_value = fill_value, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object if the object does not exist.
+
+                # write metadata
+                za.attrs[ 'dict_col_metadata' ] = dict_col_metadata
+                
+                # add column to zdf (and update the associated metadata)
+                self._add_column( name_col, dict_metadata_description ) 
+            finally :
+                if self.use_locking : # if locking is used
+                    # %% FILE LOCKING %%
+                    # acquire the lock before initializing the column
+                    if flag_lock_acquired :
+                        self._zsls.release_lock( f'{path_folder_col}.lock' )
     def __getitem__( self, args ) :
         ''' # 2022-12-11 05:45:07 
         retrieve data of a column.
@@ -5881,7 +5939,7 @@ class ZarrDataFrame( ) :
                         values[ t_coord ] = l_value_unique[ val ] if val >= 0 else np.nan # convert integer representations to its original string values # -1 (negative integers) encodes np.nan
                     return values
     def __setitem__( self, args, values ) :
-        ''' # 2022-12-13 01:09:06 
+        ''' # 2023-01-03 18:43:36 
         save/update a column at indexed positions.
         when a filter is active, only active entries will be saved/updated automatically.
         boolean mask/integer arrays/slice indexing is supported. However, indexing will be applied to the original column with unfiltered rows (i.e., when indexing is active, filter will be ignored)
@@ -5973,198 +6031,199 @@ class ZarrDataFrame( ) :
         """
         retrieve metadata and infer dtypes
         """
-        if self.use_locking : # %% FILE LOCKING %%
-            path_lock = f'{self._path_folder_zdf}{name_col}.lock'
-            flag_lock_already_acquired = path_lock in self._zsls.currently_held_locks # retrieve a flag indicating a lock has been already acquired 
-            if not flag_lock_already_acquired : # acquire lock if it has not been acquired before the operation
-                self._zsls.acquire_lock( path_lock )
-        
-        # set default fill_value
-        fill_value = 0 # set default fill_value
-        # define zarr object directory
-        path_folder_col = f"{self._path_folder_zdf}{name_col}/" # compose the output folder
-        # retrieve/initialize metadata
-        flag_col_already_exists = zarr_exists( path_folder_col ) # retrieve a flag indicating that the column already exists
-        
-        ''' retrieve/infer shape/dtype '''
-        flag_update_dict_col_metadata = False # a flag indicating whether the column metadata should be updated
-        if flag_col_already_exists :
-            ''' read settings from the existing columns '''
-            za = zarr.open( path_folder_col, 'a' ) # open Zarr object
-            dict_col_metadata = za.attrs[ 'dict_col_metadata' ] # load previous written metadata
-            
-            # retrieve dtype
-            dtype = str if dict_col_metadata[ "flag_categorical" ] else za.dtype # dtype of cetegorical data columns should be str
-        else :
-            dtype = None # define default dtype
-            ''' create a metadata of the new column '''
-            flag_update_dict_col_metadata = True # indicate that the column metadata should be updated
-            dict_col_metadata = { 'flag_categorical' : False, 'dict_metadata_description' : None } # set a default value for 'flag_categorical' metadata attribute and 'dict_metadata_description' attribute
-            dict_col_metadata[ 'flag_filtered' ] = self.filter is not None # mark the column containing filtered data
-            
-            # infer the data type of input values
-            # if values is numpy.ndarray, use the dtype of the array
-            if isinstance( values, np.ndarray ) :
-                dtype = values.dtype
-                
-            # if values is not numpy.ndarray or the dtype is object datatype, use the type of the data returned by the type( ) python function.
-            if not isinstance( values, np.ndarray ) or dtype is np.dtype( 'O' ) : 
-                if isinstance( values, ( str, float, int ) ) : # if a single value has been given
-                    # %% BROADCASTING %%
-                    dtype = type( values )
-                    self.initialize_column( name_col, dtype = dtype, shape_not_primary_axis = ( ), chunks = ( ), categorical_values = [ values ] if dtype is str else None, fill_value = - 1 if dtype is str else 0 ) # initialize the column assuming 1D columns
-                else : # if an array was given
-                    # extract the first entry from the array
-                    val = values
-                    while hasattr( val, '__iter__' ) and not isinstance( val, str ) :
-                        val = next( val.__iter__() ) # get the first element of the current array
-                    dtype = type( val )
+        try :
+            if self.use_locking : # %% FILE LOCKING %%
+                path_lock = f'{self._path_folder_zdf}{name_col}.lock'
+                flag_lock_already_acquired = path_lock in self._zsls.currently_held_locks # retrieve a flag indicating a lock has been already acquired 
+                if not flag_lock_already_acquired : # acquire lock if it has not been acquired before the operation
+                    self._zsls.acquire_lock( path_lock )
 
-                    # check whether the array contains strings with np.nan values (make sure array starting with np.nan is not a string array containing np.nan values)
-                    if dtype is float and val is np.nan :
-                        for t_coord, val in np.ndenumerate( values ) : # np.ndenumerate can handle nexted lists
-                            if type( val ) is str :
-                                dtype = str
-                                break
+            # set default fill_value
+            fill_value = 0 # set default fill_value
+            # define zarr object directory
+            path_folder_col = f"{self._path_folder_zdf}{name_col}/" # compose the output folder
+            # retrieve/initialize metadata
+            flag_col_already_exists = zarr_exists( path_folder_col ) # retrieve a flag indicating that the column already exists
 
-        # update the length of zdf if it has not been set.
-        if self._n_rows_unfiltered is None : # if a valid information about the number of rows is available
-            self.update_metadata( { 'int_num_rows' : len( values ) } ) # retrieve the length of the primary axis # update metadata
-        
-        """ convert data to np.ndarray """
-        # detect broadcasting 
-        flag_broadcasting_active = isinstance( values, ( str, float, int ) )
-            
-        # retrieve data values from the 'values' 
-        if isinstance( values, bitarray ) :
-            values = BA.to_array( values ) # retrieve boolean values from the input bitarray
-        if isinstance( values, pd.Series ) :
-            values = values.values
-        # convert values that is not numpy.ndarray to numpy.ndarray object (for the consistency of the loaded_data)
-        if not isinstance( values, np.ndarray ) and not flag_broadcasting_active :
-            values = np.array( values, dtype = object if dtype is str else dtype ) # use 'object' dtype when converting values to a numpy.ndarray object if dtype is 'str'
-            
-        # retrieve shape and chunk sizes of the object
-        dim_secondary_inferred = [ ] if flag_broadcasting_active else list( values.shape )[ 1 : ] # infer dimensions excluding primary axis
-        shape_inferred = tuple( [ self._n_rows_unfiltered ] + dim_secondary_inferred )
-        chunks_inferred = tuple( [ self._dict_metadata[ 'int_num_rows_in_a_chunk' ] ] + dim_secondary_inferred )
-        
-        # logger.info( shape, chunks, dtype, self._dict_metadata[ 'flag_store_string_as_categorical' ] )
-        # write categorical data
-        if dtype is str and self._dict_metadata[ 'flag_store_string_as_categorical' ] : # storing categorical data   
-            # default fill_value for categorical data is -1 (representing np.nan values)
-            fill_value = -1
-            # update metadata of the column
-            if not dict_col_metadata[ 'flag_categorical' ] :
-                flag_update_dict_col_metadata = True # indicate that the column metadata should be updated
-                dict_col_metadata[ 'flag_categorical' ] = True # set metadata for categorical datatype
-            
-            ''' retrieve unique values for categorical data '''
-            if flag_broadcasting_active :
-                set_value_unique = set( [ values ] )
+            ''' retrieve/infer shape/dtype '''
+            flag_update_dict_col_metadata = False # a flag indicating whether the column metadata should be updated
+            if flag_col_already_exists :
+                ''' read settings from the existing columns '''
+                za = zarr.open( path_folder_col, 'a' ) # open Zarr object
+                dict_col_metadata = za.attrs[ 'dict_col_metadata' ] # load previous written metadata
+
+                # retrieve dtype
+                dtype = str if dict_col_metadata[ "flag_categorical" ] else za.dtype # dtype of cetegorical data columns should be str
             else :
-                set_value_unique = set( )
-                mask_nan = pd.isnull( values ) # check np.nan values in the array
-                if np.sum( mask_nan ) > 0 : # if the array contains np.nan value, add np.nan to the 'set_value_unique' 
-                    set_value_unique.add( np.nan )
-                # update non-NaN values
-                set_value_unique.update( set( e[ 1 ] for e in np.ndenumerate( values[ ~ mask_nan ] ) ) ) # handle broadcasting # retrieve a set of unique values in the input array # update values
-            
-            # handle when np.nan value exist 
-            if np.nan in set_value_unique : # when np.nan value was detected
-                if 'flag_contains_nan' not in dict_col_metadata or not dict_col_metadata[ 'flag_contains_nan' ] : # update metadata
-                    flag_update_dict_col_metadata = True # indicate that the column metadata should be updated
-                    dict_col_metadata[ 'flag_contains_nan' ] = True # mark that the column contains np.nan values
-                set_value_unique.remove( np.nan ) # removes np.nan from the category
-            
-            # compose a list of unique categorical values and save it as a column metadata
-            if 'l_value_unique' not in dict_col_metadata :
+                dtype = None # define default dtype
+                ''' create a metadata of the new column '''
                 flag_update_dict_col_metadata = True # indicate that the column metadata should be updated
-                l_value_unique = list( set_value_unique ) # retrieve a list of unique values # can contain mixed types (int, float, str)
-                dict_col_metadata[ 'l_value_unique' ] = list( str( e ) for e in l_value_unique ) # update metadata # convert entries to string (so that all values with mixed types can be interpreted as strings)
-            else : # update existing categories
-                l_value_unique = dict_col_metadata[ 'l_value_unique' ] # retrieve 'l_value_unique'
-                set_value_unique_previously_set = set( l_value_unique )
-                l_value_unique_newly_added = list( val for val in list( set_value_unique ) if val not in set_value_unique_previously_set ) # retrieve list of new categories
-                if len( l_value_unique_newly_added ) > 0 :
+                dict_col_metadata = { 'flag_categorical' : False, 'dict_metadata_description' : None } # set a default value for 'flag_categorical' metadata attribute and 'dict_metadata_description' attribute
+                dict_col_metadata[ 'flag_filtered' ] = self.filter is not None # mark the column containing filtered data
+
+                # infer the data type of input values
+                # if values is numpy.ndarray, use the dtype of the array
+                if isinstance( values, np.ndarray ) :
+                    dtype = values.dtype
+
+                # if values is not numpy.ndarray or the dtype is object datatype, use the type of the data returned by the type( ) python function.
+                if not isinstance( values, np.ndarray ) or dtype is np.dtype( 'O' ) : 
+                    if isinstance( values, ( str, float, int ) ) : # if a single value has been given
+                        # %% BROADCASTING %%
+                        dtype = type( values )
+                        self.initialize_column( name_col, dtype = dtype, shape_not_primary_axis = ( ), chunks = ( ), categorical_values = [ values ] if dtype is str else None, fill_value = - 1 if dtype is str else 0 ) # initialize the column assuming 1D columns
+                    else : # if an array was given
+                        # extract the first entry from the array
+                        val = values
+                        while hasattr( val, '__iter__' ) and not isinstance( val, str ) :
+                            val = next( val.__iter__() ) # get the first element of the current array
+                        dtype = type( val )
+
+                        # check whether the array contains strings with np.nan values (make sure array starting with np.nan is not a string array containing np.nan values)
+                        if dtype is float and val is np.nan :
+                            for t_coord, val in np.ndenumerate( values ) : # np.ndenumerate can handle nexted lists
+                                if type( val ) is str :
+                                    dtype = str
+                                    break
+
+            # update the length of zdf if it has not been set.
+            if self._n_rows_unfiltered is None : # if a valid information about the number of rows is available
+                self.update_metadata( { 'int_num_rows' : len( values ) } ) # retrieve the length of the primary axis # update metadata
+
+            """ convert data to np.ndarray """
+            # detect broadcasting 
+            flag_broadcasting_active = isinstance( values, ( str, float, int ) )
+
+            # retrieve data values from the 'values' 
+            if isinstance( values, bitarray ) :
+                values = BA.to_array( values ) # retrieve boolean values from the input bitarray
+            if isinstance( values, pd.Series ) :
+                values = values.values
+            # convert values that is not numpy.ndarray to numpy.ndarray object (for the consistency of the loaded_data)
+            if not isinstance( values, np.ndarray ) and not flag_broadcasting_active :
+                values = np.array( values, dtype = object if dtype is str else dtype ) # use 'object' dtype when converting values to a numpy.ndarray object if dtype is 'str'
+
+            # retrieve shape and chunk sizes of the object
+            dim_secondary_inferred = [ ] if flag_broadcasting_active else list( values.shape )[ 1 : ] # infer dimensions excluding primary axis
+            shape_inferred = tuple( [ self._n_rows_unfiltered ] + dim_secondary_inferred )
+            chunks_inferred = tuple( [ self._dict_metadata[ 'int_num_rows_in_a_chunk' ] ] + dim_secondary_inferred )
+
+            # logger.info( shape, chunks, dtype, self._dict_metadata[ 'flag_store_string_as_categorical' ] )
+            # write categorical data
+            if dtype is str and self._dict_metadata[ 'flag_store_string_as_categorical' ] : # storing categorical data   
+                # default fill_value for categorical data is -1 (representing np.nan values)
+                fill_value = -1
+                # update metadata of the column
+                if not dict_col_metadata[ 'flag_categorical' ] :
                     flag_update_dict_col_metadata = True # indicate that the column metadata should be updated
-                    l_value_unique = dict_col_metadata[ 'l_value_unique' ] + l_value_unique_newly_added # extend 'l_value_unique'
+                    dict_col_metadata[ 'flag_categorical' ] = True # set metadata for categorical datatype
+
+                ''' retrieve unique values for categorical data '''
+                if flag_broadcasting_active :
+                    set_value_unique = set( [ values ] )
+                else :
+                    set_value_unique = set( )
+                    mask_nan = pd.isnull( values ) # check np.nan values in the array
+                    if np.sum( mask_nan ) > 0 : # if the array contains np.nan value, add np.nan to the 'set_value_unique' 
+                        set_value_unique.add( np.nan )
+                    # update non-NaN values
+                    set_value_unique.update( set( e[ 1 ] for e in np.ndenumerate( values[ ~ mask_nan ] ) ) ) # handle broadcasting # retrieve a set of unique values in the input array # update values
+
+                # handle when np.nan value exist 
+                if np.nan in set_value_unique : # when np.nan value was detected
+                    if 'flag_contains_nan' not in dict_col_metadata or not dict_col_metadata[ 'flag_contains_nan' ] : # update metadata
+                        flag_update_dict_col_metadata = True # indicate that the column metadata should be updated
+                        dict_col_metadata[ 'flag_contains_nan' ] = True # mark that the column contains np.nan values
+                    set_value_unique.remove( np.nan ) # removes np.nan from the category
+
+                # compose a list of unique categorical values and save it as a column metadata
+                if 'l_value_unique' not in dict_col_metadata :
+                    flag_update_dict_col_metadata = True # indicate that the column metadata should be updated
+                    l_value_unique = list( set_value_unique ) # retrieve a list of unique values # can contain mixed types (int, float, str)
                     dict_col_metadata[ 'l_value_unique' ] = l_value_unique # update metadata
-            
-            # retrieve appropriate datatype for encoding unique categorical values
-            int_min_number_of_bits = int( np.ceil( math.log2( len( l_value_unique ) ) ) ) + 1 # since signed int will be used, an additional bit is required to encode the data
-            if int_min_number_of_bits <= 8 :
-                dtype = np.int8
-            elif int_min_number_of_bits <= 16 :
-                dtype = np.int16
-            else :
-                dtype = np.int32
-            
-            # open Zarr object representing the current column
-            za = zarr.open( path_folder_col, mode = 'a', synchronizer = zarr.ThreadSynchronizer( ) ) if flag_col_already_exists else zarr.open( path_folder_col, mode = 'w', shape = shape_inferred, chunks = chunks_inferred, dtype = dtype, fill_value = fill_value, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object if the object does not exist.
-            
-            # if dtype changed from the previous zarr object, re-write the entire Zarr object with changed dtype. (this will happens very rarely, and will not significantly affect the performance)
-            if dtype != za.dtype : # dtype should be larger than za.dtype if they are not equal (due to increased number of bits required to encode categorical data)
-                if self.verbose :
-                    logger.info( f'[categorical data] {za.dtype} will be changed to {dtype}' )
-                path_folder_col_new = f"{self._path_folder_zdf}{name_col}_{bk.UUID( )}/" # compose the new output folder
-                za_new = zarr.open( path_folder_col_new, mode = 'w', shape = za.shape, chunks = za.chunks, dtype = dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object using the new dtype
-                za_new[ : ] = za[ : ] # copy the data 
-                filesystem_operations( 'rm', path_folder_col ) # delete the previous Zarr object
-                filesystem_operations( 'mv', path_folder_col_new, path_folder_col ) # replace the previous Zarr object with the new object
-                za = zarr.open( path_folder_col, mode = 'a', synchronizer = zarr.ThreadSynchronizer( ) ) # open the new Zarr object
-            
-            # encode data
-            dict_encode_category = dict( ( e, i ) for i, e in enumerate( l_value_unique ) ) # retrieve a dictionary encoding value to integer representation of the value
-            
-            if flag_broadcasting_active :
-                # perform encoding for single input value
-                values = dict_encode_category[ values ] if values in dict_encode_category else -1
-            else :
-                # perform encoding for multiple values
-                values_before_encoding = values
-                values = np.zeros_like( values_before_encoding, dtype = dtype ) # initialize encoded values
-                for t_coord, val in np.ndenumerate( values_before_encoding ) : # np.ndarray object can be encoded.
-                    values[ t_coord ] = dict_encode_category[ val ] if val in dict_encode_category else -1 # encode strings into integer representations # -1 (negative integers) encodes np.nan, which is a fill_value for zarr object containing categorical data
-        else :
-            # when categorical data is not used, modify retrieved/inferred dtype
-            if self.flag_store_64bit_integer_as_float : # if 'flag_store_64bit_integer_as_float' flag is set to True, avoid using np.int64 dtype due to its compatibility with the JavaScript
-                if np.issubdtype( dtype, np.int64 ) : # the np.int64 dtype will be saved using the np.float64 dtype
-                    dtype = np.float64
-                if dtype == int : # the general 'int' dtype will be saved using the np.int32 dtype
+                else : # update existing categories
+                    l_value_unique = dict_col_metadata[ 'l_value_unique' ] # retrieve 'l_value_unique'
+                    set_value_unique_previously_set = set( l_value_unique )
+                    l_value_unique_newly_added = list( val for val in list( set_value_unique ) if val not in set_value_unique_previously_set ) # retrieve list of new categories
+                    if len( l_value_unique_newly_added ) > 0 :
+                        flag_update_dict_col_metadata = True # indicate that the column metadata should be updated
+                        l_value_unique = dict_col_metadata[ 'l_value_unique' ] + l_value_unique_newly_added # extend 'l_value_unique'
+                        dict_col_metadata[ 'l_value_unique' ] = l_value_unique # update metadata
+
+                # retrieve appropriate datatype for encoding unique categorical values
+                int_min_number_of_bits = int( np.ceil( math.log2( len( l_value_unique ) ) ) ) + 1 # since signed int will be used, an additional bit is required to encode the data
+                if int_min_number_of_bits <= 8 :
+                    dtype = np.int8
+                elif int_min_number_of_bits <= 16 :
+                    dtype = np.int16
+                else :
                     dtype = np.int32
-            
-        # open zarr object and write data
-        za = zarr.open( path_folder_col, mode = 'a', synchronizer = zarr.ThreadSynchronizer( ) ) if flag_col_already_exists else zarr.open( path_folder_col, mode = 'w', shape = shape_inferred, chunks = chunks_inferred, dtype = dtype, fill_value = fill_value, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object if the object does not exist.
-        
-        if flag_coords_in_bool_mask and isinstance( coords, np.ndarray ) and za.shape == coords.shape : 
-            # use mask selection
-            za.set_mask_selection( coords, values )
-        elif flag_coords_in_coordinate_arrays :
-            # coordinate array selection
-            za.set_coordinate_selection( coords, values )
-        else :
-            # use orthogonal selection as a default
-            za.set_orthogonal_selection( tuple( [ coords ] + list( coords_rest ) ), values ) if flag_indexing_in_non_primary_axis else za.set_orthogonal_selection( coords, values )
-            
-        # save/update column metadata
-        if flag_update_dict_col_metadata :
-            za.attrs[ 'dict_col_metadata' ] = dict_col_metadata
-        
-        # update metadata of the current zdf object
-        if name_col not in self._dict_metadata[ 'columns' ] :
-            self._add_column( name_col = name_col, dict_metadata_description = dict_col_metadata[ 'dict_metadata_description' ] ) # add 'dict_metadata_description'
-        
-        # if indexing was used to partially update the data, remove the cache, because it can cause inconsistency
-        if flag_indexing_primary_axis and name_col in self._loaded_data :
-            del self._loaded_data[ name_col ]
-        # add data to the loaded data dictionary (object cache) if 'self._flag_load_data_after_adding_new_column' is True and indexing was not used
-        if self._flag_load_data_after_adding_new_column and not flag_indexing_primary_axis and coords_rest is None and not flag_broadcasting_active :  # no indexing through secondary axis, too # broadcasting should not been used for caching
-            self._loaded_data[ name_col ] = values_before_encoding if dict_col_metadata[ 'flag_categorical' ] else values
-            
-        if self.use_locking : # %% FILE LOCKING %%
-            if not flag_lock_already_acquired : # release lock if it has not been acquired before the operation
-                self._zsls.release_lock( path_lock )
+
+                # open Zarr object representing the current column
+                za = zarr.open( path_folder_col, mode = 'a', synchronizer = zarr.ThreadSynchronizer( ) ) if flag_col_already_exists else zarr.open( path_folder_col, mode = 'w', shape = shape_inferred, chunks = chunks_inferred, dtype = dtype, fill_value = fill_value, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object if the object does not exist.
+
+                # if dtype changed from the previous zarr object, re-write the entire Zarr object with changed dtype. (this will happens very rarely, and will not significantly affect the performance)
+                if dtype != za.dtype : # dtype should be larger than za.dtype if they are not equal (due to increased number of bits required to encode categorical data)
+                    if self.verbose :
+                        logger.info( f'[categorical data] {za.dtype} will be changed to {dtype}' )
+                    path_folder_col_new = f"{self._path_folder_zdf}{name_col}_{bk.UUID( )}/" # compose the new output folder
+                    za_new = zarr.open( path_folder_col_new, mode = 'w', shape = za.shape, chunks = za.chunks, dtype = dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object using the new dtype
+                    za_new[ : ] = za[ : ] # copy the data 
+                    filesystem_operations( 'rm', path_folder_col ) # delete the previous Zarr object
+                    filesystem_operations( 'mv', path_folder_col_new, path_folder_col ) # replace the previous Zarr object with the new object
+                    za = zarr.open( path_folder_col, mode = 'a', synchronizer = zarr.ThreadSynchronizer( ) ) # open the new Zarr object
+
+                # encode data
+                dict_encode_category = dict( ( e, i ) for i, e in enumerate( l_value_unique ) ) # retrieve a dictionary encoding value to integer representation of the value
+
+                if flag_broadcasting_active :
+                    # perform encoding for single input value
+                    values = dict_encode_category[ values ] if values in dict_encode_category else -1
+                else :
+                    # perform encoding for multiple values
+                    values_before_encoding = values
+                    values = np.zeros_like( values_before_encoding, dtype = dtype ) # initialize encoded values
+                    for t_coord, val in np.ndenumerate( values_before_encoding ) : # np.ndarray object can be encoded.
+                        values[ t_coord ] = dict_encode_category[ val ] if val in dict_encode_category else -1 # encode strings into integer representations # -1 (negative integers) encodes np.nan, which is a fill_value for zarr object containing categorical data
+            else :
+                # when categorical data is not used, modify retrieved/inferred dtype (for compatibility with JavaScript implementation of Zarr.js)
+                if self.flag_store_64bit_integer_as_float : # if 'flag_store_64bit_integer_as_float' flag is set to True, avoid using np.int64 dtype due to its compatibility with the JavaScript
+                    if np.issubdtype( dtype, np.int64 ) : # the np.int64 dtype will be saved using the np.float64 dtype
+                        dtype = np.float64
+                    if dtype == int : # the general 'int' dtype will be saved using the np.int32 dtype
+                        dtype = np.int32
+
+            # open zarr object and write data
+            za = zarr.open( path_folder_col, mode = 'a', synchronizer = zarr.ThreadSynchronizer( ) ) if flag_col_already_exists else zarr.open( path_folder_col, mode = 'w', shape = shape_inferred, chunks = chunks_inferred, dtype = dtype, fill_value = fill_value, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object if the object does not exist.
+
+            if flag_coords_in_bool_mask and isinstance( coords, np.ndarray ) and za.shape == coords.shape : 
+                # use mask selection
+                za.set_mask_selection( coords, values )
+            elif flag_coords_in_coordinate_arrays :
+                # coordinate array selection
+                za.set_coordinate_selection( coords, values )
+            else :
+                # use orthogonal selection as a default
+                za.set_orthogonal_selection( tuple( [ coords ] + list( coords_rest ) ), values ) if flag_indexing_in_non_primary_axis else za.set_orthogonal_selection( coords, values )
+
+            # save/update column metadata
+            if flag_update_dict_col_metadata :
+                za.attrs[ 'dict_col_metadata' ] = dict_col_metadata
+
+            # update metadata of the current zdf object
+            if name_col not in self._dict_metadata[ 'columns' ] :
+                self._add_column( name_col = name_col, dict_metadata_description = dict_col_metadata[ 'dict_metadata_description' ] ) # add 'dict_metadata_description'
+
+            # if indexing was used to partially update the data, remove the cache, because it can cause inconsistency
+            if flag_indexing_primary_axis and name_col in self._loaded_data :
+                del self._loaded_data[ name_col ]
+            # add data to the loaded data dictionary (object cache) if 'self._flag_load_data_after_adding_new_column' is True and indexing was not used
+            if self._flag_load_data_after_adding_new_column and not flag_indexing_primary_axis and coords_rest is None and not flag_broadcasting_active :  # no indexing through secondary axis, too # broadcasting should not been used for caching
+                self._loaded_data[ name_col ] = values_before_encoding if dict_col_metadata[ 'flag_categorical' ] else values
+        finally :
+            if self.use_locking : # %% FILE LOCKING %%
+                if not flag_lock_already_acquired : # release lock if it has not been acquired before the operation
+                    self._zsls.release_lock( path_lock )
     def __delitem__( self, name_col ) :
         ''' # 2022-06-20 21:57:38 
         remove the column from the memory and the object on disk
@@ -6291,13 +6350,13 @@ class ZarrDataFrame( ) :
         path_folder_zarr = f"{self._path_folder_zdf}{name_col}/"
         za = zarr.open( path_folder_zarr, mode = 'r' ) 
         return za.shape[ 1 : ] # return the shape including the dimension of the primary axis
-    def save( self, path_folder_zdf, * l_name_col ) :
+    def save( self, path_folder_zdf, l_name_col : Union[ None, list ] = None ) :
         """ # 2022-11-15 00:19:09 
         save data contained in the ZarrDataFrame object to the new path.
         if a filter is active, filtered ZarrDataFrame will be saved.
         
         'path_folder_zdf' : the output ZarrDataFrame object
-        'l_name_col' : the list of names of columns to save. if no column name is given, copy all columns in the current ZarrDataFrame
+        'l_name_col' : the list of names of columns to save. if None is given, copy all columns in the current ZarrDataFrame
         """
         # check validity of the path
         path_folder_zdf = os.path.abspath( path_folder_zdf ) + '/' # retrieve abspath of the output object
@@ -6317,8 +6376,8 @@ class ZarrDataFrame( ) :
             flag_use_lazy_loading = self._flag_use_lazy_loading,
         ) # open a new zdf using the same setting as the current ZarrDataFrame
         
-        # handle empty 'l_name_col'
-        if len( l_name_col ) == 0 :
+        # handle when 'l_name_col' is None
+        if l_name_col is None :
             l_name_col = list( self.columns ) # if no column name is given, copy all columns in the current ZarrDataFrame to the new ZarrDataFrame
         
         for name_col in set( self.columns ).intersection( l_name_col ) : # copy column by column to the output ZarrDataFrame object
@@ -6428,6 +6487,8 @@ class ZarrDataFrame( ) :
         # exit if currently read-only mode is active
         if self._mode == 'r' :
             return
+        # retrieve up-to-date metadata
+        self.metadata
         if name_col_before in self.columns_excluding_components : # does not rename columns in the component RamData
             # if the column name already exists, return
             if name_col_after in self.columns_excluding_components : 
@@ -6514,7 +6575,7 @@ class RamDataAxis( ) :
         flag_check_combined_type = False, 
         flag_is_interleaved : bool = False, 
         int_max_num_entries_per_batch = 1000000, 
-        int_num_entries_in_a_chunk = 5000, 
+        int_num_entries_in_a_chunk = 10000, 
         ba_filter : Union[ bitarray, None ] = None, 
         ramdata = None, 
         int_index_str_rep : int = 0, 
@@ -7216,13 +7277,14 @@ class RamDataAxis( ) :
             if 0 <= i < n and ba_filter[ i ] :
                 ba_filter_of_selected_entries[ i ] = True
         return ba_filter_of_selected_entries
-    def save( self, path_folder ) :
-        """ # 2022-11-01 14:10:40 
+    def save( self, path_folder, l_name_col : Union[ None, list ] = None ) :
+        """ # 2023-01-03 15:36:15 
         save data contained in the Axis object (and metadata saved as ZarrDataFrame) to the new path.
         if a filter is active, filtered data will be saved.
         the number of entries in a chunk will be 'int_num_entries_in_a_chunk' attribute of the RamData
         
         'path_folder' : the path of the output Axis object
+        'l_name_col' : the list of names of columns of the metadata to save. if None is given, all columns of the metadata will be saved
         """
         # retrieve attributes
         name_axis = self._name_axis
@@ -7238,7 +7300,7 @@ class RamDataAxis( ) :
         # save metadata
         '''
         # save number and categorical data
-        self.meta.save( f"{path_folder}{self._name_axis}.num_and_cat.zdf" ) # save all columns
+        self.meta.save( f"{path_folder}{self._name_axis}.num_and_cat.zdf", l_name_col ) # save all columns
         
         '''
         # save string data
@@ -10919,75 +10981,77 @@ class RamData( ) :
         
         if self.use_locking : # %% FILE LOCKING %%
             release_locks_for_metadata_columns = self.acquire_locks_for_metadata_columns( axis = axis, l_name_col = l_name_col_summarized_with_name_layer_prefix_and_suffix )
-            
-        # retrieve RAMtx object to summarize
-        rtx = self.layer.get_ramtx( not flag_summarizing_barcode )
-        if rtx is None :
-            if self.verbose :
-                logger.error( f'it appears that the current layer {self.layer.name} appears to be empty, exiting' )
-            return
-        
-        # define functions for multiprocessing step
-        def process_batch( pipe_receiver_batch, pipe_sender_result ) :
-            ''' # 2022-05-08 13:19:07 
-            summarize a given list of entries, and send summarized result through a pipe
-            '''
-            # retrieve fork-safe RAMtx
-            rtx_fork_safe = rtx.get_fork_safe_version( ) # load zarr_server (if RAMtx contains remote data source) to be thread-safe
-
-            while True :
-                batch = pipe_receiver_batch.recv( )
-                if batch is None :
-                    break
-                int_num_processed_records, l_int_entry_current_batch = batch[ 'int_accumulated_weight_current_batch' ], batch[ 'l_int_entry_current_batch' ] # parse batch
-
-                # retrieve the number of index_entries
-                int_num_entries_in_a_batch = len( l_int_entry_current_batch )
-
-                if int_num_entries_in_a_batch == 0 :
-                    logger.info( 'empty batch detected' )
-
-                # iterate through the data of each entry
-                dict_data = dict( ( name_col, [ ] ) for name_col in l_name_col_summarized ) # collect results
-                l_int_entry_of_axis_for_querying = [ ] # collect list of queried entries with valid results
-                for int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying, arr_value in zip( * rtx_fork_safe[ l_int_entry_current_batch ] ) : # retrieve data for the current batch
-                    # retrieve summary for the entry
-                    dict_res = summarizing_func( self, int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying, arr_value ) # summarize the data for the entry
-                    # if the result empty, does not collect the result
-                    if dict_res is None :
-                        continue
-                    # collect the result
-                    # collect the int_entry with a valid result
-                    l_int_entry_of_axis_for_querying.append( int_entry_of_axis_for_querying )
-                    # collect the result
-                    for name_col in l_name_col_summarized :
-                        dict_data[ name_col ].append( dict_res[ name_col ] if name_col in dict_res else np.nan )
-                pipe_sender_result.send( ( int_num_processed_records, l_int_entry_of_axis_for_querying, dict_data ) ) # send information about the output file
-                
-            # destroy zarr servers
-            rtx_fork_safe.terminate_spawned_processes( )
-        # initialize the progress bar
-        pbar = progress_bar( desc = f"{name_layer} / {'barcodes' if flag_summarizing_barcode else 'features'}", total = rtx.get_total_num_records( int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ) )
-        def post_process_batch( res ) :
-            """ # 2022-07-06 03:21:49 
-            """
-            int_num_processed_records, l_int_entry_of_axis_for_querying, dict_data = res # parse result
-            # exit if no result has been collected
-            if len( l_int_entry_of_axis_for_querying ) == 0 :
+        try :
+            # retrieve RAMtx object to summarize
+            rtx = self.layer.get_ramtx( not flag_summarizing_barcode )
+            if rtx is None :
+                if self.verbose :
+                    logger.error( f'it appears that the current layer {self.layer.name} appears to be empty, exiting' )
                 return
-            
-            pbar.update( int_num_processed_records ) # update the progress bar
 
-            for name_col, name_col_with_prefix_and_suffix in zip( l_name_col_summarized, l_name_col_summarized_with_name_layer_prefix_and_suffix ) : 
-                ax.meta[ name_col_with_prefix_and_suffix, l_int_entry_of_axis_for_querying ] = dict_data[ name_col ]
-        # summarize the RAMtx using multiple processes
-        rtx_fork_safe = rtx.get_fork_safe_version( ) # get fork-safe version of rtx (batch generator uses a separate process to retrieve a batch, which requires rtx object to be used in a forked process)
-        bk.Multiprocessing_Batch_Generator_and_Workers( rtx_fork_safe.batch_generator( ax.filter, int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, int_total_weight_for_each_batch = self.int_total_weight_for_each_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 )
-        rtx_fork_safe.terminate_spawned_processes( ) # terminate the spawned processes
-        pbar.close( ) # close the progress bar
-        
-        if self.use_locking : # %% FILE LOCKING %%
-            release_locks_for_metadata_columns( )
+            # define functions for multiprocessing step
+            def process_batch( pipe_receiver_batch, pipe_sender_result ) :
+                ''' # 2022-05-08 13:19:07 
+                summarize a given list of entries, and send summarized result through a pipe
+                '''
+                # retrieve fork-safe RAMtx
+                rtx_fork_safe = rtx.get_fork_safe_version( ) # load zarr_server (if RAMtx contains remote data source) to be thread-safe
+
+                while True :
+                    batch = pipe_receiver_batch.recv( )
+                    if batch is None :
+                        break
+                    int_num_processed_records, l_int_entry_current_batch = batch[ 'int_accumulated_weight_current_batch' ], batch[ 'l_int_entry_current_batch' ] # parse batch
+
+                    # retrieve the number of index_entries
+                    int_num_entries_in_a_batch = len( l_int_entry_current_batch )
+
+                    if int_num_entries_in_a_batch == 0 :
+                        logger.info( 'empty batch detected' )
+
+                    # iterate through the data of each entry
+                    dict_data = dict( ( name_col, [ ] ) for name_col in l_name_col_summarized ) # collect results
+                    l_int_entry_of_axis_for_querying = [ ] # collect list of queried entries with valid results
+                    for int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying, arr_value in zip( * rtx_fork_safe[ l_int_entry_current_batch ] ) : # retrieve data for the current batch
+                        # retrieve summary for the entry
+                        dict_res = summarizing_func( self, int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying, arr_value ) # summarize the data for the entry
+                        # if the result empty, does not collect the result
+                        if dict_res is None :
+                            continue
+                        # collect the result
+                        # collect the int_entry with a valid result
+                        l_int_entry_of_axis_for_querying.append( int_entry_of_axis_for_querying )
+                        # collect the result
+                        for name_col in l_name_col_summarized :
+                            dict_data[ name_col ].append( dict_res[ name_col ] if name_col in dict_res else np.nan )
+                    pipe_sender_result.send( ( int_num_processed_records, l_int_entry_of_axis_for_querying, dict_data ) ) # send information about the output file
+
+                # destroy zarr servers
+                rtx_fork_safe.terminate_spawned_processes( )
+            # initialize the progress bar
+            pbar = progress_bar( desc = f"{name_layer} / {'barcodes' if flag_summarizing_barcode else 'features'}", total = rtx.get_total_num_records( int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ) )
+            def post_process_batch( res ) :
+                """ # 2022-07-06 03:21:49 
+                """
+                int_num_processed_records, l_int_entry_of_axis_for_querying, dict_data = res # parse result
+                # exit if no result has been collected
+                if len( l_int_entry_of_axis_for_querying ) == 0 :
+                    return
+
+                pbar.update( int_num_processed_records ) # update the progress bar
+
+                for name_col, name_col_with_prefix_and_suffix in zip( l_name_col_summarized, l_name_col_summarized_with_name_layer_prefix_and_suffix ) : 
+                    ax.meta[ name_col_with_prefix_and_suffix, l_int_entry_of_axis_for_querying ] = dict_data[ name_col ]
+            # summarize the RAMtx using multiple processes
+            rtx_fork_safe = rtx.get_fork_safe_version( ) # get fork-safe version of rtx (batch generator uses a separate process to retrieve a batch, which requires rtx object to be used in a forked process)
+            try :
+                bk.Multiprocessing_Batch_Generator_and_Workers( rtx_fork_safe.batch_generator( ax.filter, int_num_entries_for_each_weight_calculation_batch = self.int_num_entries_for_each_weight_calculation_batch, int_total_weight_for_each_batch = self.int_total_weight_for_each_batch, flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx = self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx ), process_batch, post_process_batch = post_process_batch, int_num_threads = int_num_threads, int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop = 0.2 )
+            finally :
+                rtx_fork_safe.terminate_spawned_processes( ) # terminate the spawned processes
+                pbar.close( ) # close the progress bar
+        finally :
+            if self.use_locking : # %% FILE LOCKING %%
+                release_locks_for_metadata_columns( )
         
         # report results
         if self.verbose :
@@ -11590,8 +11654,18 @@ class RamData( ) :
         if self.verbose :
             logger.info( f'[RamData.apply] apply operation {name_layer} > {name_layer_new} has been completed' )
     """ </CORE METHODS> """
-    def subset( self, path_folder_ramdata_output, l_name_layer : list = [ ], dict_mode_instructions : dict = dict( ), int_num_threads = None, flag_survey_weights = False, ** kwargs ) :
-        ''' # 2022-12-14 19:04:15 
+    def subset( 
+        self, 
+        path_folder_ramdata_output, 
+        l_name_layer : list = [ ], 
+        dict_mode_instructions : dict = dict( ), 
+        int_num_threads = None, 
+        flag_survey_weights = False, 
+        l_name_col_bc : Union[ None, list ] = None,
+        l_name_col_ft : Union[ None, list ] = None,
+        ** kwargs
+    ) :
+        ''' # 2023-01-03 15:39:15 
         this function will create a new RamData object on disk by creating a subset of the current RamData according to the current filters. the following components will be subsetted.
             - Axis 
                  - Metadata
@@ -11608,6 +11682,9 @@ class RamData( ) :
         'int_num_threads' : the number of CPUs to use. by default, the number of CPUs set by the RamData attribute 'int_num_cpus' will be used.
         'dict_mode_instructions' : a dictionary with key = name_layer, value = 'mode_instructions' arguments for 'RamData.apply' method
         'flag_survey_weights' : survey the weights of the output RAMtx objects of the output layers
+        
+        'l_name_col_bc' : the list of names of columns of the metadata of the barcode axis to save. if None is given, all columns of the metadata of 'barcode' axis will be saved
+        'l_name_col_ft' : the list of names of columns of the metadata of the feature axis to save. if None is given, all columns of the metadata of 'feature' axis will be saved
         '''
         ''' handle inputs '''
         # check invalid input
@@ -11617,16 +11694,16 @@ class RamData( ) :
         # create the RamData output folder
         filesystem_operations( 'mkdir', path_folder_ramdata_output, exist_ok = True ) 
 
-        # copy axes and associated metadata
-        self.bc.save( path_folder_ramdata_output )
-        self.ft.save( path_folder_ramdata_output )
-
         # retrieve valid set of name_layer
         set_name_layer = self.layers.intersection( l_name_layer )
         
-        ''' filter each layer '''
         # initialize and destroy the view after subsetting
         with self as view : # load 'dict_change' for coordinate conversion according to the given filters, creating the view of the RamData
+            # copy axes and associated metadata
+            self.bc.save( path_folder_ramdata_output, l_name_col = l_name_col_bc )
+            self.ft.save( path_folder_ramdata_output, l_name_col = l_name_col_ft )
+
+            ''' filter each layer '''
             for name_layer in set_name_layer : # for each valid name_layer
                 view.apply( 
                     name_layer, 
@@ -11638,10 +11715,12 @@ class RamData( ) :
                     flag_survey_weights = flag_survey_weights,
                     ** kwargs
                 ) # flag_dtype_output = None : use the same dtype as the input RAMtx object
-        
+
         # compose metadata
         root = zarr.group( path_folder_ramdata_output )
-        root.attrs[ 'dict_metadata' ] = { 
+        dict_metadata = deepcopy( self.metadata ) # get metadata of the current RamData
+        # update the metadata
+        dict_metadata.update( { 
             'path_folder_mtx_10x_input' : None,
             'str_completed_time' : bk.TIME_GET_timestamp( True ),
             'int_num_features' : self.ft.meta.n_rows,
@@ -11650,7 +11729,8 @@ class RamData( ) :
             'models' : dict( ),
             'version' : _version_,
             'identifier' : bk.UUID( ),
-        }
+        } )
+        root.attrs[ 'dict_metadata' ] = dict_metadata # write the metadata
     def normalize( self, name_layer = 'raw', name_layer_new = 'normalized', name_col_total_count = 'raw_sum', int_total_count_target = 10000, mode_instructions = [ [ 'sparse_for_querying_features', 'sparse_for_querying_features' ], [ 'sparse_for_querying_barcodes', 'sparse_for_querying_barcodes' ] ], int_num_threads = None, ** kwargs ) :
         ''' # 2022-07-06 23:58:15 
         this function perform normalization of a given data and will create a new data in the current RamData object.
@@ -13522,7 +13602,7 @@ class RamData( ) :
         dict_kw_tsne : Union[ Dict, List[ Dict ] ] = dict( ),
         int_num_processes : int = 5
     ) :
-        """ # 2022-12-24 12:36:46 
+        """ # 2022-12-29 04:43:45 
         run scanpy methods using the PCA values calculated using scelephant
 
         name_col_pca : str = 'X_pca' #
@@ -13560,7 +13640,6 @@ class RamData( ) :
                     logger.info( f'[RamData.run_scanpy_using_pca] AnnData was loaded from {path_file_adata}' )
             except :
                 pass
-        
         # fetch PCA values from RamData and calculate adjacency matrix
         if not flag_adata_loaded : # if adjacency matrix is not available, calculate adjacency matrix
             # retrieve anndata and calculate the neighborhood graph
@@ -13582,8 +13661,8 @@ class RamData( ) :
                 dict_kw_umap = [ dict_kw_umap ]
             for dict_kw in dict_kw_umap :
                 str_suffix_run = dict_kw.pop( 'str_suffix_run', '' ) # retrieve 'str_suffix_run' (default is '')
-                sc.tl.umap( adata, ** dict_kw ) # perform analysis using scanpy
                 name_col = f'X_umap{str_suffix}{str_suffix_run}' # compose the column name
+                sc.tl.umap( adata, ** dict_kw ) # perform analysis using scanpy
                 self.bc.meta[ name_col ] = adata.obsm[ 'X_umap' ] # save result to RamData
                 if self.verbose :
                     logger.info( f"[RamData.run_scanpy_using_pca] UMAP calculation completed, and the resulting UMAP-embedding was saved to the '{name_col}' column of the RamData." )
@@ -13601,15 +13680,14 @@ class RamData( ) :
         if 'leiden' in set_method :
             if isinstance( dict_kw_leiden, dict ) : # wrap a single dictionary with a list the 
                 dict_kw_leiden = [ dict_kw_leiden ]
-
-            if len( dict_kw_leiden ) == 1 : # when only a single run will be performed
-                dict_kw = dict_kw_leiden[ 0 ]
-                str_suffix_run = dict_kw.pop( 'str_suffix_run', '' ) # retrieve 'str_suffix_run' (default is '')
-                name_col = f'leiden{str_suffix}{str_suffix_run}' # compose the column name
-                sc.tl.leiden( adata, key_added = name_col, ** dict_kw ) # perform leiden clustering
-                self.bc.meta[ name_col ] = adata.obs[ name_col ] # save result to RamData
-                if self.verbose :
-                    logger.info( f"[RamData.run_scanpy_using_pca] leiden clustering completed, and the resulting cluster membership information was saved to the '{name_col}' column of the RamData." )
+            if len( dict_kw_leiden ) == 1 or int_num_processes <= 3 : # using a leiden clustering in the main process only.
+                for dict_kw in dict_kw_leiden : # for each 'dict_kw'
+                    str_suffix_run = dict_kw.pop( 'str_suffix_run', '' ) # retrieve 'str_suffix_run' (default is '')
+                    name_col = f'leiden{str_suffix}{str_suffix_run}' # compose the column name
+                    sc.tl.leiden( adata, key_added = name_col, ** dict_kw ) # perform leiden clustering
+                    self.bc.meta[ name_col ] = adata.obs[ name_col ] # save result to RamData
+                    if self.verbose :
+                        logger.info( f"[RamData.run_scanpy_using_pca] leiden clustering completed, and the resulting cluster membership information was saved to the '{name_col}' column of the RamData." )
             else : # when multiple clustering runs should be run
                 import joblib # for persistent, reference-counting-free memory
 
@@ -13668,7 +13746,7 @@ class RamData( ) :
         name_col_filter_for_collecting_neighbors : Union[ None, str ] = None,
         int_num_nearest_neighbors_to_collect : int = 3,
     ) :
-        """ # 2022-12-28 21:19:29 
+        """ # 2023-01-02 09:40:06 
         
         use knn index built from subsampled entries to classify (predict labels) or embed (predict embeddings) barcodes.
         
@@ -13710,6 +13788,8 @@ class RamData( ) :
         # load the model and retrieve cluster labels
         type_model = 'knnindex'
         if self.check_model( name_model, type_model ) : # if the model exists, exit early
+            if self.verbose :
+                logging.info( f"the output model '{name_model}' already exists, exiting" )
             return
             
         if len( self.bc.meta.get_shape( name_col_x ) ) == 0 or int_num_components_x is None : # if only a single component is available or 'int_num_components_x' is None, use all components
@@ -13717,10 +13797,13 @@ class RamData( ) :
             X = ax.meta[ name_col_x, None, ] # load all components
         else :
             X = ax.meta[ name_col_x, None, : int_num_components_x ] # load top 'int_num_components_x' number of components
+        if self.verbose :
+            logging.info( f"data for building the knnindex '{name_model}' was retrieved" )  
 
         knnindex = pynndescent.NNDescent( X, n_neighbors = n_neighbors, ** dict_kw_pynndescent )
         knnindex.prepare( ) # prepare index for searching
-        
+        if self.verbose :
+            logging.info( f"the knnindex '{name_model}' was built" )        
         """
         assign labels or retrieve embeddings
         """
@@ -13761,7 +13844,8 @@ class RamData( ) :
                         neighbors = neighbors[ :, : int_num_nearest_neighbors_to_collect ] 
 
                     pipe_sender_result.send( ( l_int_entry_current_batch, neighbors ) ) # send the result back to the main process
-            pbar = progress_bar( total = ax.meta.n_rows ) # initialize the progress bar
+            logger.info( f"Searching neighbors of the {int_num_entries_in_the_knnindex} entries in the index" )
+            pbar = progress_bar( desc = f"neighbors of {int_num_entries_in_the_knnindex} entries", total = ax.meta.n_rows ) # initialize the progress bar
             def post_process_batch( res ) :
                 """ # 2022-07-13 22:18:26 
                 """
@@ -13806,7 +13890,6 @@ class RamData( ) :
             
         # save trained model
         model = { 'name_col_x' : name_col_x, 'int_num_components_x' : int_num_components_x, 'int_num_entries_in_the_knnindex' : int_num_entries_in_the_knnindex, 'filter' : ba_filter_knnindex, 'identifier' : self.identifier, 'knnindex' : knnindex, 'arr_neighbors' : arr_neighbors, 'arr_neighbors_index' : arr_neighbors_index }
-        return model, name_model, type_model
         self.save_model( model, name_model, type_model ) # save model to the RamData # save filter along with index (compressed filter for 20M entries is ~ 3MB) # save identifer of the current RamData, too
         
         # report
@@ -13959,9 +14042,9 @@ class RamData( ) :
         
         # prepare for recording neighbors
         ns = dict( ) # initialize a namespace
+        int_num_entries_in_the_knnindex = ba_filter_knnindex.count( ) # retrieve the number of entries in the knn index
         if flag_record_neighbors :
             # initialize a bitarray for recording neighbors
-            int_num_entries_in_the_knnindex = ba_filter_knnindex.count( ) # retrieve the number of entries in the knn index
             ba_for_recording_neighbors = bitarray( int_num_entries_in_the_knnindex )
             ba_for_recording_neighbors.setall( 0 )
             ns[ 'ba_for_recording_neighbors' ] = ba_for_recording_neighbors
@@ -14063,6 +14146,8 @@ class RamData( ) :
                 del neighbors, distances
 
                 pipe_sender_result.send( ( l_int_entry_current_batch, l_res, ba_neighbors ) ) # send the result back to the main process
+        logger.info( f"Starting kNN-based {operation} operation using {int_num_entries_in_the_knnindex} entries in the index" )
+        pbar = progress_bar( desc = f"{operation} using {int_num_entries_in_the_knnindex} entries", total = ax.meta.n_rows ) # initialize the progress bar
         pbar = progress_bar( total = ax.meta.n_rows ) # initialize the progress bar
         def post_process_batch( res ) :
             """ # 2022-12-16 01:30:00 
@@ -14104,7 +14189,7 @@ class RamData( ) :
                 fill_value = False, 
                 dict_metadata_description = { 'intended_function' : 'filter', 'intended_function.description' : 'record neighbors from knn search' }
             )
-            
+            # collect the secondary neighbors, too
             if flag_include_secondary_neighbors_of_the_query and arr_neighbors is not None : # if flag has been set to True and valid 'arr_neighbors' is present 
                 set_int_entry_secondary_neighbors_of_the_query = set( ) # initialize the set
                 for i in BA.find( ns[ 'ba_for_recording_neighbors' ] ) : # for each entry in the knn index
