@@ -5,6 +5,7 @@ from . import biobookshelf as bk
 
 # from biobookshelf import BA
 # import biobookshelf as bk
+# bk.Wide( 100 )
 
 from typing import Union, List, Literal, Dict
 import os
@@ -47,7 +48,7 @@ logger = logging.getLogger( 'SC-Elephant' )
 # define version
 _version_ = '0.0.10'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2023-01-04 13:01:35'
+_last_modified_time_ = '2023-01-19 00:56:26 '
 
 str_release_note = [
     """
@@ -287,9 +288,12 @@ str_release_note = [
     # 2022-12-29 01:16:30 
     [ZarrDataFrame] support for string data type was added for compatibility with certain annotations
     
+    # 2023-01-19 00:56:42 
+    [RamData] RamData.get_expr method was improved for more efficient retrieval of a filter for barcodes/features with a expression level above a threshold
+    [ZarrDataFrame] resize, rechunk methods were added. The chunk size along the primary axis will be set so that the number of bytes for each chunk remain constant across the ZarrDataFrame columns.
+    
     ##### Future implementations #####
     [RamDataAxis] a function for changing 'int_num_entries_in_a_chunk' of StringChunks and ZarrDataFrame metadata will be implemented to increase performance in remote access setting.
-    [ZarrDataFrame] chunk size for bool datatype, categorical datatype will be set separately. by default, (10000, ) will be used. ( 1000000, ) for bool, ( 100000, ) for categorical data will be used.
     """
     
 ]
@@ -409,7 +413,6 @@ def CB_detect_cell_barcode_from_id_cell( id_cell, int_number_atgc_in_cell_barcod
             return __retrieve_cell_barcode_and_id_channel_from_id_cell__( id_cell, int_start_appearance_of_atgc, int_number_atgc_in_cell_barcode )
     ''' return None when cell_barcode was not found '''
     return [ None, None ]
-
 def Read_10X( path_folder_mtx_10x, verbose = False ) :
     ''' # 2021-11-24 13:00:13 
     read 10x count matrix
@@ -3193,11 +3196,11 @@ def create_ramtx_from_mtx(
     int_num_of_records_in_a_chunk_zarr_matrix : int = 20000, 
     int_num_of_entries_in_a_chunk_zarr_matrix_index : int = 1000, 
     chunks_dense : tuple = ( 2000, 1000 ), 
-    int_num_of_entries_in_a_chunk_metadata : int = 10000, 
+    int_num_bytes_in_a_chunk_in_a_chunk_metadata : int = 320000,
     verbose : bool = False, 
     flag_debugging : bool = False
 ) :
-    """ # 2022-07-30 15:05:58 
+    """ # 2023-01-19 02:05:12 
     sort a given mtx file in a very time- and memory-efficient manner, and create sparse (sorted by barcode/feature).
     when 'type' == 'dense', create a dense ramtx object in the given output folder without sorting the input mtx file in the given axis ('flag_mtx_sorted_by_id_feature')
     
@@ -3226,7 +3229,7 @@ def create_ramtx_from_mtx(
     'chunks_dense' : chunk size for dense ramtx object. if None is given, a dense ramtx object will be created. when dense ramtx object is created, the number of threads for chunking can be set using the 'int_num_threads_for_chunking' argument ( int_num_barcodes_in_a_chunk, int_num_features_in_a_chunk )
     
     -- for metadata creation --
-    'int_num_of_entries_in_a_chunk_metadata' : chunk size for output ramtx metadata
+    int_num_bytes_in_a_chunk_in_a_chunk_metadata : int = 320000, # the number of bytes in a chunk for metadata ZarrDataFrame objects
     
     """
     # check flag
@@ -3264,25 +3267,27 @@ def create_ramtx_from_mtx(
     """
     ''' write barcodes and features files to zarr objects'''
     for name_axis, int_num_entries in zip( [ 'barcodes', 'features' ], [ int_num_barcodes, int_num_features ] ) : # retrieve a flag whether the entry was used for sorting.
-        flag_axis_initialized = False # initialize the flag to False 
-        for index_chunk, df in enumerate( pd.read_csv( f"{path_folder_mtx_10x_input}{name_axis}.tsv.gz", sep = '\t', header = None, chunksize = int_num_of_entries_in_a_chunk_metadata ) ) : # read chunk by chunk
-            if not flag_axis_initialized :
-                l_col = list( f"{name_axis}_{i}" for i in range( len( df.columns ) ) ) # name the columns using 0-based indices
-                
-                # write zarr object for random access of string representation of features/barcodes
-                za = zarr.open( f'{path_folder_output}{name_axis}.str.zarr', mode = 'w', shape = ( int_num_entries, min( 2, df.shape[ 1 ] ) ), chunks = ( int_num_of_entries_in_a_chunk_metadata, 1 ), dtype = str, synchronizer = zarr.ThreadSynchronizer( ) ) # multithreading? # string object # individual columns will be chucked, so that each column can be retrieved separately.
-                
-                # build a ZarrDataFrame object for random access of number and categorical data of features/barcodes
-                zdf = ZarrDataFrame( f'{path_folder_output}{name_axis}.num_and_cat.zdf', int_num_rows = int_num_entries, int_num_rows_in_a_chunk = int_num_of_entries_in_a_chunk_metadata, flag_store_string_as_categorical = True, flag_retrieve_categorical_data_as_integers = True, flag_enforce_name_col_with_only_valid_characters = False, flag_load_data_after_adding_new_column = False ) # use the same chunk size for all feature/barcode objects
-                
-                # create a folder to save a chunked string representations
-                path_folder_str_chunks = f'{path_folder_output}{name_axis}.str.chunks/'
-                filesystem_operations( 'mkdir', path_folder_str_chunks, exist_ok = True )
-                za_str_chunks = zarr.group( path_folder_str_chunks )
-                za_str_chunks.attrs[ 'dict_metadata' ] = { 'int_num_entries' : int_num_entries, 'int_num_of_entries_in_a_chunk' : int_num_of_entries_in_a_chunk_metadata } # write essential metadata for str.chunks
-                
-                flag_axis_initialized = True # set the flag to True
-                
+        # initialize the objects
+        # build a ZarrDataFrame object for random access of number and categorical data of features/barcodes
+        zdf = ZarrDataFrame( f'{path_folder_output}{name_axis}.num_and_cat.zdf', int_num_rows = int_num_entries, int_num_bytes_in_a_chunk = int_num_bytes_in_a_chunk_in_a_chunk_metadata, flag_store_string_as_categorical = True, flag_retrieve_categorical_data_as_integers = True, flag_enforce_name_col_with_only_valid_characters = False, flag_load_data_after_adding_new_column = False ) # use the same chunk size for all feature/barcode objects
+
+        # retrieve the chunk size for storing strings
+        df = pd.read_csv( f"{path_folder_mtx_10x_input}{name_axis}.tsv.gz", sep = '\t', header = None, nrows = 100 ) # read the start of the data to survey the average number of strings
+        l_col = list( f"{name_axis}_{i}" for i in range( len( df.columns ) ) ) # name the columns using 0-based indices
+        
+        int_num_of_entries_in_a_chunk_metadata = zdf.get_int_num_rows_in_a_chunk( dtype = str, int_expected_length_of_string_for_string_dtype = int( np.ceil( np.mean( list( len( e ) for e in df.values[ : 100, 0 ].ravel( ) ) ) ) ) )
+
+        # write zarr object for random access of string representation of features/barcodes
+        za = zarr.open( f'{path_folder_output}{name_axis}.str.zarr', mode = 'w', shape = ( int_num_entries, min( 2, df.shape[ 1 ] ) ), chunks = ( int_num_of_entries_in_a_chunk_metadata, 1 ), dtype = str, synchronizer = zarr.ThreadSynchronizer( ) ) # multithreading? # string object # individual columns will be chucked, so that each column can be retrieved separately.
+
+        # create a folder to save a chunked string representations
+        path_folder_str_chunks = f'{path_folder_output}{name_axis}.str.chunks/'
+        filesystem_operations( 'mkdir', path_folder_str_chunks, exist_ok = True )
+        za_str_chunks = zarr.group( path_folder_str_chunks )
+        za_str_chunks.attrs[ 'dict_metadata' ] = { 'int_num_entries' : int_num_entries, 'int_num_of_entries_in_a_chunk' : int_num_of_entries_in_a_chunk_metadata } # write essential metadata for str.chunks
+
+        # iterate over chunk by chunk
+        for index_chunk, df in enumerate( pd.read_csv( f"{path_folder_mtx_10x_input}{name_axis}.tsv.gz", sep = '\t', header = None, chunksize = int_num_of_entries_in_a_chunk_metadata ) ) : # read chunk by chunk        
             values = df.values # retrieve values
             
             sl_chunk = slice( index_chunk * int_num_of_entries_in_a_chunk_metadata, ( index_chunk + 1 ) * int_num_of_entries_in_a_chunk_metadata )
@@ -3338,7 +3343,7 @@ def create_ramdata_from_mtx(
     int_num_of_records_in_a_chunk_zarr_matrix : int = 20000, 
     int_num_of_entries_in_a_chunk_zarr_matrix_index : int = 1000, 
     chunks_dense : tuple = ( 2000, 1000 ), 
-    int_num_of_entries_in_a_chunk_metadata : int = 10000, 
+    int_num_bytes_in_a_chunk_in_a_chunk_metadata : int = 320000,
     flag_multiprocessing : bool = True, 
     verbose : bool = False, 
     flag_debugging : bool = False
@@ -3376,7 +3381,7 @@ def create_ramdata_from_mtx(
     'chunks_dense' : chunk size for dense ramtx object. if None is given, a dense ramtx object will be created. when dense ramtx object is created, the number of threads for chunking can be set using the 'int_num_threads_for_chunking' argument ( int_num_barcodes_in_a_chunk, int_num_features_in_a_chunk )
     
     -- for metadata creation --
-    'int_num_of_entries_in_a_chunk_metadata' : chunk size for output ramtx metadata
+    int_num_bytes_in_a_chunk_in_a_chunk_metadata : int = 320000, # the number of bytes in a chunk for metadata ZarrDataFrame objects
     
     -- for RamData creation --
     'name_layer' : a name of the ramdata layer to create (default: raw)
@@ -3405,7 +3410,7 @@ def create_ramdata_from_mtx(
         'int_num_of_records_in_a_chunk_zarr_matrix' : int_num_of_records_in_a_chunk_zarr_matrix, 
         'int_num_of_entries_in_a_chunk_zarr_matrix_index' : int_num_of_entries_in_a_chunk_zarr_matrix_index, 
         'chunks_dense' : chunks_dense, 
-        'int_num_of_entries_in_a_chunk_metadata' : int_num_of_entries_in_a_chunk_metadata, 
+        'int_num_bytes_in_a_chunk_in_a_chunk_metadata' : int_num_bytes_in_a_chunk_in_a_chunk_metadata, 
         'verbose' : verbose, 
         'flag_debugging' : flag_debugging
     }
@@ -3474,7 +3479,7 @@ def create_ramtx_from_adata(
     int_num_of_entries_in_a_batch_for_writing_sparse_matrix : int = 350,
     float_ratio_padding_for_zarr_sparse_matrix_output : float = 0.5,
     chunks_dense : tuple = ( 2000, 1000 ),
-    int_num_of_entries_in_a_chunk_metadata : int = 10000,
+    int_num_bytes_in_a_chunk_in_a_chunk_metadata : int = 320000,
     int_max_num_categories_in_metadata : int = 10000 ,
     dict_kw_zdf : dict = { 'flag_store_string_as_categorical' : True, 'flag_load_data_after_adding_new_column' : False, 'flag_store_64bit_integer_as_float' : True },
     int_num_str_repr_bc : int = 1,
@@ -3482,7 +3487,7 @@ def create_ramtx_from_adata(
     verbose : bool = False,
     flag_debugging : bool = False,
 ) :
-    """ # 2022-12-13 03:18:01 
+    """ # 2023-01-19 01:43:38 
     Write a given AnnData object as a RAMtx object
 
     Arguments:
@@ -3507,7 +3512,7 @@ def create_ramtx_from_adata(
     'chunks_dense' : chunk size for dense ramtx object. if None is given, a dense ramtx object will be created. when dense ramtx object is created, the number of threads for chunking can be set using the 'int_num_threads_for_chunking' argument ( int_num_barcodes_in_a_chunk, int_num_features_in_a_chunk )
 
     -- for metadata --
-    'int_num_of_entries_in_a_chunk_metadata' : chunk size for output ramtx metadata
+    int_num_bytes_in_a_chunk_in_a_chunk_metadata : int = 320000, # the number of bytes in a chunk for metadata ZarrDataFrame objects
     int_max_num_categories_in_metadata : int = 10000 # ignore columns with more than 'int_max_num_categories_in_metadata' number of categories.
     dict_kw_zdf : dict = dict( ) # keyworded arguments for the initialization of the ZarrDataFrame
     int_num_str_repr_bc : int = 1 # the number of columns for string representations of the barcode axis. The current index values of adata.obs will be duplicates this number of times and saved as a zarr object
@@ -3678,19 +3683,22 @@ def create_ramtx_from_adata(
     """
     ''' write barcodes and features files to zarr objects'''
     for name_axis, int_num_entries, df, m, int_num_str_repr in zip( [ 'barcodes', 'features' ], [ int_num_barcodes, int_num_features ], [ adata.obs, adata.var ], [ adata.obsm, adata.varm ], [ int_num_str_repr_bc, int_num_str_repr_ft ] ) : 
-        # write zarr object for random access of string representation of features/barcodes
-        za = zarr.open( f'{path_folder_output}{name_axis}.str.zarr', mode = 'w', shape = ( int_num_entries, int_num_str_repr ), chunks = ( int_num_of_entries_in_a_chunk_metadata, 1 ), dtype = str ) # string object # individual columns will be chucked, so that each column can be retrieved separately.
-
         # initialize a ZarrDataFrame object for random access of number and categorical data of features/barcodes
-        zdf = ZarrDataFrame( f'{path_folder_output}{name_axis}.num_and_cat.zdf', int_num_rows = int_num_entries, int_num_rows_in_a_chunk = int_num_of_entries_in_a_chunk_metadata, ** dict_kw_zdf ) # use the same chunk size for feature/barcode objects
+        zdf = ZarrDataFrame( f'{path_folder_output}{name_axis}.num_and_cat.zdf', int_num_rows = int_num_entries, int_num_bytes_in_a_chunk = int_num_bytes_in_a_chunk_in_a_chunk_metadata, ** dict_kw_zdf ) # use the same chunk size for feature/barcode objects
 
         # retrieve string representations
         arr_str_entry = df.index.values
         arr_str = np.vstack( list( arr_str_entry for i in range( int_num_str_repr ) ) ).T # stack 'arr_str_entry' 'int_num_str_repr' number of times
+        
+        # retrieve the chunk size for storing strings
+        int_num_of_entries_in_a_chunk_metadata = zdf.get_int_num_rows_in_a_chunk( dtype = str, int_expected_length_of_string_for_string_dtype = int( np.ceil( np.mean( list( len( e ) for e in arr_str[ : 10 ].ravel( ) ) ) ) ) )
+        
+        # initialize a zarr object for writing string values for random access of string representation of features/barcodes
+        za = zarr.open( f'{path_folder_output}{name_axis}.str.zarr', mode = 'w', shape = ( int_num_entries, int_num_str_repr ), chunks = ( int_num_of_entries_in_a_chunk_metadata, 1 ), dtype = str ) # string object # individual columns will be chucked, so that each column can be retrieved separately.
 
         # rename columns with invalid characters
         df.columns = list( col.replace( '/', '__' ) for col in df.columns.values )
-
+        
         # drop the columns with too many categories (these columns are likely to contain identifiers)
         df = df[ list( col for col in df.columns.values if len( df[ col ].unique( ) ) <= int_max_num_categories_in_metadata ) ] 
 
@@ -3754,7 +3762,7 @@ def create_ramdata_from_adata(
     int_num_of_entries_in_a_batch_for_writing_sparse_matrix : int = 350,
     float_ratio_padding_for_zarr_sparse_matrix_output : float = 0.5,
     chunks_dense : tuple = ( 2000, 1000 ),
-    int_num_of_entries_in_a_chunk_metadata : int = 10000,
+    int_num_bytes_in_a_chunk_in_a_chunk_metadata : int = 320000,
     int_max_num_categories_in_metadata : int = 10000 ,
     dict_kw_zdf : dict = { 'flag_store_string_as_categorical' : True, 'flag_load_data_after_adding_new_column' : False, 'flag_store_64bit_integer_as_float' : True },
     int_num_str_repr_bc : int = 1,
@@ -3790,7 +3798,7 @@ def create_ramdata_from_adata(
     'chunks_dense' : chunk size for dense ramtx object. if None is given, a dense ramtx object will be created. when dense ramtx object is created, the number of threads for chunking can be set using the 'int_num_threads_for_chunking' argument ( int_num_barcodes_in_a_chunk, int_num_features_in_a_chunk )
 
     -- for metadata --
-    'int_num_of_entries_in_a_chunk_metadata' : chunk size for output ramtx metadata
+    int_num_bytes_in_a_chunk_in_a_chunk_metadata : int = 320000, # the number of bytes in a chunk for metadata ZarrDataFrame objects
     int_max_num_categories_in_metadata : int = 10000 # ignore columns with more than 'int_max_num_categories_in_metadata' number of categories.
     dict_kw_zdf : dict = dict( ) # keyworded arguments for the initialization of the ZarrDataFrame
     int_num_str_repr_bc : int = 1 # the number of columns for string representations of the barcode axis. The current index values of adata.obs will be duplicates this number of times and saved as a zarr object
@@ -3820,7 +3828,7 @@ def create_ramdata_from_adata(
         'int_num_of_entries_in_a_batch_for_writing_sparse_matrix' : int_num_of_entries_in_a_batch_for_writing_sparse_matrix,
         'float_ratio_padding_for_zarr_sparse_matrix_output' : float_ratio_padding_for_zarr_sparse_matrix_output,
         'chunks_dense' : chunks_dense,
-        'int_num_of_entries_in_a_chunk_metadata' : int_num_of_entries_in_a_chunk_metadata,
+        'int_num_bytes_in_a_chunk_in_a_chunk_metadata' : int_num_bytes_in_a_chunk_in_a_chunk_metadata,
         'int_max_num_categories_in_metadata' : int_max_num_categories_in_metadata,
         'dict_kw_zdf' : dict_kw_zdf,
         'int_num_str_repr_bc' : int_num_str_repr_bc,
@@ -4752,7 +4760,7 @@ class ZarrSpinLockServer( ) :
     
 ''' a class for Zarr-based DataFrame object '''
 class ZarrDataFrame( ) :
-    """ # 2022-12-13 00:55:53 
+    """ # 2023-01-19 00:46:02 
     storage-based persistant DataFrame backed by Zarr persistent arrays.
     each column can be separately loaded, updated, and unloaded.
     a filter can be set, which allows updating and reading ZarrDataFrame as if it only contains the rows indicated by the given filter.
@@ -4778,9 +4786,9 @@ class ZarrDataFrame( ) :
     'df' : input dataframe.
     
     === settings that cannot be changed after initialization ===
-    'int_num_rows_in_a_chunk' : chunk size.
     'flag_enforce_name_col_with_only_valid_characters' : if True, every column name should not contain any of the following invalid characters, incompatible with attribute names: '! @#$%^&*()-=+`~:;[]{}\|,<.>/?' + '"' + "'", if False, the only invalid character will be '/', which is incompatible with linux file system as file/folder name.
     'flag_store_string_as_categorical' : if True, for string datatypes, it will be converted to categorical data type.
+    int_num_bytes_in_a_chunk : int = 320000 # a maximum number of bytes in a chunk for each data type to set a chunk size for the primary axis.
     
     === settings that can be changed anytime after initialization ===
     'ba_filter' : a bitarray object for applying filter for the ZarrDataFrame. 1 meaning the row is included, 0 meaning the row is excluded
@@ -4857,7 +4865,6 @@ class ZarrDataFrame( ) :
         int_max_num_entries_per_batch : int = 1000000, 
         df : Union[ pd.DataFrame, None ] = None, 
         int_num_rows : Union[ int, None ] = None, 
-        int_num_rows_in_a_chunk : int = 10000, 
         ba_filter : Union[ bitarray, None ] = None, 
         flag_enforce_name_col_with_only_valid_characters : bool = False, 
         flag_store_string_as_categorical : bool = True, 
@@ -4875,6 +4882,7 @@ class ZarrDataFrame( ) :
         flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock : bool = False,
         float_second_to_wait_before_checking_availability_of_a_spin_lock : float = 0.5,
         zarrspinlockserver : Union[ None, bool, ZarrSpinLockServer ] = None,
+        int_num_bytes_in_a_chunk : int = 320000,
     ) :
         """ # 2022-12-13 00:56:01 
         """
@@ -4888,13 +4896,14 @@ class ZarrDataFrame( ) :
             path_folder_zdf = os.path.abspath( path_folder_zdf ) # retrieve absolute path
         if path_folder_zdf[ -1 ] != '/' : # add '/' to the end of path to mark that this is a folder directory
             path_folder_zdf += '/'
-            
+
+        # settings that can be changed after initialization
+        self.flag_use_mask_for_caching = flag_use_mask_for_caching
+        self.flag_retrieve_categorical_data_as_integers = flag_retrieve_categorical_data_as_integers
         self._path_folder_zdf = path_folder_zdf
         self._mode = mode
         self._flag_is_read_only = flag_is_read_only
         self._path_folder_mask = path_folder_mask
-        self.flag_use_mask_for_caching = flag_use_mask_for_caching
-        self._flag_retrieve_categorical_data_as_integers = flag_retrieve_categorical_data_as_integers
         self._flag_load_data_after_adding_new_column = flag_load_data_after_adding_new_column
         self._ba_filter = None # initialize the '_ba_filter' attribute
         self.verbose = verbose
@@ -4937,7 +4946,7 @@ class ZarrDataFrame( ) :
             filesystem_operations( 'mkdir', path_folder_zdf, exist_ok = True )
             
             self._root = zarr.open( path_folder_zdf, mode = 'a' )
-            self._dict_metadata = { 'version' : _version_, 'columns' : dict( ), 'int_num_rows_in_a_chunk' : int_num_rows_in_a_chunk, 'flag_enforce_name_col_with_only_valid_characters' : flag_enforce_name_col_with_only_valid_characters, 'flag_store_string_as_categorical' : flag_store_string_as_categorical, 'is_interleaved' : self.is_interleaved, 'is_combined' : self.is_combined } # to reduce the number of I/O operations from lookup, a metadata dictionary will be used to retrieve/update all the metadata
+            self._dict_metadata = { 'version' : _version_, 'columns' : dict( ), 'flag_enforce_name_col_with_only_valid_characters' : flag_enforce_name_col_with_only_valid_characters, 'int_num_bytes_in_a_chunk' : int_num_bytes_in_a_chunk, 'flag_store_string_as_categorical' : flag_store_string_as_categorical, 'is_interleaved' : self.is_interleaved, 'is_combined' : self.is_combined } # to reduce the number of I/O operations from lookup, a metadata dictionary will be used to retrieve/update all the metadata
             # if 'int_num_rows' has been given, add it to the metadata
             if int_num_rows is not None :
                 self._dict_metadata[ 'int_num_rows' ] = int_num_rows
@@ -4948,6 +4957,15 @@ class ZarrDataFrame( ) :
                 
             # retrieve metadata
             self._dict_metadata = self.get_metadata( )
+            
+            """ % TEMP """
+            if 'int_num_bytes_in_a_chunk' not in self._dict_metadata :
+                # update metadata that were create before 2023-01-18 20:06:29 
+                del self._dict_metadata[ 'int_num_rows_in_a_chunk' ]
+                self._dict_metadata[ 'int_num_bytes_in_a_chunk' ] = int_num_bytes_in_a_chunk
+                self.set_metadata( dict_metadata = self._dict_metadata )
+                
+            
             # handle the old versions of the zarrdataframe columns
             if 'columns' in self._dict_metadata :
                 if isinstance( self._dict_metadata[ 'columns' ], list ) :
@@ -4961,13 +4979,13 @@ class ZarrDataFrame( ) :
                 path_folder_mask, 
                 df = df, 
                 int_num_rows = self._n_rows_unfiltered,
-                int_num_rows_in_a_chunk = self.metadata[ 'int_num_rows_in_a_chunk' ], 
                 ba_filter = ba_filter, 
                 flag_enforce_name_col_with_only_valid_characters = self.metadata[ 'flag_enforce_name_col_with_only_valid_characters' ], 
                 flag_store_string_as_categorical = self.metadata[ 'flag_store_string_as_categorical' ], 
                 flag_retrieve_categorical_data_as_integers = flag_retrieve_categorical_data_as_integers, 
                 flag_load_data_after_adding_new_column = flag_load_data_after_adding_new_column, 
                 mode = 'a', 
+                int_num_bytes_in_a_chunk = self.int_num_bytes_in_a_chunk,
                 path_folder_mask = None, 
                 flag_is_read_only = False,
                 l_zdf = l_zdf,
@@ -5044,20 +5062,49 @@ class ZarrDataFrame( ) :
                 if zdf is not None and zdf.is_remote :
                     return True
     @property
-    def int_num_rows_in_a_chunk( self ) :
+    def int_num_bytes_in_a_chunk( self ) :
         """ # 2022-08-02 13:01:53 
-        return the length of chunk in the primary axis
+        return the number of bytes in a chunk in the primary axis for each data type
         """
-        return self._dict_metadata[ 'int_num_rows_in_a_chunk' ]
-    @int_num_rows_in_a_chunk.setter
-    def int_num_rows_in_a_chunk( self, val ) :
+        return self._dict_metadata[ 'int_num_bytes_in_a_chunk' ]
+    @int_num_bytes_in_a_chunk.setter
+    def int_num_bytes_in_a_chunk( self, val ) :
         """ # 2022-08-02 13:01:53 
-        setting the length of chunk in the primary axis
+        setting the number of bytes in a chunk in the primary axis
         """
-        self.update_metadata( { 'int_num_rows_in_a_chunk' : val } ) # update metadata
+        self.update_metadata( { 'int_num_bytes_in_a_chunk' : val } ) # update metadata
         # update the settings of the mask, if available.
         if self._mask is not None :
-            self.int_num_rows_in_a_chunk = val
+            self._mask.int_num_bytes_in_a_chunk = val
+    def get_int_num_rows_in_a_chunk( self, dtype, chunks_not_primary_axis : List = ( ), int_expected_length_of_string_for_string_dtype : int = 50 ) :
+        """ # 2023-01-18 19:20:53 
+        calculate 'int_num_rows_in_a_chunk' for the given 'dtype' and 'chunks_not_primary_axis' pair using the internal 'dict_data_type_to_int_num_values_in_a_chunk' settings.
+        
+        dtype # 'category', bool, and other dtypes (default) will be used
+        int_expected_length_of_string_for_string_dtype : int = 50 # the default number of character for a string of variable length for a string dtype.
+        """
+        # retrieve 'int_num_bits_in_a_value'
+        if dtype == str : # for a string dtype
+            int_num_bits_in_a_value = int_expected_length_of_string_for_string_dtype * 8 # assumes 1 character uses 1 byte, which is 8 bits
+        elif dtype == bool : # for a boolean dtype
+            int_num_bits_in_a_value = 1 # boolean dtype use 1 bit when using zarr 
+        else : # handle other numpy dtypes
+            try :
+                int_num_bits_in_a_value = np.dtype( dtype ).itemsize * 8 # the unit of the itemsize is bytes
+            except :
+                logger.info( f"invalid {dtype = } was given, exiting" )
+                return
+            
+        # retrieve 'int_num_values_in_a_chunk'
+        int_num_values_in_a_chunk = int( np.ceil( self.int_num_bytes_in_a_chunk * 8 / int_num_bits_in_a_value ) ) # using ceiling method to determine the number of values in a chunk in the primary axis.
+        
+        # retrieve 'int_num_values_in_a_row' 
+        if len( chunks_not_primary_axis ) == 0 : # by default, there will be one value for each row
+            chunks_not_primary_axis = [ 1 ]
+        int_num_values_in_a_row = np.prod( list( chunks_not_primary_axis ) )
+        
+        int_num_rows_in_a_chunk = int( np.ceil( int_num_values_in_a_chunk / int_num_values_in_a_row ) ) # using ceiling method to determine the number of rows in a chunk in the primary axis.
+        return int_num_rows_in_a_chunk
     @property
     def _n_rows_unfiltered( self ) :
         """ # 2022-06-22 23:12:09 
@@ -5426,7 +5473,7 @@ class ZarrDataFrame( ) :
         '''
         if not self._flag_is_read_only : # save metadata only when it is not in the read-only mode
             self.set_metadata( dict_metadata = self._dict_metadata ) # update metadata
-    def get_categories( self, name_col ) :
+    def get_categories( self, name_col : str ) :
         """ # 2022-12-12 01:09:37 
         for columns with categorical data, return categories. if the column contains non-categorical data, return an empty list
         """
@@ -5581,7 +5628,9 @@ class ZarrDataFrame( ) :
                         else : # external mode
                             za_source = zarr.open( path_column_source, 'r' ) # open source zarr object
                             if not zarr_exists( path_column_sink ) :
-                                za_sink = zarr.open( path_column_sink, 'a', shape = tuple( [ self._n_rows_unfiltered ] + list( za_source.shape[ 1 : ] ) ), chunks = tuple( [ self.int_num_rows_in_a_chunk ] + list( za_source.chunks[ 1 : ] ) ), fill_value = za_source.fill_value, dtype = str if za_source.dtype is np.dtype( 'O' ) else za_source.dtype )
+                                dtype = str if za_source.dtype is np.dtype( 'O' ) else za_source.dtype # retrieve dtype
+                                chunks_not_primary_axis = list( za_source.chunks[ 1 : ] ) # retrieve 'chunks_not_primary_axis'
+                                za_sink = zarr.open( path_column_sink, 'a', shape = tuple( [ self._n_rows_unfiltered ] + list( za_source.shape[ 1 : ] ) ), chunks = tuple( [ self.get_int_num_rows_in_a_chunk( dtype, chunks_not_primary_axis = chunks_not_primary_axis ) ] + chunks_not_primary_axis ), fill_value = za_source.fill_value, dtype = dtype )
                                 za_sink.attrs[ 'flag_is_being_lazy_loaded' ] = True # update metadata of the sink column
                             else :
                                 za_sink = zarr.open( path_column_sink, 'a' ) # open sink zarr object
@@ -5667,7 +5716,20 @@ class ZarrDataFrame( ) :
 #         if self.verbose :
 #             logger.info( f'[ZarrDataFrame] a column for quering integer indices was written' )
         return self[ '__index__', queries ] # return integer indices of the queries
-    def initialize_column( self, name_col : str, dtype = np.float64, shape_not_primary_axis = ( ), chunks = ( ), categorical_values = None, fill_value = 0, dict_metadata_description : dict = dict( ), zdf_template = None, name_col_template : Union[ str, None ] = None, path_col_template : Union[ str, None ] = None ) : 
+    def initialize_column( 
+        self, 
+        name_col : str, 
+        dtype = np.float64, 
+        shape_not_primary_axis = ( ), 
+        chunks = ( ), 
+        categorical_values = None, 
+        fill_value = 0, 
+        dict_metadata_description : dict = dict( ), 
+        zdf_template = None, 
+        name_col_template : Union[ str, None ] = None, 
+        path_col_template : Union[ str, None ] = None,
+        flag_rechunk_primary_axis : bool = False,
+    ) : 
         """ # 2022-12-29 03:55:33 
         initialize columns with a given shape and given dtype
         'dtype' : initialize the column with this 'dtype'
@@ -5676,7 +5738,7 @@ class ZarrDataFrame( ) :
                 'shape_not_primary_axis' = ( ) will lead to creation of zarr object of (100,)
                 'shape_not_primary_axis' = ( 10, 10 ) will lead to creation of zarr object of (100, 10, 10)
                 
-        'chunks' : chunk size of the zarr object. length of the chunk along the primary axis can be skipped, which will be replaced by 'int_num_rows_in_a_chunk' of the current ZarrDataFrame attribute
+        'chunks' : chunk size of the zarr object. length of the chunk along the primary axis can be skipped, which will be replaced by 'int_num_rows_in_a_chunk' calculated from 'int_num_bytes_in_a_chunk'  attribute
         'categorical_values' : if 'categorical_values' has been given, set the column as a column containing categorical data
         'fill_value' : fill value of zarr object
         dict_metadata_description : dict = dict( ) # the dictionary containing metadata of the column with the following schema:
@@ -5686,10 +5748,11 @@ class ZarrDataFrame( ) :
         'zdf_template' : zdf object from which to search 'name_col_template' column. by default, 
         'name_col_template' : the name of the column to use as a template. if given, 'path_col_template' will be ignored, and use the column as a template to initialize the current column. the column will be searched in the following order: main zdf object --> mask zdf object --> component zdf objects, in the order specified in the list.
         'path_col_template' : the (remote) path to the column to be used as a template. if given, the metadata available in the path will be used to initialize the current column
+        flag_rechunk_primary_axis : bool = False, # if True, set the chunk size along the primary axis based on the current 'int_num_bytes_in_a_chunk'
         """
         # hand over to mask if mask is available
         if self._mask is not None : # if mask is available, save new data to the mask # overwriting on the mask
-            self._mask.initialize_column( name_col, dtype = dtype, shape_not_primary_axis = shape_not_primary_axis, chunks = chunks, categorical_values = categorical_values, fill_value = fill_value, zdf_template = zdf_template, name_col_template = name_col_template, path_col_template = path_col_template )
+            self._mask.initialize_column( name_col, dtype = dtype, shape_not_primary_axis = shape_not_primary_axis, chunks = chunks, categorical_values = categorical_values, fill_value = fill_value, zdf_template = zdf_template, name_col_template = name_col_template, path_col_template = path_col_template, flag_rechunk_primary_axis = flag_rechunk_primary_axis )
             return
         
         if self._n_rows_unfiltered is None : # if length of zdf has not been set, exit
@@ -5773,7 +5836,9 @@ class ZarrDataFrame( ) :
 
                 # initialize the zarr objects
                 shape = tuple( [ self._n_rows_unfiltered ] + list( shape_not_primary_axis ) ) # compose 'shape' of the zarr object
-                chunks = tuple( chunks ) if len( chunks ) == len( shape ) else tuple( [ self.int_num_rows_in_a_chunk ] + list( chunks ) ) # compose 'chunks' of the zarr object
+                if flag_rechunk_primary_axis and len( chunks ) == len( shape ) : # if 'flag_rechunk_primary_axis' is active and the number of dimensions for 'chunks' are the same as that of 'shape', omit the chunk size of the primary axis for re-chunking
+                    chunks = chunks[ 1 : ]
+                chunks = tuple( chunks ) if len( chunks ) == len( shape ) else tuple( [ self.get_int_num_rows_in_a_chunk( dtype, chunks_not_primary_axis = chunks ) ] + list( chunks ) ) # compose 'chunks' of the zarr object # handle when chunk size for the primary axis was not given
                 assert len( chunks ) == len( shape ) # the length of chunks and shape should be the same
 
                 za = zarr.open( path_folder_col, mode = 'a', shape = shape, chunks = chunks, dtype = dtype, fill_value = fill_value, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object if the object does not exist.
@@ -5930,7 +5995,7 @@ class ZarrDataFrame( ) :
                 
                 # check whether the current column contains categorical data
                 l_value_unique = self.get_categories( name_col ) # non-categorical data will get an empty list
-                if len( l_value_unique ) == 0 or self._flag_retrieve_categorical_data_as_integers : # handle non-categorical data
+                if len( l_value_unique ) == 0 or self.flag_retrieve_categorical_data_as_integers : # handle non-categorical data
                     return values
                 else : # decode categorical data
                     values = values.astype( object ) # prepare data for storing categorical data
@@ -5939,7 +6004,7 @@ class ZarrDataFrame( ) :
                         values[ t_coord ] = l_value_unique[ val ] if val >= 0 else np.nan # convert integer representations to its original string values # -1 (negative integers) encodes np.nan
                     return values
     def __setitem__( self, args, values ) :
-        ''' # 2023-01-03 18:43:36 
+        ''' # 2023-01-18 22:24:10 
         save/update a column at indexed positions.
         when a filter is active, only active entries will be saved/updated automatically.
         boolean mask/integer arrays/slice indexing is supported. However, indexing will be applied to the original column with unfiltered rows (i.e., when indexing is active, filter will be ignored)
@@ -6106,7 +6171,7 @@ class ZarrDataFrame( ) :
             # retrieve shape and chunk sizes of the object
             dim_secondary_inferred = [ ] if flag_broadcasting_active else list( values.shape )[ 1 : ] # infer dimensions excluding primary axis
             shape_inferred = tuple( [ self._n_rows_unfiltered ] + dim_secondary_inferred )
-            chunks_inferred = tuple( [ self._dict_metadata[ 'int_num_rows_in_a_chunk' ] ] + dim_secondary_inferred )
+            chunks_inferred = tuple( [ self.get_int_num_rows_in_a_chunk( dtype, chunks_not_primary_axis = dim_secondary_inferred ) ] + dim_secondary_inferred ) # chunk size excluding the primary axis will be same as the shape excluding the primary axis
 
             # logger.info( shape, chunks, dtype, self._dict_metadata[ 'flag_store_string_as_categorical' ] )
             # write categorical data
@@ -6158,6 +6223,19 @@ class ZarrDataFrame( ) :
                     dtype = np.int16
                 else :
                     dtype = np.int32
+                
+                def __replace_chunk_size_for_the_primary_axis( chunks, chunk_size_primary_axis ) :
+                    """
+                    replace the chunk size for the primary axis of the given chunks
+                    """
+                    chunks = list( chunks )
+                    chunks[ 0 ] = chunk_size_primary_axis
+                    chunks = tuple( chunks )
+                    return chunks
+
+                # retrieve 'int_num_rows_in_a_chunk' using the updated dtype
+                int_num_rows_in_a_chunk = self.get_int_num_rows_in_a_chunk( dtype, chunks_not_primary_axis = dim_secondary_inferred )
+                chunks_inferred = __replace_chunk_size_for_the_primary_axis( chunks_inferred, int_num_rows_in_a_chunk ) # update 'chunks_inferred' using the new 'int_num_rows_in_a_chunk'
 
                 # open Zarr object representing the current column
                 za = zarr.open( path_folder_col, mode = 'a', synchronizer = zarr.ThreadSynchronizer( ) ) if flag_col_already_exists else zarr.open( path_folder_col, mode = 'w', shape = shape_inferred, chunks = chunks_inferred, dtype = dtype, fill_value = fill_value, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object if the object does not exist.
@@ -6167,7 +6245,7 @@ class ZarrDataFrame( ) :
                     if self.verbose :
                         logger.info( f'[categorical data] {za.dtype} will be changed to {dtype}' )
                     path_folder_col_new = f"{self._path_folder_zdf}{name_col}_{bk.UUID( )}/" # compose the new output folder
-                    za_new = zarr.open( path_folder_col_new, mode = 'w', shape = za.shape, chunks = za.chunks, dtype = dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object using the new dtype
+                    za_new = zarr.open( path_folder_col_new, mode = 'w', shape = za.shape, chunks = __replace_chunk_size_for_the_primary_axis( za.chunks, int_num_rows_in_a_chunk ), dtype = dtype, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object using the new dtype # use the new 'int_num_rows_in_a_chunk' from the new dtype
                     za_new[ : ] = za[ : ] # copy the data 
                     filesystem_operations( 'rm', path_folder_col ) # delete the previous Zarr object
                     filesystem_operations( 'mv', path_folder_col_new, path_folder_col ) # replace the previous Zarr object with the new object
@@ -6224,7 +6302,7 @@ class ZarrDataFrame( ) :
             if self.use_locking : # %% FILE LOCKING %%
                 if not flag_lock_already_acquired : # release lock if it has not been acquired before the operation
                     self._zsls.release_lock( path_lock )
-    def __delitem__( self, name_col ) :
+    def __delitem__( self, name_col : str ) :
         ''' # 2022-06-20 21:57:38 
         remove the column from the memory and the object on disk
         if mask is set, delete the column of the mask, and does not delete columns of the original ZarrDataFrame
@@ -6332,7 +6410,7 @@ class ZarrDataFrame( ) :
             df[ name_col ] = arr
         
         return df
-    def get_shape( self, name_col ) :
+    def get_shape( self, name_col : str ) :
         """ # 2022-08-07 16:01:12 
         return the shape of the given column except for the dimension along the primary axis.
         """
@@ -6350,13 +6428,13 @@ class ZarrDataFrame( ) :
         path_folder_zarr = f"{self._path_folder_zdf}{name_col}/"
         za = zarr.open( path_folder_zarr, mode = 'r' ) 
         return za.shape[ 1 : ] # return the shape including the dimension of the primary axis
-    def save( self, path_folder_zdf, l_name_col : Union[ None, list ] = None ) :
-        """ # 2022-11-15 00:19:09 
+    def save( self, path_folder_zdf : str, l_name_col : Union[ None, list ] = None ) :
+        """ # 2023-01-18 22:23:54 
         save data contained in the ZarrDataFrame object to the new path.
         if a filter is active, filtered ZarrDataFrame will be saved.
         
         'path_folder_zdf' : the output ZarrDataFrame object
-        'l_name_col' : the list of names of columns to save. if None is given, copy all columns in the current ZarrDataFrame
+        l_name_col : Union[ None, list ] = None # : the list of names of columns to save. if None is given, copy all columns in the current ZarrDataFrame
         """
         # check validity of the path
         path_folder_zdf = os.path.abspath( path_folder_zdf ) + '/' # retrieve abspath of the output object
@@ -6366,10 +6444,10 @@ class ZarrDataFrame( ) :
             path_folder_zdf, 
             int_max_num_entries_per_batch = self.int_max_num_entries_per_batch,
             int_num_rows = self.n_rows,
-            int_num_rows_in_a_chunk = self.metadata[ 'int_num_rows_in_a_chunk' ],
+            int_num_bytes_in_a_chunk = self.metadata[ 'int_num_bytes_in_a_chunk' ],
             flag_enforce_name_col_with_only_valid_characters = self.metadata[ 'flag_enforce_name_col_with_only_valid_characters' ],
             flag_store_string_as_categorical = self.metadata[ 'flag_store_string_as_categorical' ],
-            flag_retrieve_categorical_data_as_integers = self._flag_retrieve_categorical_data_as_integers,
+            flag_retrieve_categorical_data_as_integers = self.flag_retrieve_categorical_data_as_integers, 
             flag_load_data_after_adding_new_column = self._flag_load_data_after_adding_new_column,
             flag_use_mask_for_caching = self.flag_use_mask_for_caching,
             verbose = self.verbose,
@@ -6385,7 +6463,7 @@ class ZarrDataFrame( ) :
                 logger.info( f"saving '{name_col}' column ..." )
             zdf.initialize_column( name_col, zdf_template = self, name_col_template = name_col ) # initialize the column using the column of the current zdf object 
             zdf[ name_col ] = self[ name_col ] # copy data (with filter applied)
-    def load_as_dict( self, * l_name_col, float_min_proportion_of_active_rows_for_using_array_as_dict = 0.1 ) :
+    def load_as_dict( self, * l_name_col, float_min_proportion_of_active_rows_for_using_array_as_dict : float = 0.1 ) :
         """ # 2022-07-06 01:29:51 
         load columns as dictionaries, which is accessible through the self.dict attribute, where keys are integer representation of rows and values are data values
         
@@ -6505,6 +6583,133 @@ class ZarrDataFrame( ) :
             
             # remove previous column name and add new column name
             self.update_metadata( dict_rename_name_col = { name_col_before : name_col_after } ) # update metadata
+    def resize( self, int_num_rows_new : int, flag_avoid_shrinking : bool = True ) :
+        """ # 2023-01-09 16:39:40 
+        
+        int_num_rows_new : int, # the new number of rows (for resizing zdf)
+        flag_avoid_shrinking : bool = True # ignore function call if the number of rows decreases
+        """
+        if self._n_rows_unfiltered == int_num_rows_new : # ignore when the number of previous and new rows are the same
+            return
+        if ( self._n_rows_unfiltered > int_num_rows_new ) and flag_avoid_shrinking :
+            return
+        
+        # update ZarrDataFrame metadata
+        self.update_metadata( 
+            dict_metadata_to_be_updated = {
+                'int_num_rows' : int( int_num_rows_new )
+            }
+        )
+        
+        # resize column
+        def _resize_column( name_col ) :
+            """
+            resize a single column
+            """
+            za = zarr.open( f"{self._path_folder_zdf}{name_col}" )
+            l_shape = list( za.shape )
+            l_shape_new = [ int_num_rows_new ] + l_shape[ 1 : ]
+            za.resize( * l_shape_new )
+        # resize all columns
+        for name_col in self.columns : # for each column
+            if self._zsls is None : 
+                _resize_column( name_col )
+            else :
+                self._zsls.acquire_lock( f"{self._path_folder_zdf}{name_col}.lock/" ) # acquire lock
+                _resize_column( name_col )
+                self._zsls.release_lock( f"{self._path_folder_zdf}{name_col}.lock/" ) # release lock
+    def map_category_to_entries( self, name_col : str, flag_use_integer_representation_of_category : bool = False ) :
+        """ # 2023-01-17 23:03:08 
+        retrieve mapping of categories to entries (if a filter is active, only the active entries will be included)
+        
+        name_col : str # the name of the column containing categorical data
+        flag_use_integer_representation_of_category : bool = False # use integer representation of category
+        """
+        # handle invalid inputs
+        if name_col not in self :
+            if self.verbose :
+                logger.error( f"name_col '{name_col}' does not exist, exiting" )
+            return
+        
+        # retrieve a list of categories
+        l_cat = self.get_categories( name_col ) 
+        if len( l_cat ) == 0 :
+            if self.verbose :
+                logger.error( f"categories are not available for the current column, exiting" )
+            return
+        
+        # prepare
+        flag_retrieve_categorical_data_as_integers_back_up = self.flag_retrieve_categorical_data_as_integers # retrieve the previous settings
+        self.flag_retrieve_categorical_data_as_integers = True # retrieve categorical data as integers to make the retrieving data more efficient
+
+        # retrieve labels 
+        n = self._n_rows_unfiltered # retrieve the number of rows in the unfiltered ZarrDataFrame
+        arr_index = np.arange( n, dtype = int ) if self.filter is None else BA.to_integer_indices( self.filter ) # retrieve integer indices of the rows
+        arr_int_cat = self[ name_col ] # retrieve categories (in integer format)
+        
+        dict_int_cat_to_l_index = dict( )
+        for index, int_cat in zip( arr_index, arr_int_cat ) :
+            if int_cat not in dict_int_cat_to_l_index :
+                dict_int_cat_to_l_index[ int_cat ] = list( )
+            dict_int_cat_to_l_index[ int_cat ].append( index )
+        
+        
+        # convert 'dict_int_cat_to_l_index' to 'dict_cat_to_l_index'
+        dict_cat_to_l_index = dict_int_cat_to_l_index if flag_use_integer_representation_of_category else dict( ( l_cat[ int_cat ], dict_int_cat_to_l_index[ int_cat ] ) for int_cat in dict_int_cat_to_l_index )
+        del dict_int_cat_to_l_index
+
+        self.flag_retrieve_categorical_data_as_integers = flag_retrieve_categorical_data_as_integers_back_up # restore the previous settings
+        return dict_cat_to_l_index
+    def count_category( self, name_col : str, flag_use_integer_representation_of_category : bool = False, flag_return_dict_cat_to_l_index : bool = False ) :
+        """ # 2023-01-17 23:03:08 
+        count the number of entries for each category (if a filter is active, only the active entries will be included)
+        
+        name_col : str # the name of the column containing categorical data
+        flag_use_integer_representation_of_category : bool = False # use integer representation of category
+        flag_return_dict_cat_to_l_index : bool = False # if True, return ( dict_cat_to_num_entries, dict_cat_to_l_index )
+        """
+        dict_cat_to_l_index = self.map_category_to_entries( name_col, flag_use_integer_representation_of_category = flag_use_integer_representation_of_category ) # retrieve category to l_index 
+        if dict_cat_to_l_index is None :
+            if self.verbose :
+                logger.error( f"the column does not exist or categories are not available for the current column, exiting" )
+            return
+        dict_cat_to_num_entries = dict( ( cat, len( dict_cat_to_l_index[ cat ] ) ) for cat in dict_cat_to_l_index ) # count the number of entries in each category
+        return ( dict_cat_to_num_entries, dict_cat_to_l_index ) if flag_return_dict_cat_to_l_index else dict_cat_to_num_entries
+    def rechunk_column( self, name_col : str ) :
+        """ # 2023-01-19 00:17:28 
+        rechunk a given column using the current 'int_num_bytes_in_a_chunk' settings.
+        
+        name_col : str # the name of the column to rechunk
+        """
+        # check validity of 'name_col'
+        if name_col not in self.columns_excluding_components :
+            if self.verbose :
+                logger.error( f"{name_col} does not exist in the current ZarrDataFrame (excluding components), exiting." )
+            return
+            
+        name_col_temp = f"{name_col}_{bk.UUID( )}" # retrieve a temporary column name
+        self.initialize_column( name_col_temp, name_col_template = name_col, flag_rechunk_primary_axis = True ) # initialize the column using the column of the current zdf object  # rechunk along the primary axis
+        self[ name_col_temp, : ] = self[ name_col, : ] # write all data into the column 
+        self.delete( name_col ) # delete the original column
+        self.rename_column( name_col_temp, name_col ) # rename the temporary column to the original column name
+        if self.verbose :
+            logger.info( f"rechunking '{name_col}' column completed" )
+    def rechunk( self, l_name_col : Union[ None, list ] = None ) :
+        """ # 2023-01-18 23:44:32 
+        rechunk columns using the current 'int_num_bytes_in_a_chunk' settings.
+        
+        l_name_col : Union[ None, list ] = None # : the list of names of columns to rechunk. if None is given, all columns will be rechunked in the current ZarrDataFrame
+        """
+        # check validity of the path
+        path_folder_zdf = os.path.abspath( path_folder_zdf ) + '/' # retrieve abspath of the output object
+        assert self._path_folder_zdf != path_folder_zdf # the output folder should not be same as the folder of the current ZarrDataFrame
+        
+        # handle when 'l_name_col' is None
+        if l_name_col is None :
+            l_name_col = list( self.columns_excluding_components ) # if no column name is given, copy all columns in the current ZarrDataFrame to the new ZarrDataFrame (excluding components)
+        
+        for name_col in set( self.columns_excluding_components ).intersection( l_name_col ) : # copy column by column to the output ZarrDataFrame object (excluding components)
+            self.rechunk_column( name_col ) # rechunk the column
 ''' a class for representing axis of RamData (barcodes/features) '''
 class IndexMappingDictionary( ) :
     """ # 2022-09-02 00:53:27 
@@ -6913,9 +7118,15 @@ class RamDataAxis( ) :
         ''' # 2022-08-03 02:21:21 
         handle non-None filter objects and convert these formats to the bitarray filter object
         '''
-        assert self.int_num_entries == len( ba_filter )
-
         ''' handle non-bitarray input types '''
+        if self.int_num_entries != len( ba_filter ) : # when the length of the input array does not equal to the number of entries in the current axis, input is a list of integer indices of the active entries
+            # directly convert the list of integer indices to the bitarray
+            ba = bitarray( self.int_num_entries )
+            ba.setall( 0 )
+            for int_entry in ba_filter :
+                ba[ int_entry ] = True
+            return ba
+        
         # handle when a list type has been given (convert it to np.ndarray)
         if isinstance( ba_filter, list ) or ( isinstance( ba_filter, np.ndarray ) and ba_filter.dtype != bool ) : # change to target dtype
             ba_filter = np.array( ba_filter, dtype = bool )
@@ -7500,11 +7711,20 @@ class RamDataAxis( ) :
         'name_col_filter' : name of the column of the metadata ZarrDataFrame that will contain the filter
         'dict_col_metadata_description' : description about the column. Set to None to omit a description about the column
         """
+        self.save_as_filter( self.filter, name_col_filter = name_col_filter, dict_col_metadata_description = dict_col_metadata_description )
+    def save_as_filter( self, ba_filter, name_col_filter : str, dict_col_metadata_description : Union[ None, dict ] = { 'intended_function' : 'filter' } ) :
+        """ # 2023-01-17 18:27:01 
+        save current filter using the filter to the metadata with 'name_col_filter' column name. if a filter is not active, the metadata will not be updated.
+        
+        ba_filter # an array (bitarray, boolean array, l_int_indices) containing the active entries of the current axis
+        'name_col_filter' : name of the column of the metadata ZarrDataFrame that will contain the filter
+        'dict_col_metadata_description' : description about the column. Set to None to omit a description about the column
+        """
         if name_col_filter is not None : # if a given filter name is valid
-            self.meta[ name_col_filter, : ] = BA.to_array( self.ba_active_entries ) # save filter to the storage # when a filter is not active, save filter of all active entries of the RAMtx
-        # update description metadata for the column
-        if dict_col_metadata_description is not None : # if valid 'dict_col_metadata_description' has been given
-            self.meta.set_column_metadata_description( name_col_filter, dict_col_metadata_description ) # update description metadata for the column
+            self.meta[ name_col_filter, : ] = BA.to_array( self._convert_to_bitarray( ba_filter ) ) # save filter to the storage # when a filter is not active, save filter of all active entries of the RAMtx
+            # update description metadata for the column
+            if dict_col_metadata_description is not None : # if valid 'dict_col_metadata_description' has been given
+                self.meta.set_column_metadata_description( name_col_filter, dict_col_metadata_description ) # update description metadata for the column
     def change_or_save_filter( self, name_col_filter : str, dict_col_metadata_description : Union[ None, dict ] = { 'intended_function' : 'filter' } ) :
         """ # 2022-12-05 11:49:14 
         change filter to 'name_col_filter' if 'name_col_filter' exists in the metadata, or save the currently active entries (filter) to the metadata using the name 'name_col_filter'
@@ -10630,9 +10850,9 @@ class RamData( ) :
                             'path_folder_zdf' : self.bc.meta._path_folder_zdf,
                             'path_folder_mask' : self.bc.meta._path_folder_mask,
                             'flag_use_mask_for_caching' : self.bc.meta.flag_use_mask_for_caching,
-                            'flag_retrieve_categorical_data_as_integers' : self.bc.meta._flag_retrieve_categorical_data_as_integers,
+                            'flag_retrieve_categorical_data_as_integers' : self.bc.meta.flag_retrieve_categorical_data_as_integers,
                             'flag_load_data_after_adding_new_column' : self.bc.meta._flag_load_data_after_adding_new_column,
-                            'int_num_rows_in_a_chunk' : self.bc.meta.int_num_rows_in_a_chunk
+                            'int_num_bytes_in_a_chunk' : self.bc.meta.int_num_bytes_in_a_chunk,
                         },
                     }
                 },
@@ -10646,9 +10866,9 @@ class RamData( ) :
                             'path_folder_zdf' : self.ft.meta._path_folder_zdf,
                             'path_folder_mask' : self.ft.meta._path_folder_mask,
                             'flag_use_mask_for_caching' : self.ft.meta.flag_use_mask_for_caching,
-                            'flag_retrieve_categorical_data_as_integers' : self.ft.meta._flag_retrieve_categorical_data_as_integers,
+                            'flag_retrieve_categorical_data_as_integers' : self.ft.meta.flag_retrieve_categorical_data_as_integers,
                             'flag_load_data_after_adding_new_column' : self.ft.meta._flag_load_data_after_adding_new_column,
-                            'int_num_rows_in_a_chunk' : self.ft.meta.int_num_rows_in_a_chunk
+                            'int_num_bytes_in_a_chunk' : self.ft.meta.int_num_bytes_in_a_chunk,
                         },
                     }
                 },
@@ -12445,51 +12665,131 @@ class RamData( ) :
         self.ft.change_or_save_filter( name_col_filter if name_col_filter_ft is None else name_col_filter_ft ) # ft
         return
     ''' utility functions for retrieving expression values from layer and save them as metadata in axis  '''
-    def get_expr( self, name_layer : str, queries, name_new_col = None, axis : Union[ int, str ] = 'barcodes' ) :
-        """ # 2022-08-21 16:12:56
+    def get_expr( 
+        self, 
+        queries, 
+        float_min_expr : Union[ float, None ] = None,
+        name_col_label : Union[ str, None ] = None,
+        float_min_prop_in_a_label : float = 0.1,
+        flag_AND_operation : bool = False,
+        name_new_col : Union[ str, None ] = None, 
+        name_layer : Union[ str, None ] = None, 
+        axis : Union[ int, str ] = 'features'
+    ) :
+        """ # 2023-01-17 15:10:42 
         retrieve expression values of given 'queries' from the given layer 'name_layer' in the given axis 'axis' (with currently active filters), 
         and save the total expression values for each entry in the axis metadata using the new column name 'name_new_col'
         
         possible usages: (1) calculating gene_set/pathway activities across cells, which can subsequently used for filtering cells for subclustering
                          (2) calculating pseudo-bulk expression profiles of a subset of cells across all active features 
+                         (3) retrieving a filter for barcodes expressing certein set of features of the threshold for subclustering (expression-based cell selection)
+                         (4) retrieving a filter for barcodes of cluster labels expressing certein proportion of set of features of the threshold for subclustering (expression- and cluster-based cell selection)
         
         'name_layer' : name of the layer to retrieve data
         'queries' : queries that will be handed to RamDataAxis.__getitem__ calls. A slice, a bitarray, a single or a list of integer representation(s), a single or a list of string representation(s), boolean array are one of the possible inputs
         'name_new_col' : the name of the new column that will contains retrieved expression values in the metadata of the given axis. if None, does not 
-        'axis' : axis for not querying, to which expression values will be summarized. { 0 or 'barcodes' } for operating on the 'barcodes' axis, and { 1 or 'features' } for operating on the 'features' axis
+        'axis' : axis for querying. { 1 or 'features' } for summarizing expression on the 'barcodes' axis, and { 0 or 'barcodes' } for summarizing expression on the 'features' axis.
+        
+        ===== arguments for creating a filter (selecting barcodes) for subclustering ====
+        By default, 'get_expr' method return a 1D array with the length of the unfiltered axis. However, the conversion of sparse matrix into dense matrix and sum operation takes a lot of computational time (for 50M length axis, retrieving data from RAMtx takes 0.5s but retrieving 1D array took 12 seconds, using a single core).
+        Therefore, for the purpose of filtering barcodes/features, it is better to directly process the sparse matrix without conversion to dense matrix.
+        To enable this feature, set 'float_min_expr' to non-None value
+        
+        float_min_expr : Union[ float, None ] = None, # mark barcodes/features above this threshold to 1
+        name_col_label : Union[ str, None ] = None, # the name of the column to retrieve the cluster information of the entries in the axis.
+        float_min_prop_in_a_label : Union[ float, None ] = 0.1, # a minimum proportion of entries that are marked as 1 in a cluster label (only considering the entries that are currently active in the filter) to include all the entries of the cluster. if the proportion does not reach this minimum value, all entries in the cluster will not be included in the mask
+        flag_AND_operation : bool = False, # if True, the mask from each queried feature/barcode will be combined into a single mask using AND operation. if False, the mask from each queried feature/barcode will be combined using OR operation.
         """
+        # handle attributes
+        flag_retrieve_mask = float_min_expr is not None  # retrieve a flag indicating a mask is retrieved
+        flag_using_cluster_label_for_retrieving_mask = name_new_col is not None # retrieve a flag indicating the cluster information is used        
+        
         # handle inputs
-        flag_axis_for_querying_is_barcode = axis not in { 0, 'barcode', 'barcodes' } # retrieve a flag indicating whether the data is summarized for each barcode or not
+        flag_axis_for_querying_is_barcode = self._determine_axis( axis ) # retrieve a flag indicating whether the barcode are being queried.
         
         # retrieve the appropriate Axis object
         ax_for_querying, ax_not_for_querying = ( self.bc, self.ft ) if flag_axis_for_querying_is_barcode else ( self.ft, self.bc )
         
-        # handle invalid layer
-        if name_layer not in self.layers :
-            if self.verbose :
-                logger.info( f"[RamData.get_expr] the given layer '{name_layer}' does not exist" )
-            return 
-        self.layer = name_layer # load the target layer
+        ''' load the layer '''
+        if name_layer is not None : 
+            # handle invalid layer
+            if name_layer not in self.layers :
+                if self.verbose :
+                    logger.error( f"the given layer '{name_layer}' does not exist" )
+                return 
+            self.layer = name_layer # load the target layer
+        else : # by default, use the current layer
+            if self.layer is None :
+                if self.verbose :
+                    logger.error( f"no 'name_layer' argument was given but currently no layer is active, exiting." )
+                return 
+            
+        ''' load RAMtx '''
         # retrieve appropriate rtx object
         rtx = self.layer.get_ramtx( flag_is_for_querying_features = not flag_axis_for_querying_is_barcode )
         # handle when appropriate RAMtx object does not exist
         if rtx is None :
             if self.verbose :
-                logger.info( f"[RamData.get_expr] RAMtx appropriate for the given axis does not exist" )
+                logger.info( f"RAMtx appropriate for the given axis does not exist" )
             return
         
         # parse query
         l_int_entry_query = BA.to_integer_indices( ax_for_querying[ queries ] ) # retrieve bitarray of the queried entries, convert to list of integer indices
         
+        if flag_using_cluster_label_for_retrieving_mask :
+            """
+            % cluster based subsampling
+            """
+            if name_col_label not in ax_not_for_querying.meta : # if the metadata column containing the label does not exist, exit
+                if self.verbose :
+                    logger.error( f"the metadata column '{name_col_label}' does not exist, exiting" )
+                return
+               
+            ''' retrieve labels '''
+            # retrieve the number of entries for each category
+            dict_cat_count, dict_cat_to_l_index = ax_not_for_querying.meta.count_category( name_col_label, flag_use_integer_representation_of_category = True, flag_return_dict_cat_to_l_index = True )
+            
+            ax_not_for_querying.meta.load_as_dict( name_col_label )
+            dict_cat = ax_not_for_querying.meta.dict[ name_col_label ]
+        ''' retrieve expressions '''
         ax_not_for_querying.backup_view( ) # back-up current view and reset the view of the axis not for querying
-        mtx = rtx.get_sparse_matrix( l_int_entry_query ) # retrieve expr matrix of the queries in sparse format
-        ax_not_for_querying.restore_view( ) # restore vies
+        if flag_retrieve_mask :
+            ba_filter = ax_not_for_querying.all( flag_return_valid_entries_in_the_currently_active_layer = False ) if flag_AND_operation else ax_not_for_querying.none( ) # default mask is 'all' for AND operation and 'none' for OR operation
+            for int_entry_of_axis_for_querying, arr_int_entry_of_axis_not_for_querying, arr_value in zip( * rtx[ l_int_entry_query ] ) : # iterate over each entry
+                mask = arr_value >= float_min_expr
+                arr_int_entry_of_axis_not_for_querying_filtered = arr_int_entry_of_axis_not_for_querying[ mask ] # filter 'int_entry_of_axis_not_for_querying_filtered' based on the expression
+                
+                if flag_using_cluster_label_for_retrieving_mask : 
+                    """
+                    % cluster based subsampling
+                    """
+                    ba = ax_not_for_querying.none( ) # initialize bitarray filter of the current entry 
+                    dict_cat_count_for_current_entry = COUNTER( list( dict_cat[ int_entry ] for int_entry in arr_int_entry_of_axis_not_for_querying_filtered ) ) # retrieve 'dict_cat_count_for_current_entry' for the current entry of the axis for querying
+                    for cat in dict_cat_count : # for each category
+                        if float_min_prop_in_a_label <= ( dict_cat_count_for_current_entry[ cat ] if cat in dict_cat_count_for_current_entry else 0 ) / dict_cat_count[ cat ] : # if the current category satisfy the threshold of the minimum proportion of active entries, include all entries of the current category for the current filter 
+                            for index in dict_cat_to_l_index[ cat ] : # for each entry of the selected category
+                                ba[ index ] = True # include entry of the selected category in the filter
+                                
+                else :
+                    ba = ax_not_for_querying._convert_to_bitarray( arr_int_entry_of_axis_not_for_querying_filtered ) # use the active entries in the filter
+                
+                ''' update the filter using the filter from the current entry '''
+                if flag_AND_operation :
+                    ba_filter &= ba
+                else :
+                    ba_filter |= ba
+        else :
+            mtx = rtx.get_sparse_matrix( l_int_entry_query ) # retrieve expr matrix of the queries in sparse format
+            arr_expr = np.array( ( mtx[ l_int_entry_query ] if flag_axis_for_querying_is_barcode else mtx[ :, l_int_entry_query ].T ).sum( axis = 0 ) )[ 0 ] # retrieve summarized expression values of the queried entries # convert it to numpy array of shape (len_axis_not_for_querying, )
+        ax_not_for_querying.restore_view( ) # restore view
         
-        arr_expr = np.array( ( mtx[ l_int_entry_query ] if flag_axis_for_querying_is_barcode else mtx[ :, l_int_entry_query ].T ).sum( axis = 0 ) )[ 0 ] # retrieve summarized expression values of the queried entries # convert it to numpy array of shape (len_axis_not_for_querying, )
-        
+        ''' save result as a column '''
         if name_new_col is not None : # if valid 'name_new_col' column name has been given, save the retrieved data as a metadata column
-            ax_not_for_querying.meta[ name_new_col, : ] = arr_expr
-        return arr_expr # return retrieved expression values
+            if flag_retrieve_mask :
+                ax_not_for_querying.save_as_filter( ba_filter, name_new_col ) # save a filter 
+            else :
+                ax_not_for_querying.meta[ name_new_col, : ] = arr_expr # save expression values
+        return ba_filter if flag_retrieve_mask else arr_expr # return retrieved expression values or mask of active entries
     ''' memory-efficient PCA '''
     def train_pca( 
         self, 
@@ -14148,7 +14448,6 @@ class RamData( ) :
                 pipe_sender_result.send( ( l_int_entry_current_batch, l_res, ba_neighbors ) ) # send the result back to the main process
         logger.info( f"Starting kNN-based {operation} operation using {int_num_entries_in_the_knnindex} entries in the index" )
         pbar = progress_bar( desc = f"{operation} using {int_num_entries_in_the_knnindex} entries", total = ax.meta.n_rows ) # initialize the progress bar
-        pbar = progress_bar( total = ax.meta.n_rows ) # initialize the progress bar
         def post_process_batch( res ) :
             """ # 2022-12-16 01:30:00 
             """
@@ -14681,7 +14980,7 @@ class RamData( ) :
         if self.verbose :
             logger.info( f'[RamData.find_markers] [Info] finding markers for {len( l_unique_cluster_label_to_analyze )} number of clusters completed' )
     def get_marker_table( self, max_pval : float = 1e-10, min_auroc : float = 0.7, min_log2fc : float = 1, name_col_auroc : Union[ str, None ] = None, name_col_log2fc : Union[ str, None ] = None, name_col_pval : Union[ str, None ] = None, int_num_chunks_in_a_batch : int = 10 ) :
-        """ # 2022-09-15 22:38:39 
+        """ # 2023-01-19 01:18:51 
         retrieve marker table using the given thresholds
 
         === arguments ===
@@ -14694,7 +14993,7 @@ class RamData( ) :
         int_num_chunks_in_a_batch : int = 10 : the number of chunks in a batch
         """
         # retrieve the maximum number of entries in a batch
-        int_num_entries_in_a_batch = self.bc.meta.int_num_rows_in_a_chunk * int_num_chunks_in_a_batch
+        int_num_entries_in_a_batch = self.ft.meta.get_int_num_rows_in_a_chunk( np.float64 ) * int_num_chunks_in_a_batch # use the number of rows in a chunk when using np.float64 dtype
 
         # handle inputs
         flag_use_auroc = name_col_auroc is not None
