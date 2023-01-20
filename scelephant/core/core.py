@@ -1,5 +1,6 @@
 # # %% CORE %% 
 # # import internal modules
+
 from . import BA
 from . import biobookshelf as bk
 
@@ -48,7 +49,7 @@ logger = logging.getLogger( 'SC-Elephant' )
 # define version
 _version_ = '0.0.10'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2023-01-19 00:56:26 '
+_last_modified_time_ = '2023-01-20 17:53:37'
 
 str_release_note = [
     """
@@ -292,10 +293,15 @@ str_release_note = [
     [RamData] RamData.get_expr method was improved for more efficient retrieval of a filter for barcodes/features with a expression level above a threshold
     [ZarrDataFrame] resize, rechunk methods were added. The chunk size along the primary axis will be set so that the number of bytes for each chunk remain constant across the ZarrDataFrame columns.
     
+    # 2023-01-20 12:55:33 
+    [RAMtx] an issue in get_fork_safe_version method was resolved.
+    [ZarrDataFrame] save, rechunk method multiprocessing supports were added.
+    
     ##### Future implementations #####
     [RamDataAxis] a function for changing 'int_num_entries_in_a_chunk' of StringChunks and ZarrDataFrame metadata will be implemented to increase performance in remote access setting.
-    """
+    [ZarrDataFrame] support for remote dataset will be added for the 'get_fork_safe_version' method
     
+    """   
 ]
 
 ''' previosuly written for biobookshelf '''
@@ -4784,6 +4790,7 @@ class ZarrDataFrame( ) :
     === arguments ===
     'path_folder_zdf' : a folder to store persistant zarr dataframe.
     'df' : input dataframe.
+    int_num_cpus : int = 10, # the number of process for parallel processing of columns
     
     === settings that cannot be changed after initialization ===
     'flag_enforce_name_col_with_only_valid_characters' : if True, every column name should not contain any of the following invalid characters, incompatible with attribute names: '! @#$%^&*()-=+`~:;[]{}\|,<.>/?' + '"' + "'", if False, the only invalid character will be '/', which is incompatible with linux file system as file/folder name.
@@ -4844,6 +4851,7 @@ class ZarrDataFrame( ) :
         if True, based on the availability mask, only the accessed entries will be transferred to the current ZDF object, reducing significant overhead when the number of rows are extremely large (e.g. > 10 million entries)
         
     === Amazon S3/other file remote system ===
+    flag_spawn : bool = True # whether to spawn separate processes or use the current process to perform operations 
     dict_kwargs_credentials_s3 : dict = dict( ) # credentials for Amazon S3 object. By default, credentials will be retrieved from the default location.
         
     === Synchronization across multiple processes and (remote) devices analyzing the current ZarrDataFrame (multiple 'researchers') ===  
@@ -4883,10 +4891,13 @@ class ZarrDataFrame( ) :
         float_second_to_wait_before_checking_availability_of_a_spin_lock : float = 0.5,
         zarrspinlockserver : Union[ None, bool, ZarrSpinLockServer ] = None,
         int_num_bytes_in_a_chunk : int = 320000,
+        flag_spawn : bool = True,
+        int_num_cpus : int = 10,
     ) :
         """ # 2022-12-13 00:56:01 
         """
         # set attributes that can be changed anytime during the lifetime of the object
+        self._dict_kwargs_credentials_s3 = dict_kwargs_credentials_s3
         self._flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock = flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock
         self._float_second_to_wait_before_checking_availability_of_a_spin_lock = float_second_to_wait_before_checking_availability_of_a_spin_lock
         self.flag_store_64bit_integer_as_float = flag_store_64bit_integer_as_float
@@ -4898,6 +4909,7 @@ class ZarrDataFrame( ) :
             path_folder_zdf += '/'
 
         # settings that can be changed after initialization
+        self._int_num_cpus = int_num_cpus
         self.flag_use_mask_for_caching = flag_use_mask_for_caching
         self.flag_retrieve_categorical_data_as_integers = flag_retrieve_categorical_data_as_integers
         self._path_folder_zdf = path_folder_zdf
@@ -4911,6 +4923,9 @@ class ZarrDataFrame( ) :
         self._zdf_source = zdf_source
         self._flag_use_lazy_loading = flag_use_lazy_loading
         
+        # setting that cannot be changed after initialization
+        self._flag_spawn = flag_spawn
+        
         # %% COMBINED MODE %%
         self._l_zdf = l_zdf
         self.index_zdf_data_source_when_interleaved = index_zdf_data_source_when_interleaved
@@ -4921,7 +4936,7 @@ class ZarrDataFrame( ) :
         # load a zarr spin lock server
         if isinstance( zarrspinlockserver, ZarrSpinLockServer ) :
             self._zsls = zarrspinlockserver 
-        elif zarrspinlockserver : # if 'zarrspinlockserver' is True, start a new zarr spin lock server
+        elif zarrspinlockserver : # if 'zarrspinlockserver' is True, start a new zarr spin lock server (without spawning a new process)
             self._zsls = ZarrSpinLockServer( flag_spawn = False, dict_kwargs_credentials_s3 = dict_kwargs_credentials_s3, flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock = flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock, float_second_to_wait_before_checking_availability_of_a_spin_lock = float_second_to_wait_before_checking_availability_of_a_spin_lock )
         else : # if 'zarrspinlockserver' is False or None, does not use a synchronization feature
             self._zsls = None
@@ -4977,6 +4992,7 @@ class ZarrDataFrame( ) :
         if path_folder_mask is not None : # if a mask is given
             self._mask = ZarrDataFrame( 
                 path_folder_mask, 
+                flag_spawn = flag_spawn,
                 df = df, 
                 int_num_rows = self._n_rows_unfiltered,
                 ba_filter = ba_filter, 
@@ -4998,7 +5014,8 @@ class ZarrDataFrame( ) :
                 flag_use_lazy_loading = self._flag_use_lazy_loading,
                 flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock = flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock,
                 float_second_to_wait_before_checking_availability_of_a_spin_lock = float_second_to_wait_before_checking_availability_of_a_spin_lock,
-                zarrspinlockserver = self._zsls # use the zarrspinlockserver of the current ZDF.
+                zarrspinlockserver = self._zsls, # use the zarrspinlockserver of the current ZDF.
+                int_num_cpus = self.int_num_cpus,
             ) # the mask ZarrDataFrame shoud not have mask, should be modifiable, and not mode == 'r'.
         
         # handle input arguments
@@ -5013,11 +5030,58 @@ class ZarrDataFrame( ) :
             
         # initialize attribute storing columns as dictionaries
         self.dict = dict( )      
+    @property
+    def int_num_cpus( self ) :
+        """ # 2023-01-20 17:41:25 
+        number of cpu cores to use for ZarrDataFrame operations
+        """
+        return self._int_num_cpus
+    @int_num_cpus.setter
+    def int_num_cpus( self, val ) :
+        """ # 2023-01-20 17:41:25 
+        change the number of cpu cores to use for ZarrDataFrame operations
+        """
+        self._int_num_cpus = val
+        if self._mask is not None :
+            self._mask.int_num_cpus = val
     def __len__( self ) :
         """ # 2022-09-22 23:45:53 
         return the number of rows (after applying filter if a filter has been set)
         """
         return self.n_rows
+    @property
+    def locking_server( self ) :
+        """ # 2022-12-23 00:02:37 
+        return 'ZarrSpinLockServer' object
+        """
+        return self._zsls
+    @locking_server.setter
+    def locking_server( self, locking_server_new ) :
+        """ # 2023-01-19 13:05:20 
+        # replace the previous locking server with new locking server
+        """
+        self._zsls = locking_server_new # set 'ZarrSpinLockServer' of the current object
+        if self._mask is not None : # set locking server of mask, too
+            self._mask.locking_server = locking_server_new 
+    def get_fork_safe_version( self ) :
+        """ # 2023-01-19 13:07:23 
+        return a fork-safe version by creating a new 'ZarrSpinLockServer' object and replace the previous 'ZarrSpinLockServer'
+        """
+        if self.is_remote :
+            raise NotImplementedError( 'currently fork-safe version not supported for remote dataset' )
+        # create a new 'ZarrSpinLockServer'
+        zsls = ZarrSpinLockServer( flag_spawn = self._flag_spawn, dict_kwargs_credentials_s3 = self._dict_kwargs_credentials_s3, flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock = self._flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock, float_second_to_wait_before_checking_availability_of_a_spin_lock = self._float_second_to_wait_before_checking_availability_of_a_spin_lock ) # use the object's self._flag_spawn option to load the fork safe version
+        self.locking_server = zsls
+        return self
+    def terminate_spawned_processes( self ) :
+        """ # 2022-12-08 18:59:11 
+        destroy zarr server objects if they exists in the current object
+        """
+        if not hasattr( self, '_flag_is_terminated' ) : # terminate the spawned processes only once
+            # terminate the servers
+            if self._zsls is not None :
+                self._zsls.terminate( )
+            self._flag_is_terminated = True # set a flag indicating spawned processes have been terminated.
     @property
     def path_folder_zdf( self ) :
         """ # 2022-12-11 22:38:21 
@@ -6428,6 +6492,33 @@ class ZarrDataFrame( ) :
         path_folder_zarr = f"{self._path_folder_zdf}{name_col}/"
         za = zarr.open( path_folder_zarr, mode = 'r' ) 
         return za.shape[ 1 : ] # return the shape including the dimension of the primary axis
+    def copy_column( self, name_col_src : str, name_col_dst : str, zdf_dst = None ) :
+        """ # 2023-01-19 09:52:56 
+        create a copy of a column
+        
+        name_col_src : str, # name of the source column
+        name_col_dst : str, # name of the destination column
+        zdf_dst = None, # destination ZarrDataFrame. if None is given, current ZarrDataFrame object will be the destination.
+        """
+        # by default, current ZarrDataFrame object will be the destination zdf.
+        if zdf_dst is None :
+            zdf_dst = self
+        
+        # check validity of 'name_col_src' and 'name_col_dst'
+        if name_col_src not in self.columns_excluding_components :
+            if self.verbose :
+                logger.error( f"{name_col_src} does not exist in the source (current) ZarrDataFrame (excluding components), exiting." )
+            return
+        if name_col_dst in zdf_dst.columns_excluding_components :
+            if self.verbose :
+                logger.error( f"{name_col_dst} already exists in the destination ZarrDataFrame (excluding components), exiting." )
+            return
+        
+        # copy column
+        zdf_dst.initialize_column( name_col_dst, zdf_template = self, name_col_template = name_col_src ) # initialize the column using the column of the current zdf object 
+        zdf_dst[ name_col_dst ] = self[ name_col_src ] # copy data (with filter applied)
+        if self.verbose :
+            logger.info( f"copying '{name_col_src}' to {name_col_dst} column completed" )
     def save( self, path_folder_zdf : str, l_name_col : Union[ None, list ] = None ) :
         """ # 2023-01-18 22:23:54 
         save data contained in the ZarrDataFrame object to the new path.
@@ -6458,21 +6549,40 @@ class ZarrDataFrame( ) :
         if l_name_col is None :
             l_name_col = list( self.columns ) # if no column name is given, copy all columns in the current ZarrDataFrame to the new ZarrDataFrame
         
-        for name_col in set( self.columns ).intersection( l_name_col ) : # copy column by column to the output ZarrDataFrame object
-            if self.verbose :
-                logger.info( f"saving '{name_col}' column ..." )
-            zdf.initialize_column( name_col, zdf_template = self, name_col_template = name_col ) # initialize the column using the column of the current zdf object 
-            zdf[ name_col ] = self[ name_col ] # copy data (with filter applied)
-    def load_as_dict( self, * l_name_col, float_min_proportion_of_active_rows_for_using_array_as_dict : float = 0.1 ) :
+        def __work( pipe_receiver, pipe_sender ) :
+            """ # 2023-01-20 13:10:40 
+            """
+            zdf = self.get_fork_safe_version( ) # get the fork-safe version
+            while True :
+                ins = pipe_receiver.recv( )
+                if ins is None :
+                    break
+                name_col = ins # parse 'ins'
+                zdf.copy_column( name_col_src = name_col, name_col_dst = name_col, zdf_dst = zdf ) # copy column by column to the output ZarrDataFrame object
+                pipe_sender.send( True )
+            zdf.terminate_spawned_processes( ) # terminate the servers
+        
+        # paralleize work for each column
+        bk.Multiprocessing_Batch_Generator_and_Workers(
+            gen_batch = iter( set( self.columns ).intersection( l_name_col ) ),
+            process_batch = __work,
+            int_num_threads = self.int_num_cpus,
+        )
+    def load_as_dict( self, * l_name_col, float_min_proportion_of_active_rows_for_using_array_as_dict : float = 0.1, flag_retrieve_categorical_data_as_integers : bool = False ) :
         """ # 2022-07-06 01:29:51 
         load columns as dictionaries, which is accessible through the self.dict attribute, where keys are integer representation of rows and values are data values
         
+        flag_retrieve_categorical_data_as_integers : bool = False # if True, categorical data will be retrieved as integer. the default setting of the current ZarrDataFrame will be overridden
         'float_min_proportion_of_active_rows_for_using_array_as_dict' : A threshold for the transition from dictionary to array for the conversion of coordinates. empirically, dictionary of the same length takes about ~10 times more memory than the array. 
                                                                         By default, when the number of active entries in an exis > 10% (or above any proportion that can set by 'float_min_proportion_of_active_rows_for_using_array_as_dict'), an array representing all rows will be used for the conversion of coordinates.
         """
         set_name_col = set( self.columns ).intersection( l_name_col ) # retrieve a set of valid column names
         if len( set_name_col ) == 0 : # exit if there is no valid column names
             return
+        
+        # prepare
+        flag_retrieve_categorical_data_as_integers_back_up = self.flag_retrieve_categorical_data_as_integers # retrieve the previous settings
+        self.flag_retrieve_categorical_data_as_integers = True # retrieve categorical data as integers to make the retrieving data more efficient
         
         n = self._n_rows_unfiltered # retrieve the number of rows in the unfiltered ZarrDataFrame
         arr_index = np.arange( n, dtype = int ) if self.filter is None else BA.to_integer_indices( self.filter ) # retrieve integer indices of the rows
@@ -6485,6 +6595,9 @@ class ZarrDataFrame( ) :
                 dict_data[ int_index_row ] = val
             del values
             self.dict[ name_col ] = dict_data # add column loaded as a dictionary to the cache    
+            
+
+        self.flag_retrieve_categorical_data_as_integers = flag_retrieve_categorical_data_as_integers_back_up # restore the previous settings
     def get_zarr( self, name_col : str, flag_spawn : Union[ None, bool ] = None ) :
         """ # 2022-12-05 23:45:38 
         get read-only zarr object of a column. return zarr-server with a spawned process (always read fork-safe, regardless of zarr implementation) if current zdf contains remote zdf component or current zdf is remotely located.
@@ -6700,16 +6813,29 @@ class ZarrDataFrame( ) :
         
         l_name_col : Union[ None, list ] = None # : the list of names of columns to rechunk. if None is given, all columns will be rechunked in the current ZarrDataFrame
         """
-        # check validity of the path
-        path_folder_zdf = os.path.abspath( path_folder_zdf ) + '/' # retrieve abspath of the output object
-        assert self._path_folder_zdf != path_folder_zdf # the output folder should not be same as the folder of the current ZarrDataFrame
-        
         # handle when 'l_name_col' is None
         if l_name_col is None :
             l_name_col = list( self.columns_excluding_components ) # if no column name is given, copy all columns in the current ZarrDataFrame to the new ZarrDataFrame (excluding components)
         
-        for name_col in set( self.columns_excluding_components ).intersection( l_name_col ) : # copy column by column to the output ZarrDataFrame object (excluding components)
-            self.rechunk_column( name_col ) # rechunk the column
+        def __work( pipe_receiver, pipe_sender ) :
+            """ # 2023-01-20 13:10:40 
+            """
+            zdf = self.get_fork_safe_version( ) # get the fork-safe version
+            while True :
+                ins = pipe_receiver.recv( )
+                if ins is None :
+                    break
+                name_col = ins # parse 'ins'
+                zdf.rechunk_column( name_col ) # rechunk the column
+                pipe_sender.send( True )
+            zdf.terminate_spawned_processes( ) # terminate the servers
+        
+        # paralleize work for each column
+        bk.Multiprocessing_Batch_Generator_and_Workers(
+            gen_batch = iter( set( self.columns_excluding_components ).intersection( l_name_col ) ),
+            process_batch = __work,
+            int_num_threads = self.int_num_cpus,
+        )
 ''' a class for representing axis of RamData (barcodes/features) '''
 class IndexMappingDictionary( ) :
     """ # 2022-09-02 00:53:27 
@@ -6749,6 +6875,7 @@ class RamDataAxis( ) :
     'mode' : file mode. 'r' for read-only mode and 'a' for mode allowing modifications
     'path_folder_mask' : a local (local file system) path to the mask of the current Axis that allows modifications to be written without modifying the source. if a valid local path to a mask is given, all modifications will be written to the mask
     'flag_is_read_only' : read-only status of RamData
+    int_num_cpus : int = 10, # the number of process for parallel processing of metadata columns
     
     'dict_kw_zdf' : keworded arguments for ZarrDataFrame instances, which contains metadata. for more details, see ZarrDataFrame class description.
     
@@ -6791,11 +6918,13 @@ class RamDataAxis( ) :
         dict_kw_view : dict = { 'float_min_proportion_of_active_entries_in_an_axis_for_using_array' : 0.1, 'dtype' : np.int32 }, 
         flag_load_all_string_representations_from_components : bool = False,
         zarrspinlockserver : Union[ None, ZarrSpinLockServer ] = None,
-        verbose : bool = True
+        int_num_cpus : int = 10,
+        verbose : bool = True,
     ) :
         """ # 2022-08-30 12:25:03 
         """
         # set attributes
+        self._int_num_cpus = int_num_cpus
         self._mode = mode
         self._flag_is_read_only = flag_is_read_only
         self._path_folder_mask = path_folder_mask
@@ -7050,6 +7179,7 @@ class RamDataAxis( ) :
             path_folder_mask = None if path_folder_mask is None else f"{path_folder_mask}{name_axis}.num_and_cat.zdf", 
             flag_is_read_only = self._flag_is_read_only, 
             zarrspinlockserver = self._zsls,
+            int_num_cpus = int_num_cpus,
             ** dict_kw_zdf
         ) # open a ZarrDataFrame with a given filter
         self.int_num_entries = self.meta._n_rows_unfiltered # retrieve number of entries
@@ -7061,6 +7191,19 @@ class RamDataAxis( ) :
         self._dict_kw_view = dict_kw_view
         self.dict_change = None # initialize view
         self._dict_change_backup = None
+    @property
+    def int_num_cpus( self ) :
+        """ # 2023-01-20 17:41:25 
+        number of cpu cores to use for RamDataAxis operations
+        """
+        return self._int_num_cpus
+    @int_num_cpus.setter
+    def int_num_cpus( self, val ) :
+        """ # 2023-01-20 17:41:25 
+        change the number of cpu cores to use for RamDataAxis operations
+        """
+        self._int_num_cpus = val
+        self.meta.int_num_cpus = val
     @property
     def locking_server( self ) :
         """ # 2022-12-23 00:02:37 
@@ -7862,7 +8005,7 @@ class RamDataAxis( ) :
 ''' a class for RAMtx '''
 ''' a class for accessing Zarr-backed count matrix data (RAMtx, Random-Access matrix) '''
 class RAMtx( ) :
-    """ # 2022-12-05 23:57:27 
+    """ # 2023-01-20 13:03:17 
     This class represent a random-access mtx format for memory-efficient exploration of extremely large single-cell transcriptomics/genomics data.
     This class use a count matrix data stored in a random read-access compatible format, called RAMtx, enabling exploration of a count matrix with hundreds of millions cells with hundreds of millions of features.
     Also, the RAMtx format is supports multi-processing, and provide convenient interface for parallel processing of single-cell data
@@ -8057,9 +8200,9 @@ class RAMtx( ) :
         # attach a file system server
         self.fs = FileSystemServer( flag_spawn = flag_spawn )
         
-        # if 'flag_spawn' is True, start the new 'ZarrMetadataServer' object with spawned processes
+        # if 'flag_spawn' is True, start the new 'ZarrSpinLockServer' object with spawned processes
         if flag_spawn :
-            self._zsls = ZarrMetadataServer( flag_spawn = flag_spawn, filesystem_server = self.fs, template = self._zsls )
+            self._zsls = ZarrSpinLockServer( flag_spawn = flag_spawn, filesystem_server = self.fs, template = self._zsls )
     @property
     def locking_server( self ) :
         """ # 2022-12-23 00:02:37 
@@ -8118,7 +8261,7 @@ class RAMtx( ) :
         if not hasattr( self, '_flag_is_terminated' ) : # terminate the spawned processes only once
             # terminate the file system server
             self.fs.terminate( )
-            # for remote zarr object, load the zarr object using the ZarrServer to avoid fork-not-safe error
+            # for remote zarr object, terminate the servers for each component
             if not self.is_combined and self.is_remote : # if current RAMtx is remotely located
                 if self.is_sparse :
                     # destroy Zarr object hosted in a spawned process
@@ -8129,13 +8272,14 @@ class RAMtx( ) :
                 else : # dense matrix
                     if hasattr( self._za_mtx, 'terminate' ) :
                         self._za_mtx.terminate( )
+                self._zsls.terminate( ) # termiate the locking server
             elif self.is_combined :
                 # %% COMBINED %%
                 # destroy zarr server for each component RAMtx object
                 for rtx in self._l_rtx :
                     if rtx is not None :
                         rtx.terminate_spawned_processes( )
-            self._flag_is_terminated = False # set a flag indicating spawned processes have been terminated.
+            self._flag_is_terminated = True # set a flag indicating spawned processes have been terminated.
     def get_za( self ) :
         """ # 2022-09-05 11:11:05 
         get zarr objects for operating RAMtx matrix.  the primary function of this function is to retrieve a zarr objects hosted in a thread-safe spawned process when the source is remotely located (http)
@@ -9774,7 +9918,7 @@ class RamData( ) :
         self.verbose = verbose
         self.flag_debugging = flag_debugging
         # the number of processes to be used
-        self.int_num_cpus = int_num_cpus
+        self._int_num_cpus = int_num_cpus
         # batch-generation associated settings, which can be changed later
         self.int_num_entries_for_each_weight_calculation_batch = int_num_entries_for_each_weight_calculation_batch
         self.int_total_weight_for_each_batch = int_total_weight_for_each_batch
@@ -9825,15 +9969,15 @@ class RamData( ) :
                     logger.info( 'The current RamData object cannot be modified yet no mask location is given. Therefore, the current RamData object will be "read-only"' )
                     
         ''' set 'path_folder_temp' '''
-        path_folder_temp = f"{path_folder_temp_local_default_for_remote_ramdata}tmp_{bk.UUID( )}/" if is_remote_url( self._path_folder_ramdata_modifiable ) else f'{self._path_folder_ramdata_modifiable}temp/' # define a temporary directory in the current working directory if modifiable RamData resides locally. if the modifiable RamData resides remotely, create a temp folder in the 'path_folder_temp_local_default_for_remote_ramdata' use the folder as a the temporary folder
+        path_folder_temp = f"{path_folder_temp_local_default_for_remote_ramdata}tmp_{bk.UUID( )}/" if self._path_folder_ramdata_modifiable is None or is_remote_url( self._path_folder_ramdata_modifiable ) else f'{self._path_folder_ramdata_modifiable}temp/' # define a temporary directory in the current working directory if modifiable RamData resides locally. if the modifiable RamData resides remotely or cannot be modified, create a temp folder in the 'path_folder_temp_local_default_for_remote_ramdata' use the folder as a the temporary folder
         self._path_folder_temp = path_folder_temp # set path of the temporary folder as an attribute
         
         ''' start a spin lock server (if 'flag_enable_synchronization_through_locking' is True) '''
         self._zsls = ZarrSpinLockServer( flag_spawn = self._flag_spawn, dict_kwargs_credentials_s3 = dict_kwargs_credentials_s3, flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock = flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock, float_second_to_wait_before_checking_availability_of_a_spin_lock = float_second_to_wait_before_checking_availability_of_a_spin_lock ) if flag_enable_synchronization_through_locking else None
         
         # initialize axis objects
-        self.bc = RamDataAxis( path_folder_ramdata, 'barcodes', l_ax = list( ram.bc for ram in self._l_ramdata ) if self._l_ramdata is not None else None, index_ax_data_source_when_interleaved = index_ramdata_source_for_combined_barcodes_shared_across_ramdata, flag_check_combined_type = flag_check_combined_type, flag_is_interleaved = flag_combined_ramdata_barcodes_shared_across_ramdata, ba_filter = None, ramdata = self, dict_kw_zdf = dict_kw_zdf, dict_kw_view = dict_kw_view, int_index_str_rep = int_index_str_rep_for_barcodes, verbose = verbose, mode = self._mode, path_folder_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only, zarrspinlockserver = self._zsls )
-        self.ft = RamDataAxis( path_folder_ramdata, 'features', l_ax = list( ram.ft for ram in self._l_ramdata ) if self._l_ramdata is not None else None, index_ax_data_source_when_interleaved = index_ramdata_source_for_combined_features_shared_across_ramdata, flag_check_combined_type = flag_check_combined_type, flag_is_interleaved = flag_combined_ramdata_features_shared_across_ramdata, ba_filter = None, ramdata = self, dict_kw_zdf = dict_kw_zdf, dict_kw_view = dict_kw_view, int_index_str_rep = int_index_str_rep_for_features, verbose = verbose, mode = self._mode, path_folder_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only, zarrspinlockserver = self._zsls )
+        self.bc = RamDataAxis( path_folder_ramdata, 'barcodes', l_ax = list( ram.bc for ram in self._l_ramdata ) if self._l_ramdata is not None else None, index_ax_data_source_when_interleaved = index_ramdata_source_for_combined_barcodes_shared_across_ramdata, flag_check_combined_type = flag_check_combined_type, flag_is_interleaved = flag_combined_ramdata_barcodes_shared_across_ramdata, ba_filter = None, ramdata = self, dict_kw_zdf = dict_kw_zdf, dict_kw_view = dict_kw_view, int_index_str_rep = int_index_str_rep_for_barcodes, verbose = verbose, mode = self._mode, path_folder_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only, zarrspinlockserver = self._zsls, int_num_cpus = self.int_num_cpus )
+        self.ft = RamDataAxis( path_folder_ramdata, 'features', l_ax = list( ram.ft for ram in self._l_ramdata ) if self._l_ramdata is not None else None, index_ax_data_source_when_interleaved = index_ramdata_source_for_combined_features_shared_across_ramdata, flag_check_combined_type = flag_check_combined_type, flag_is_interleaved = flag_combined_ramdata_features_shared_across_ramdata, ba_filter = None, ramdata = self, dict_kw_zdf = dict_kw_zdf, dict_kw_view = dict_kw_view, int_index_str_rep = int_index_str_rep_for_features, verbose = verbose, mode = self._mode, path_folder_mask = self._path_folder_ramdata_mask, flag_is_read_only = self._flag_is_read_only, zarrspinlockserver = self._zsls, int_num_cpus = self.int_num_cpus )
 
         # compose metadata for the combined ramdata
         if self.is_combined :
@@ -9870,6 +10014,20 @@ class RamData( ) :
         else : # initialize anndatacontainer and shelvecontainer in the memory using a dicitonary (a fallback)
             self.ad = dict( )
             self.ns = dict( )
+    @property
+    def int_num_cpus( self ) :
+        """ # 2023-01-20 17:41:25 
+        number of cpu cores to use for RamData and RamDataAxis operations
+        """
+        return self._int_num_cpus
+    @int_num_cpus.setter
+    def int_num_cpus( self, val ) :
+        """ # 2023-01-20 17:41:25 
+        change the number of cpu cores to use for RamData and RamDataAxis operations
+        """
+        self._int_num_cpus = val
+        self.bc.int_num_cpus = val
+        self.ft.int_num_cpus = val
     @property
     def locking_server( self ) :
         """ # 2022-12-23 00:02:37 
@@ -12702,7 +12860,7 @@ class RamData( ) :
         """
         # handle attributes
         flag_retrieve_mask = float_min_expr is not None  # retrieve a flag indicating a mask is retrieved
-        flag_using_cluster_label_for_retrieving_mask = name_new_col is not None # retrieve a flag indicating the cluster information is used        
+        flag_using_cluster_label_for_retrieving_mask = name_col_label is not None # retrieve a flag indicating the cluster information is used        
         
         # handle inputs
         flag_axis_for_querying_is_barcode = self._determine_axis( axis ) # retrieve a flag indicating whether the barcode are being queried.
@@ -12749,7 +12907,7 @@ class RamData( ) :
             # retrieve the number of entries for each category
             dict_cat_count, dict_cat_to_l_index = ax_not_for_querying.meta.count_category( name_col_label, flag_use_integer_representation_of_category = True, flag_return_dict_cat_to_l_index = True )
             
-            ax_not_for_querying.meta.load_as_dict( name_col_label )
+            ax_not_for_querying.meta.load_as_dict( name_col_label, flag_retrieve_categorical_data_as_integers = True )
             dict_cat = ax_not_for_querying.meta.dict[ name_col_label ]
         ''' retrieve expressions '''
         ax_not_for_querying.backup_view( ) # back-up current view and reset the view of the axis not for querying
