@@ -49,7 +49,7 @@ logger = logging.getLogger( 'SC-Elephant' )
 # define version
 _version_ = '0.0.10'
 _scelephant_version_ = _version_
-_last_modified_time_ = '2023-01-20 17:53:37'
+_last_modified_time_ = '2023-01-25 12:34:42'
 
 str_release_note = [
     """
@@ -296,6 +296,11 @@ str_release_note = [
     # 2023-01-20 12:55:33 
     [RAMtx] an issue in get_fork_safe_version method was resolved.
     [ZarrDataFrame] save, rechunk method multiprocessing supports were added.
+    
+    # 2023-01-21 15:57:18 
+    improve IPython integration by enabling auto-completion of string representations of entries and column names.
+    
+    [RamDataLayer] improved 'select_ramtx' method to reduce file I/O by using the proprtion of active entries in each axis, not the number of active entries by themselves.
     
     ##### Future implementations #####
     [RamDataAxis] a function for changing 'int_num_entries_in_a_chunk' of StringChunks and ZarrDataFrame metadata will be implemented to increase performance in remote access setting.
@@ -2072,7 +2077,6 @@ def _get_func_processed_bytes_to_arrays_mtx_and_other_settings_based_on_file_for
     return str_ext, str_ext_index, func_processed_bytes_to_arrays_mtx
 
 """ above functions will be moved below eventually """
-
 ''' miscellaneous functions '''
 def convert_numpy_dtype_number_to_number( e ) :
     """ # 2022-08-22 15:46:33 
@@ -2084,7 +2088,6 @@ def convert_numpy_dtype_number_to_number( e ) :
         return int( e )
     else :
         return e
-
 ''' methods for logging purposes '''
 def installed_packages( ) :
     """ # 2022-12-01 21:24:03 
@@ -2092,7 +2095,6 @@ def installed_packages( ) :
     """
     df_installed_packages = bk.PD_Select( bk.PIP_List_Packages( ), index = [ 's3fs', 'fsspec', 'umap-learn', 'tensorflow', 'igraph', 'biobookshelf', 'typing', 'zarr', 'numcodecs', 'anndata', 'scanpy', 'shelve', 'sklearn', 'tarfile', 'requests', 'shutil', 'numba', 'tqdm', 'umap', 'hdbscan', 'pgzip', 'scipy', 'pynndescent', 'leidenalg', 'sys', 'os', 'subprocess', 'subprocess', 'multiprocessing', 'ctypes', 'logging', 'inspect', 'copy', 'collections', 'ast', 'pickle', 'traceback', 'mmap', 'itertools', 'math', 'uuid', 'gc', 'time', 'heapq', 'datetime', 'json', 'numpy', 'pandas', 'matplotlib', 'requests', 'ftplib', 'urllib', 'importlib', 'bokeh', 'pysam', 'plotly', 'scanpy', 'bitarray', 'intervaltree', 'statsmodels', 'scipy', 'upsetplot' ] )
     return df_installed_packages 
-
 ''' methods for jupyter notebook interaction (IPython) '''
 def html_from_dict( dict_data : dict, name_dict : str = None ) :
     """ # 2022-08-07 23:47:15 
@@ -2131,7 +2133,6 @@ def html_from_dict( dict_data : dict, name_dict : str = None ) :
 
     var tree = jsonTree.create(data, wrapper);
     </script></body></html>"""
-    
 ''' methods for handling tar.gz file '''
 def tar_create( path_file_output, path_folder_input ) :
     ''' # 2022-08-05 21:07:53 
@@ -2155,7 +2156,6 @@ def tar_extract( path_file_input, path_folder_output ) :
     
     with tarfile.open( path_file_input, "r:gz" ) as tar :
         tar.extractall( path_folder_output )
-
 ''' methods for handling remote file '''
 def is_s3_url( url ) :
     """ # 2022-12-02 18:23:18 
@@ -2220,7 +2220,6 @@ def s3_rm( s3url, recursive = False, ** kwargs ) :
     import s3fs
     fs = s3fs.S3FileSystem( )
     fs.rm( s3url, recursive = recursive, ** kwargs ) # delete files
-    
 ''' method and class for handling file system '''
 def filesystem_operations( method : Literal[ 'exists', 'rm', 'glob', 'mkdir', 'mv', 'cp', 'isdir' ], path_src : str, path_dest : Union[ str, None ] = None, flag_recursive : bool = True, dict_kwargs_credentials_s3 : dict = dict( ), ** kwargs ) :
     """ # 2022-12-04 00:57:45 
@@ -5030,6 +5029,11 @@ class ZarrDataFrame( ) :
             
         # initialize attribute storing columns as dictionaries
         self.dict = dict( )      
+    def _ipython_key_completions_( self ) :
+        """ # 2023-01-21 14:50:07 
+        (ipython integration) method for supporting autocompletion of columns
+        """
+        return list( self.columns )
     @property
     def int_num_cpus( self ) :
         """ # 2023-01-20 17:41:25 
@@ -6574,7 +6578,7 @@ class ZarrDataFrame( ) :
         
         flag_retrieve_categorical_data_as_integers : bool = False # if True, categorical data will be retrieved as integer. the default setting of the current ZarrDataFrame will be overridden
         'float_min_proportion_of_active_rows_for_using_array_as_dict' : A threshold for the transition from dictionary to array for the conversion of coordinates. empirically, dictionary of the same length takes about ~10 times more memory than the array. 
-                                                                        By default, when the number of active entries in an exis > 10% (or above any proportion that can set by 'float_min_proportion_of_active_rows_for_using_array_as_dict'), an array representing all rows will be used for the conversion of coordinates.
+                                                                        By default, when the number of active entries in an axis > 10% (or above any proportion that can set by 'float_min_proportion_of_active_rows_for_using_array_as_dict'), an array representing all rows will be used for the conversion of coordinates.
         """
         set_name_col = set( self.columns ).intersection( l_name_col ) # retrieve a set of valid column names
         if len( set_name_col ) == 0 : # exit if there is no valid column names
@@ -6595,7 +6599,6 @@ class ZarrDataFrame( ) :
                 dict_data[ int_index_row ] = val
             del values
             self.dict[ name_col ] = dict_data # add column loaded as a dictionary to the cache    
-            
 
         self.flag_retrieve_categorical_data_as_integers = flag_retrieve_categorical_data_as_integers_back_up # restore the previous settings
     def get_zarr( self, name_col : str, flag_spawn : Union[ None, bool ] = None ) :
@@ -7505,11 +7508,14 @@ class RamDataAxis( ) :
         # if there are remaining entries, flush the batch
         if len( l_int_entry_in_a_batch ) > 0 : 
             yield { 'l_int_entry' : l_int_entry_in_a_batch, 'l_str_entry' : self.get_str( queries = l_int_entry_in_a_batch, int_index_col = int_index_col ) }
-    def load_str( self, int_index_col = None ) : 
+    def load_str( self, int_index_col = None, float_min_proportion_of_active_entries_for_using_array_as_dict : float = 0.1, flag_load_list_of_str_repr_for_autocompletion : bool = True ) : 
         ''' # 2022-09-12 02:28:49 
         load string representation of all the active entries of the current axis, and retrieve a mapping from string representation to integer representation
         
         'int_index_col' : default value is 'self.int_index_str_rep'
+        float_min_proportion_of_active_entries_for_using_array_as_dict : float = 0.1 : A threshold for the transition from dictionary to array datatype for the mapping. empirically, dictionary of the same length takes about ~10 times more memory than the array. 
+            By default, when the number of active entries in an axis > 10% (or above any proportion that can set by 'float_min_proportion_of_active_entries_for_using_array_as_dict'), an array representing all rows will be used for the mapping
+        flag_load_list_of_str_repr_for_autocompletion : bool = True # load the list of string representations (which is required for autocompletion features)
         '''
         # set default value for 'int_index_col'
         if int_index_col is None :
@@ -7521,17 +7527,43 @@ class RamDataAxis( ) :
         arr_int_entry = np.arange( self.int_num_entries ) if self.filter is None else BA.to_integer_indices( self.filter ) # retrieve integer representations of the entries
         arr_str = self.get_str( queries = arr_int_entry, int_index_col = int_index_col ) # retrieve string representations of the entries
         
+        # str > integer mapping
         self._dict_str_to_i = dict( ( e, i ) for e, i in zip( arr_str, arr_int_entry ) ) 
-        self._dict_i_to_str = dict( ( i, e ) for e, i in zip( arr_str, arr_int_entry ) ) 
+        
+        # integer > str mapping
+        n = self.meta._n_rows_unfiltered # retrieve the number of entries in the unfiltered metadata
+        dict_i_to_str = np.zeros( n, dtype = object ) if ( self.meta.n_rows / n ) > float_min_proportion_of_active_entries_for_using_array_as_dict else dict( ) # implement a dictionary using an array if the proportion of active rows of ZarrDataFrame is larger than the given threshold to reduce the memory footprint and increase the efficiency of access
+        for int_entry, str_entry in zip( arr_int_entry, arr_str ) : # iterate through data values of the active rows
+            dict_i_to_str[ int_entry ] = str_entry
+        self._dict_i_to_str = dict_i_to_str
+        del dict_i_to_str
+        
+        # load of list of string representations
+        self._l_str = None
+        if flag_load_list_of_str_repr_for_autocompletion :
+            self._l_str = list( arr_str ) # load the list of string representations (for autocompletion in IPython environment)
+        
         if self.verbose :
             logger.info( f'[Axis {self._name_axis}] completed loading of {len( arr_str )} number of strings' )
         return arr_str # return loaded strings
+    @property
+    def l_str( self ) :
+        """ # 2023-01-21 15:35:14 
+        list of string representations that are currently loaded in the axis.
+        """
+        return self._l_str
     def unload_str( self ) :
         """ # 2022-06-25 09:36:59 
         unload a mapping between string representations and integer representations.
         """
         self._dict_str_to_i = None
         self._dict_i_to_str = None
+    def _ipython_key_completions_( self ) :
+        """ # 2023-01-21 14:50:07 
+        (ipython integration) method for supporting autocompletion of feature names that are already loaded in memory
+        """
+        if self.l_str is not None : # check whether a list of str representations were loaded
+            return self.l_str
     @property
     def num_available_columns_string_representation( self ) :
         """ # 2022-08-28 11:49:04 
@@ -9471,6 +9503,11 @@ class RamDataLayer( ) :
         
         # load ramtx
         self._load_ramtx_objects( )
+    def _ipython_key_completions_( self ) :
+        """ # 2023-01-21 14:50:07 
+        (ipython integration) method for supporting autocompletion of columns
+        """
+        return list( self.modes )
     @property
     def locking_server( self ) :
         """ # 2022-12-23 00:02:37 
@@ -9717,7 +9754,7 @@ class RamDataLayer( ) :
         """
         return iter( list( getattr( self, attr ) for attr in vars( self ) if 'ramtx_' == attr[ : 6 ] ) ) # return ramtx object that has been loaded in the current layer
     def select_ramtx( self, ba_entry_bc, ba_entry_ft ) :
-        """ # 2022-12-03 22:36:57 
+        """ # 2023-01-21 16:02:27 
         select appropriate ramtx based on the queryed barcode and features, given as a bitarray filters 'ba_entry_bc', 'ba_entry_ft'
         """
         # count the number of valid queried entries
@@ -9730,7 +9767,7 @@ class RamDataLayer( ) :
                 logger.warning( f"currently queried view is (barcode x features) {int_num_entries_queried_bc} x {int_num_entries_queried_ft}. please change the filter or queries in order to retrieve a valid count data. For operations that do not require count data, ignore this warning." )
 
         # choose which ramtx object to use
-        flag_use_ramtx_for_querying_feature = int_num_entries_queried_bc >= int_num_entries_queried_ft # select which axis to use. if there is more number of barcodes than features, use ramtx for querying 'features'
+        flag_use_ramtx_for_querying_feature = int_num_entries_queried_bc / len( ba_entry_bc ) >= int_num_entries_queried_ft / len( ba_entry_ft ) # select which axis to use. if a proportion of barcodes that have been selected is larger than that of features, use ramtx for querying 'features' to reduce file I/O
         
         rtx = self.get_ramtx( flag_is_for_querying_features = flag_use_ramtx_for_querying_feature ) # retrieve ramtx
         if rtx is None :
@@ -11192,7 +11229,6 @@ class RamData( ) :
         with self as view : # load 'dict_change' for coordinate conversion according to the given filters, creating the view of the RamData
             # retrieve count data
             X = rtx.get_sparse_matrix( [ ] ) # retrieve count data for all entries currently active in the filter
-         
         
         # retrieve meta data as dataframes
         df_obs = self.bc.meta.get_df( * l_col_bc )
@@ -12367,6 +12403,7 @@ class RamData( ) :
         name_layer_normalized : Union[ str, None ] = 'normalized', 
         name_layer_log_transformed : Union[ str, None ] = 'normalized_log1p', 
         name_layer_scaled : str = 'normalized_log1p_scaled', 
+        name_layer_capped : str = 'normalized_log1p_capped', 
         name_col_filter_filtered_barcode : str = 'filtered_barcodes', 
         min_counts : int = 500, 
         min_features : int = 100, 
@@ -12383,7 +12420,7 @@ class RamData( ) :
         name_col_variance : Union[ str, None ] = None, 
         int_index_component_reference : Union[ int, None ] = None
     ) :
-        """ # 2022-09-16 13:02:01 
+        """ # 2023-01-21 17:24:07 
         This function provides convenience interface for pre-processing step for preparing normalized, scaled expression data for PCA dimension reduction
         assumes raw count data (or the equivalent of it) is available in 'dense' format (local) or 'sparse_for_querying_features' and 'sparse_for_querying_barcodes' format (remote source)
 
@@ -12405,7 +12442,8 @@ class RamData( ) :
         name_layer_raw_copy : str = 'raw_copy' # the name of the layer containing copied 'raw' count data, copied from the remote source
         name_layer_normalized : str = 'normalized' # the name of the layer containing normalized raw count data
         name_layer_log_transformed : str = 'normalized_log1p' # the name of the layer containing log-transformed normalized raw count data
-        name_layer_scaled : str = 'normalized_log1p_scaled' : the name of the layer that will contain the log-normalized, scale gene expression data in a 'sparse_for_querying_barcodes' ramtx mode of only the highly variable genes, selected by the current filter settings, 'int_num_highly_variable_features', and 'dict_kw_hv' arguments. data will be scaled and capped according to 'max_value' arguments
+        name_layer_capped : str = 'normalized_log1p_capped', # the name of the layer containing capped, log-transformed normalized raw count data
+        name_layer_scaled : str = 'normalized_log1p_scaled' # the name of the layer that will contain the log-normalized, scale gene expression data in a 'sparse_for_querying_barcodes' ramtx mode of only the highly variable genes, selected by the current filter settings, 'int_num_highly_variable_features', and 'dict_kw_hv' arguments. data will be scaled and capped according to 'max_value' arguments
 
         === barcode filtering ===
         name_col_filter_filtered_barcode : str = 'filtered_barcodes' # the name of metadata column that will contain filter containing active barcode entries after barcode filtering
@@ -12421,8 +12459,8 @@ class RamData( ) :
         int_total_count_target : int = 10000 # total target count of cells
         name_col_total_count : Union[ str, None ] = None # name of column of the 'barcodes' metadata containing the total count of barcodes
 
-        === scaling ===
-        'max_value' = 10 : capping at this value during scaling
+        === capping & scaling ===
+        max_value : float = 10,  : capping at this value during scaling/capping
         name_col_variance : Union[ str, None ] = None # name of column of the 'features' metadata containing variance of the features
 
         === reference-based scaling ===
@@ -12565,40 +12603,65 @@ class RamData( ) :
                 ** dict_kw_hv
             )
             
-            """
-            %% scaling %%
-            """
-            # retrieve flags
-            flag_cap_value = max_value is not None
-            flag_divide_by_sd = name_col_variance is not None and name_col_variance in self.ft.columns # the 'name_col_variance' column name should be present in the metadata zdf.
-
-            # retrieve variance
-            self.ft.meta.load_as_dict( name_col_variance )
-            dict_var = self.ft.meta.dict[ name_col_variance ] # retrieve total counts for each barcode as a dictionary
-
-            # write log-normalized, scaled data for the selected highly variable features
-            def func( self, int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value ) : 
-                """ # 2022-07-06 23:58:38 
+            if name_layer_capped is not None and max_value is not None :
                 """
-                # perform normalization 
-                arr_value *= int_total_count_target / dict_count[ int_entry_of_axis_for_querying ] # perform normalization using the total count data for each barcode
+                %% capping %%
+                """
+                # write log-normalized and capped data for the selected highly variable features
+                def func( self, int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value ) : 
+                    """ # 2022-07-06 23:58:38 
+                    """
+                    # perform normalization 
+                    arr_value *= int_total_count_target / dict_count[ int_entry_of_axis_for_querying ] # perform normalization using the total count data for each barcode
 
-                # perform log1p transformation 
-                arr_value = np.log10( arr_value + 1 )
+                    # perform log1p transformation 
+                    arr_value = np.log10( arr_value + 1 )
 
-                # perform scaling in-place
-                for i, e in enumerate( arr_int_entries_of_axis_not_for_querying.astype( int ) ) : # iterate through features
-                    float_var = dict_var[ e ] # retrieve variance
-                    if float_var != 0 : # if standard deviation is not available, use the data as-is
-                        arr_value[ i ] = arr_value[ i ] / float_var ** 0.5 # retrieve standard deviation of the current feature from the variance # perform scaling of data for each feature 
+                    # capping values above 'max_value'
+                    arr_value[ arr_value > max_value ] = max_value 
 
-                arr_value[ arr_value > max_value ] = max_value # capping values above 'max_value'
+                    # return results
+                    return int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value
+                if self.verbose :
+                    logger.info( f"[FAST MODE] write log-normalized and capped data for the selected highly variable features ... " )
+                self.apply( name_layer_raw, name_layer_capped, func, [ [ 'sparse_for_querying_barcodes', 'sparse_for_querying_barcodes' ] ] ) # use sparse input as a source if available    
+            
+            if name_layer_scaled is not None and name_col_variance is not None :
+                """
+                %% scaling %%
+                """
+                # retrieve flags
+                flag_cap_value = max_value is not None
+                flag_divide_by_sd = name_col_variance is not None and name_col_variance in self.ft.columns # the 'name_col_variance' column name should be present in the metadata zdf.
 
-                # return results
-                return int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value
-            if self.verbose :
-                logger.info( f"[RamData.prepare_dimension_reduction_from_raw] [FAST MODE] write log-normalized, scaled data for the selected highly variable features ... " )
-            self.apply( name_layer_raw, name_layer_scaled, func, [ [ 'sparse_for_querying_barcodes', 'sparse_for_querying_barcodes' ] ] ) # use sparse input as a source if available
+                # retrieve variance
+                self.ft.meta.load_as_dict( name_col_variance )
+                dict_var = self.ft.meta.dict[ name_col_variance ] # retrieve total counts for each barcode as a dictionary
+
+                # write log-normalized, scaled, and capped data for the selected highly variable features
+                def func( self, int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value ) : 
+                    """ # 2022-07-06 23:58:38 
+                    """
+                    # perform normalization 
+                    arr_value *= int_total_count_target / dict_count[ int_entry_of_axis_for_querying ] # perform normalization using the total count data for each barcode
+
+                    # perform log1p transformation 
+                    arr_value = np.log10( arr_value + 1 )
+
+                    # perform scaling in-place
+                    for i, e in enumerate( arr_int_entries_of_axis_not_for_querying.astype( int ) ) : # iterate through features
+                        float_var = dict_var[ e ] # retrieve variance
+                        if float_var != 0 : # if standard deviation is not available, use the data as-is
+                            arr_value[ i ] = arr_value[ i ] / float_var ** 0.5 # retrieve standard deviation of the current feature from the variance # perform scaling of data for each feature 
+
+                    if flag_cap_value :
+                        arr_value[ arr_value > max_value ] = max_value # capping values above 'max_value'
+
+                    # return results
+                    return int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value
+                if self.verbose :
+                    logger.info( f"[FAST MODE] write log-normalized, scaled, and capped data for the selected highly variable features ... " )
+                self.apply( name_layer_raw, name_layer_scaled, func, [ [ 'sparse_for_querying_barcodes', 'sparse_for_querying_barcodes' ] ] ) # use sparse input as a source if available
         else :
             """ %% SLOW MODE %% """
             self.bc.filter = ba_filter_bc_back_up # restore the barcode filter (in order to contain records of all barcodes in the output layers)
@@ -12621,6 +12684,15 @@ class RamData( ) :
                     'log1p',
                     mode_instructions = [ [ 'sparse_for_querying_features', 'sparse_for_querying_features' ], [ 'sparse_for_querying_barcodes', 'sparse_for_querying_barcodes' ] ]
                 )
+                
+            # cap 
+            if name_layer_log_transformed is not None and name_layer_capped is not None :
+                self.apply( 
+                    name_layer_log_transformed, 
+                    name_layer_capped, 
+                    'ident', 
+                    mode_instructions = [ [ 'sparse_for_querying_features', 'sparse_for_querying_features' ], [ 'sparse_for_querying_barcodes', 'sparse_for_querying_barcodes' ] ]
+                ) 
                 
             # load filter for filtered barcodes (if the filter exists)
             if name_col_filter_filtered_barcode in self.bc.meta : # check validity of the name_col
@@ -12922,7 +12994,7 @@ class RamData( ) :
                     % cluster based subsampling
                     """
                     ba = ax_not_for_querying.none( ) # initialize bitarray filter of the current entry 
-                    dict_cat_count_for_current_entry = COUNTER( list( dict_cat[ int_entry ] for int_entry in arr_int_entry_of_axis_not_for_querying_filtered ) ) # retrieve 'dict_cat_count_for_current_entry' for the current entry of the axis for querying
+                    dict_cat_count_for_current_entry = bk.COUNTER( list( dict_cat[ int_entry ] for int_entry in arr_int_entry_of_axis_not_for_querying_filtered ) ) # retrieve 'dict_cat_count_for_current_entry' for the current entry of the axis for querying
                     for cat in dict_cat_count : # for each category
                         if float_min_prop_in_a_label <= ( dict_cat_count_for_current_entry[ cat ] if cat in dict_cat_count_for_current_entry else 0 ) / dict_cat_count[ cat ] : # if the current category satisfy the threshold of the minimum proportion of active entries, include all entries of the current category for the current filter 
                             for index in dict_cat_to_l_index[ cat ] : # for each entry of the selected category

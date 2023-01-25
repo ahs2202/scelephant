@@ -10,6 +10,15 @@ import pickle
 import matplotlib.pyplot as plt
 from uuid import uuid4
 
+def Wide( int_percent_html_code_cell_width = 95 ) :
+    """ 
+    # 20210224
+    widen jupyter notebook cell
+    """
+    from IPython.core.display import display, HTML
+    display(HTML("<style>.container { width:100% !important; }</style>"))
+    display(HTML("<style>div.cell{width:" + str( int_percent_html_code_cell_width ) + "%;margin-left:" + str ( 100 - int_percent_html_code_cell_width ) + "%;margin-right:auto;}</style>" ) )
+
 def PICKLE_Write( path_file, data_object ) :
     ''' write binary pickle file of a given data_object '''
     with open( path_file, 'wb' ) as handle :
