@@ -4792,7 +4792,7 @@ class ZarrSpinLockServer( ) :
     
 ''' a class for Zarr-based DataFrame object '''
 class ZarrDataFrame( ) :
-    """ # 2023-01-19 00:46:02 
+    """ # 2023-02-17 19:05:40 
     storage-based persistant DataFrame backed by Zarr persistent arrays.
     each column can be separately loaded, updated, and unloaded.
     a filter can be set, which allows updating and reading ZarrDataFrame as if it only contains the rows indicated by the given filter.
@@ -5829,20 +5829,24 @@ class ZarrDataFrame( ) :
         return self[ '__index__', queries ] # return integer indices of the queries
     def initialize_column( 
         self, 
-        name_col : str, 
+        name_col : Union[ None, str ] = None, 
         dtype = np.float64, 
         shape_not_primary_axis = ( ), 
         chunks = ( ), 
         categorical_values = None, 
         fill_value = 0, 
+        dict_col_metadata : Union[ dict, None ] = None,
         dict_metadata_description : dict = dict( ), 
         zdf_template = None, 
         name_col_template : Union[ str, None ] = None, 
         path_col_template : Union[ str, None ] = None,
         flag_rechunk_primary_axis : bool = False,
+        flag_dry_run : bool = False, 
+        data_for_initialization : Union[ None, dict ] = None,
     ) : 
-        """ # 2022-12-29 03:55:33 
+        """ # 2023-02-17 18:16:52 
         initialize columns with a given shape and given dtype
+        name_col : Union[ None, str ] = None # name of the column to initialize. if None is given, return the required data for initializing a column
         'dtype' : initialize the column with this 'dtype'
         'shape_not_primary_axis' : initialize the column with this shape excluding the dimension of the primary axis. if an empty tuple or None is given, a 1D array will be initialized. 
                 for example, for ZDF with length 100, 
@@ -5852,6 +5856,7 @@ class ZarrDataFrame( ) :
         'chunks' : chunk size of the zarr object. length of the chunk along the primary axis can be skipped, which will be replaced by 'int_num_rows_in_a_chunk' calculated from 'int_num_bytes_in_a_chunk'  attribute
         'categorical_values' : if 'categorical_values' has been given, set the column as a column containing categorical data
         'fill_value' : fill value of zarr object
+        dict_col_metadata : Union[ dict, None ] = None, # a 'dict_col_metadata' of the output ZarrDataFrame column. settings from the given 'dict_col_metadata' will be override other arguments used to construct 'dict_col_metadata', including 'dict_metadata_description' and 'categorical_values'
         dict_metadata_description : dict = dict( ) # the dictionary containing metadata of the column with the following schema:
                     'description' : a brief description of the column
                     'authors' : a list of authors and contributors for the column
@@ -5860,10 +5865,24 @@ class ZarrDataFrame( ) :
         'name_col_template' : the name of the column to use as a template. if given, 'path_col_template' will be ignored, and use the column as a template to initialize the current column. the column will be searched in the following order: main zdf object --> mask zdf object --> component zdf objects, in the order specified in the list.
         'path_col_template' : the (remote) path to the column to be used as a template. if given, the metadata available in the path will be used to initialize the current column
         flag_rechunk_primary_axis : bool = False, # if True, set the chunk size along the primary axis based on the current 'int_num_bytes_in_a_chunk'
+        flag_dry_run : bool : False, # if True, does not initialize the column. instead, only return the data required for initializing the column.
+        data_for_initialization : Union[ None, dict ] = None, # use 'data_for_initialization' to initialize a column. all other arguments other than 'name_col' will be overridden.
+        
+        === returns ===
+        dict_data_for_initialization : data required for initializing the column.
         """
+        # parse 'data_for_initialization'
+        if data_for_initialization is not None :
+            # override existing arguments using values from 'data_for_initialization'
+            shape_not_primary_axis = metadata[ 'shape_not_primary_axis' ]
+            chunks = metadata[ 'chunks' ]
+            dtype = metadata[ 'dtype' ]
+            fill_value = metadata[ 'fill_value' ]
+            dict_col_metadata = metadata[ 'dict_col_metadata' ]
+        
         # hand over to mask if mask is available
         if self._mask is not None : # if mask is available, save new data to the mask # overwriting on the mask
-            self._mask.initialize_column( name_col, dtype = dtype, shape_not_primary_axis = shape_not_primary_axis, chunks = chunks, categorical_values = categorical_values, fill_value = fill_value, zdf_template = zdf_template, name_col_template = name_col_template, path_col_template = path_col_template, flag_rechunk_primary_axis = flag_rechunk_primary_axis )
+            self._mask.initialize_column( name_col = name_col, dtype = dtype, shape_not_primary_axis = shape_not_primary_axis, chunks = chunks, categorical_values = categorical_values, fill_value = fill_value, zdf_template = zdf_template, name_col_template = name_col_template, path_col_template = path_col_template, flag_rechunk_primary_axis = flag_rechunk_primary_axis, flag_dry_run = flag_dry_run, data_for_initialization = data_for_initialization )
             return
         
         if self._n_rows_unfiltered is None : # if length of zdf has not been set, exit
@@ -5871,6 +5890,10 @@ class ZarrDataFrame( ) :
         
         if name_col in self.columns_excluding_components : # if the column exists in the current ZarrDataFrame (excluding component zdf objects), ignore the call and exit
             return
+        
+        # if 'name_col' is not given, return the data for initialization
+        if name_col is None :
+            flag_dry_run = True
         
         # retrieve metadata information from the template column object
         if not isinstance( zdf_template, ZarrDataFrame ) : # by default, use self as template zdf object
@@ -5893,7 +5916,8 @@ class ZarrDataFrame( ) :
             try :
                 # retrieve path of the column
                 path_folder_col = f"{self._path_folder_zdf}{name_col}/"
-                if self.use_locking : # if locking is used
+                flag_use_locking = self.use_locking and not flag_dry_run # if 'flag_dry_run' is True, the column will not be initialized, and locking will not be used.
+                if flag_use_locking : # if locking is used
                     # %% FILE LOCKING %%
                     # if a lock is present, exit the function, since the column has been already initialized
                     if self._zsls.check_lock( f'{path_folder_col}.lock' ) :
@@ -5904,46 +5928,52 @@ class ZarrDataFrame( ) :
                     flag_lock_acquired = self._zsls.acquire_lock( f'{path_folder_col}.lock' )
 
                 # check whether the given name_col contains invalid characters(s)
-                for char_invalid in self._str_invalid_char :
-                    if char_invalid in name_col :
-                        raise TypeError( f"the character '{char_invalid}' cannot be used in 'name_col'. Also, the 'name_col' cannot contains the following characters: {self._str_invalid_char}" )
+                if not flag_dry_run :
+                    for char_invalid in self._str_invalid_char :
+                        if char_invalid in name_col :
+                            raise TypeError( f"the character '{char_invalid}' cannot be used in 'name_col'. Also, the 'name_col' cannot contains the following characters: {self._str_invalid_char}" )
 
-                # compose metadata
-                dict_col_metadata = { 'flag_categorical' : False, 'dict_metadata_description' : dict_metadata_description } # set a default value for 'flag_categorical' metadata attribute # also, add 'dict_metadata_description'
-                dict_col_metadata[ 'flag_filtered' ] = self.filter is not None # mark the column containing filtered data
+                """ 
+                compose metadata
+                """
+                if dict_col_metadata is None : # if 'dict_col_metadata' is not given, compose the metadata
+                    dict_col_metadata = { 'flag_categorical' : False, 'dict_metadata_description' : dict_metadata_description } # set a default value for 'flag_categorical' metadata attribute # also, add 'dict_metadata_description'
+                    dict_col_metadata[ 'flag_filtered' ] = self.filter is not None # mark the column containing filtered data
 
-                # initialize a column containing categorical data
-                if categorical_values is not None : # if 'categorical_values' has been given
-                    dict_col_metadata[ 'flag_categorical' ] = True # set metadata for categorical datatype
-                    set_value_unique = set( categorical_values ) # retrieve a set of unique values
-                    # handle when np.nan value exist 
-                    if np.nan in set_value_unique : # when np.nan value was detected
-                        if 'flag_contains_nan' not in dict_col_metadata : # update metadata
-                            dict_col_metadata[ 'flag_contains_nan' ] = True # mark that the column contains np.nan values
-                        set_value_unique.remove( np.nan ) # removes np.nan from the category
+                    # initialize a column containing categorical data
+                    if categorical_values is not None : # if 'categorical_values' has been given
+                        fill_value = -1 # set fill_value to -1 to represent null values
+                        dict_col_metadata[ 'flag_categorical' ] = True # set metadata for categorical datatype
+                        set_value_unique = set( categorical_values ) # retrieve a set of unique values
+                        # handle when np.nan value exist 
+                        if np.nan in set_value_unique : # when np.nan value was detected
+                            if 'flag_contains_nan' not in dict_col_metadata : # update metadata
+                                dict_col_metadata[ 'flag_contains_nan' ] = True # mark that the column contains np.nan values
+                            set_value_unique.remove( np.nan ) # removes np.nan from the category
 
-                    if 'l_value_unique' not in dict_col_metadata :
-                        l_value_unique = list( set_value_unique ) # retrieve a list of unique values # can contain mixed types (int, float, str)
-                        dict_col_metadata[ 'l_value_unique' ] = list( str( e ) for e in l_value_unique ) # update metadata # convert entries to string (so that all values with mixed types can be interpreted as strings)
-                    else :
-                        set_value_unique_previously_set = set( dict_col_metadata[ 'l_value_unique' ] )
-                        l_value_unique = dict_col_metadata[ 'l_value_unique' ] + list( val for val in list( set_value_unique ) if val not in set_value_unique_previously_set ) # extend 'l_value_unique'
-                        dict_col_metadata[ 'l_value_unique' ] = l_value_unique # update metadata
+                        if 'l_value_unique' not in dict_col_metadata :
+                            l_value_unique = list( set_value_unique ) # retrieve a list of unique values # can contain mixed types (int, float, str)
+                            dict_col_metadata[ 'l_value_unique' ] = list( str( e ) for e in l_value_unique ) # update metadata # convert entries to string (so that all values with mixed types can be interpreted as strings)
+                        else :
+                            set_value_unique_previously_set = set( dict_col_metadata[ 'l_value_unique' ] )
+                            l_value_unique = dict_col_metadata[ 'l_value_unique' ] + list( val for val in list( set_value_unique ) if val not in set_value_unique_previously_set ) # extend 'l_value_unique'
+                            dict_col_metadata[ 'l_value_unique' ] = l_value_unique # update metadata
 
-                    # retrieve appropriate datatype for encoding unique categorical values
-                    int_min_number_of_bits = int( np.ceil( math.log2( len( l_value_unique ) ) ) ) + 1 # since signed int will be used, an additional bit is required to encode the data
-                    if int_min_number_of_bits <= 8 :
-                        dtype = np.int8
-                    elif int_min_number_of_bits <= 16 :
-                        dtype = np.int16
-                    else :
-                        dtype = np.int32
-                else :
-                    if self.flag_store_64bit_integer_as_float : # if 'flag_store_64bit_integer_as_float' flag is set to True, avoid using np.int64 dtype due to its compatibility with the JavaScript
-                        if np.issubdtype( dtype, np.int64 ) : # the np.int64 dtype will be saved using the np.float64 dtype
-                            dtype = np.float64
-                        if dtype == int : # the general 'int' dtype will be saved using the np.int32 dtype
+                        # retrieve appropriate datatype for encoding unique categorical values
+                        int_min_number_of_bits = int( np.ceil( math.log2( len( l_value_unique ) ) ) ) + 1 # since signed int will be used, an additional bit is required to encode the data
+                        if int_min_number_of_bits <= 8 :
+                            dtype = np.int8
+                        elif int_min_number_of_bits <= 16 :
+                            dtype = np.int16
+                        else :
                             dtype = np.int32
+                
+                # handle integer dtype
+                if self.flag_store_64bit_integer_as_float : # if 'flag_store_64bit_integer_as_float' flag is set to True, avoid using np.int64 dtype due to its compatibility with the JavaScript
+                    if np.issubdtype( dtype, np.int64 ) : # the np.int64 dtype will be saved using the np.float64 dtype
+                        dtype = np.float64
+                    if dtype == int : # the general 'int' dtype will be saved using the np.int32 dtype
+                        dtype = np.int32
 
                 # initialize the zarr objects
                 shape = tuple( [ self._n_rows_unfiltered ] + list( shape_not_primary_axis ) ) # compose 'shape' of the zarr object
@@ -5952,19 +5982,30 @@ class ZarrDataFrame( ) :
                 chunks = tuple( chunks ) if len( chunks ) == len( shape ) else tuple( [ self.get_int_num_rows_in_a_chunk( dtype, chunks_not_primary_axis = chunks ) ] + list( chunks ) ) # compose 'chunks' of the zarr object # handle when chunk size for the primary axis was not given
                 assert len( chunks ) == len( shape ) # the length of chunks and shape should be the same
 
-                za = zarr.open( path_folder_col, mode = 'a', shape = shape, chunks = chunks, dtype = dtype, fill_value = fill_value, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object if the object does not exist.
+                if not flag_dry_run : # initialize the given column # if 'flag_dry_run' is True, does not initialize the column. instead, retrieve data for initialization 
+                    za = zarr.open( path_folder_col, mode = 'a', shape = shape, chunks = chunks, dtype = dtype, fill_value = fill_value, synchronizer = zarr.ThreadSynchronizer( ) ) # create a new Zarr object if the object does not exist.
 
-                # write metadata
-                za.attrs[ 'dict_col_metadata' ] = dict_col_metadata
-                
-                # add column to zdf (and update the associated metadata)
-                self._add_column( name_col, dict_metadata_description ) 
+                    # write metadata
+                    za.attrs[ 'dict_col_metadata' ] = dict_col_metadata
+
+                    # add column to zdf (and update the associated metadata)
+                    self._add_column( name_col, dict_metadata_description ) 
             finally :
-                if self.use_locking : # if locking is used
+                if flag_use_locking : # if locking is used
                     # %% FILE LOCKING %%
                     # acquire the lock before initializing the column
                     if flag_lock_acquired :
                         self._zsls.release_lock( f'{path_folder_col}.lock' )
+                        
+            # return data used for initialization 
+            dict_data_for_initialization = {
+                'shape_not_primary_axis' : shape[ 1 : ], 
+                'chunks' : chunks, 
+                'dtype' : str( dtype ), 
+                'fill_value' : fill_value, 
+                'dict_col_metadata' : dict_col_metadata, # containing required data to initialize a ZarrDataFrame column
+            }
+            return dict_data_for_initialization
     def __getitem__( self, args ) :
         ''' # 2022-12-11 05:45:07 
         retrieve data of a column.
@@ -6595,7 +6636,7 @@ class ZarrDataFrame( ) :
         if self.verbose :
             logger.info( f"copying '{name_col_src}' to {name_col_dst} column completed" )
     def save( self, path_folder_zdf : str, l_name_col : Union[ None, list ] = None ) :
-        """ # 2023-01-18 22:23:54 
+        """ # 2023-02-17 19:16:36 
         save data contained in the ZarrDataFrame object to the new path.
         if a filter is active, filtered ZarrDataFrame will be saved.
         
@@ -6619,7 +6660,11 @@ class ZarrDataFrame( ) :
             verbose = self.verbose,
             flag_use_lazy_loading = self._flag_use_lazy_loading,
         ) # open a new zdf using the same setting as the current ZarrDataFrame
-        
+
+        # exit if an empty list was given as the list of names of the columns to save
+        if len( l_name_col ) == 0 :
+            return
+
         # handle when 'l_name_col' is None
         if l_name_col is None :
             l_name_col = list( self.columns ) # if no column name is given, copy all columns in the current ZarrDataFrame to the new ZarrDataFrame
@@ -6638,10 +6683,11 @@ class ZarrDataFrame( ) :
             zdf_dst_fork_safe.terminate_spawned_processes( ) # terminate the servers
         
         # paralleize work for each column
+        set_name_col = set( self.columns ).intersection( l_name_col ) # retrieve a set of name_col to save
         bk.Multiprocessing_Batch_Generator_and_Workers(
-            gen_batch = iter( set( self.columns ).intersection( l_name_col ) ),
+            gen_batch = iter( set_name_col ),
             process_batch = __work,
-            int_num_threads = self.int_num_cpus,
+            int_num_threads = min( self.int_num_cpus, len( set_name_col ) + 2 ), # use the appropriate number of processes for multiprocessing
         )
     def load_as_dict( self, * l_name_col, float_min_proportion_of_active_rows_for_using_array_as_dict : float = 0.1, flag_retrieve_categorical_data_as_integers : bool = False ) :
         """ # 2022-07-06 01:29:51 
@@ -6936,7 +6982,7 @@ class IndexMappingDictionary( ) :
         """
         return 0 <= e < self._int_length_component_axis if self._flag_component_to_combined else 0 + self._int_offset <= e < self._int_length_component_axis + self._int_offset
 class RamDataAxis( ) :
-    """ # 2022-08-29 12:45:38 
+    """ # 2023-02-17 19:05:44 
     a memory-efficient container of features/barcodes and associated metadata for a given RamData object.
     
     # 2022-08-29 12:45:51 
@@ -9962,7 +10008,7 @@ class RamDataLayer( ) :
             rtx.terminate_spawned_processes( ) # terminate spawned processes from the RAMtx object
 ''' class for storing RamData '''
 class RamData( ) :
-    """ # 2022-12-13 02:58:40 
+    """ # 2023-02-17 19:05:50 
     This class provides frameworks for single-cell transcriptomic/genomic data analysis, utilizing RAMtx data structures, which is backed by Zarr persistant arrays.
     Extreme lazy loading strategies used by this class allows efficient parallelization of analysis of single cell data with minimal memory footprint, loading only essential data required for analysis. 
     
@@ -12340,12 +12386,7 @@ class RamData( ) :
                 )
             elif type_model in { 'deep_learning.keras.classifier', 'deep_learning.keras.embedder' } :
                 ''' export deep learning models '''
-                # check requirements
-                # if required columns are absent, skip re-building the model
-                if not ( model[ 'name_col_x' ] in ax_subset.columns and model[ 'name_col_y' ] in ax_subset.columns ) :
-                    if self.verbose :
-                        logger.info( f"required columns for exporting '{id_model}' model are absent in the destination RamData. The model will be skipped." )
-                    continue
+                # no requirements for exporting deep learning models
                 
                 # modify 'filter' attribute of the model
                 model[ 'filter' ] = ba_subset
@@ -14982,7 +15023,7 @@ class RamData( ) :
         batch_size = 400,
         epochs = 100,
     ) :
-        """ # 2022-09-15 14:05:08 
+        """ # 2023-02-17 18:49:21 
         use deep-learning based model, built using Keras modules, to classify (predict labels) or embed (predict embeddings) entries.
 
         name_model : str # the name of the output model containing knn index
@@ -15100,9 +15141,17 @@ class RamData( ) :
         # mirrored_strategy = tf.distribute.MirroredStrategy( ) # distributed training
         # with mirrored_strategy.scope( ) :
         earlystopper = tf.keras.callbacks.EarlyStopping( monitor = 'val_loss', patience = int_earlystopping_patience, verbose = 1 ) # earlystopper to prevent overfitting 
+        
+        with tf.device( '/CPU:0' ) :
+            # avoid a known bug in a tensorflow trying to fit an entire dataset into GPU memory by converting it to tensor before running model.fit
+            X_train = tf.convert_to_tensor( X_train )
+            X_test = tf.convert_to_tensor( X_test )
+            y_train = tf.convert_to_tensor( y_train )
+            y_test = tf.convert_to_tensor( y_test )
+        
         model.fit( X_train, y_train, batch_size = batch_size, epochs = epochs, shuffle = True, validation_data = ( X_test, y_test ), callbacks = [ earlystopper ] )
 
-        # save trained model
+        # save trained model # collect metadata of the output columns
         dict_model = { 
             'name_col_x' : name_col_x, 
             'name_col_y' : name_col_y, 
@@ -15110,7 +15159,17 @@ class RamData( ) :
             'dict_kw_train_test_split' : dict_kw_train_test_split, 
             'flag_axis_is_barcode' : flag_axis_is_barcode, 
             'filter' : ax.filter, 
-            'dl_model' : model
+            'dl_model' : model,
+            'metadata_col_x' : ax.meta.initialize_column( 
+                name_col = None, 
+                name_col_template = name_col_x,
+                flag_dry_run = True,
+            ),
+            'metadata_col_y' : ax.meta.initialize_column( 
+                name_col = None, 
+                name_col_template = name_col_y,
+                flag_dry_run = True,
+            ),
         }
         # collect metadata for reconstructing y from the output of the model
         if flag_embedder :
@@ -15211,8 +15270,15 @@ class RamData( ) :
             return
         # if the output column does not exist, initialize the 'y' output column using the 'y' column used for training.
         if name_col_y not in ax.meta :
-            logger.info( f"[RamData.train_dl] '{name_col_y}' output column will be initialized with '{model[ 'name_col_y' ]}' column" )
-            ax.meta.initialize_column( name_col_y, name_col_template = model[ 'name_col_y' ] ) # initialize the output column using the settings from the y column used for training.
+            if model[ 'name_col_y' ] not in ax.meta :
+                logger.info( f"[RamData.train_dl] '{name_col_y}' output column will be initialized with the existing metadata of the '{model[ 'name_col_y' ]}' column" )
+                ax.meta.initialize_column( 
+                    name_col = name_col_y,
+                    data_for_initialization = model[ 'metadata_col_y' ], # use the retrieved metadata of the output column
+                ) # initialize the output column using the settings from the y column used for training.
+            else :
+                logger.info( f"[RamData.train_dl] '{name_col_y}' output column will be initialized with '{model[ 'name_col_y' ]}' column" )
+                ax.meta.initialize_column( name_col_y, name_col_template = model[ 'name_col_y' ] ) # initialize the output column using the settings from the y column used for training.
 
         # exclude entries used for building knnindex from the current filter
         if not flag_apply_to_entries_used_for_training :
