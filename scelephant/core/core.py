@@ -4797,7 +4797,7 @@ class ZarrSpinLockServer( ) :
     
 ''' a class for Zarr-based DataFrame object '''
 class ZarrDataFrame( ) :
-    """ # 2023-02-17 19:05:40 
+    """ # 2023-02-23 21:36:34 
     storage-based persistant DataFrame backed by Zarr persistent arrays.
     each column can be separately loaded, updated, and unloaded.
     a filter can be set, which allows updating and reading ZarrDataFrame as if it only contains the rows indicated by the given filter.
@@ -5338,10 +5338,10 @@ class ZarrDataFrame( ) :
         '''
         return set( self.metadata_columns_excluding_components )
     def __contains__( self, name_col : str ) :
-        """ # 2022-08-25 17:33:22 
+        """ # 2023-02-23 21:35:20 
         check whether a column name exists in the given ZarrDataFrame
         """
-        return name_col in self.columns
+        return name_col in self.metadata_columns
     def __iter__( self ) :
         """ # 2022-11-15 00:55:57 
         iterate name of columns in the current ZarrDataFrame
@@ -7924,7 +7924,7 @@ class RamDataAxis( ) :
     def __repr__( self ) :
         """ # 2022-07-20 23:12:47 
         """
-        return f"<Axis '{self._name_axis}' containing {'' if self.filter is None else f'{self.meta.n_rows}/'}{self.meta._n_rows_unfiltered} entries available at {self._path_folder}\n\tavailable metadata columns are {sorted( self.meta.columns )}>"
+        return f"<Axis '{self._name_axis}' containing {'' if self.filter is None else f'{self.meta.n_rows}/'}{self.meta._n_rows_unfiltered} entries available at {self._path_folder}\n\tavailable metadata columns are {sorted( self.columns )}>"
     def none( self ) :
         """ # 2022-09-08 11:30:33 
         return an empty bitarray filter
@@ -8123,9 +8123,13 @@ class RamDataAxis( ) :
         
         # return subsampled entries
         return ba_subsampled
-    def select_component( self, int_index_component : int = 0 ) :
-        """ # 2022-09-08 17:25:28 
-        return a filter containing entries of the selected component 
+    def select_component( self, int_index_component : int = 0, inplace : bool = False ) :
+        """ # 2023-02-26 15:54:33 
+        return a filter containing entries of the selected component.
+        if current RamData does not have any component, return all entries of the current axis.
+        
+        int_index_component : int = 0 # the integer index of the component (0-based)
+        inplace : bool = False # if True, set the filter of the current axis using the returned values.
         """
         if self.is_combined :
             # handle invalid input
@@ -8140,9 +8144,13 @@ class RamDataAxis( ) :
                     ba[ int_entry_combined ] = 1
             else : # when 'combined-stacked' mode is active
                 ba[ self._l_cumulated_len_stacked[ int_index_component ] : self._l_cumulated_len_stacked[ int_index_component + 1 ] ] = 1
-            return ba # return filter containing the selection
         else : # if current axis is not in 'combined' mode, return a filter containing all entries
-            return self.all( flag_return_valid_entries_in_the_currently_active_layer = False )
+            ba = self.all( flag_return_valid_entries_in_the_currently_active_layer = False )
+        # process the output
+        if inplace :
+            self.filter = ba # set the filter of the current component.
+        else :
+            return ba # return filter containing the selection
     @property
     def is_destination_component_set( self ) :
         """ # 2022-09-21 02:18:13 
@@ -8243,7 +8251,7 @@ class RamDataAxis( ) :
 ''' a class for RAMtx '''
 ''' a class for accessing Zarr-backed count matrix data (RAMtx, Random-Access matrix) '''
 class RAMtx( ) :
-    """ # 2023-01-20 13:03:17 
+    """ # 2023-02-26 22:33:17 
     This class represent a random-access mtx format for memory-efficient exploration of extremely large single-cell transcriptomics/genomics data.
     This class use a count matrix data stored in a random read-access compatible format, called RAMtx, enabling exploration of a count matrix with hundreds of millions cells with hundreds of millions of features.
     Also, the RAMtx format is supports multi-processing, and provide convenient interface for parallel processing of single-cell data
@@ -8315,7 +8323,7 @@ class RAMtx( ) :
         flag_spawn = False,
         zarrspinlockserver : Union[ None, ZarrSpinLockServer ] = None,
     ) :
-        """ # 2022-07-31 00:49:59 
+        """ # 2023-02-27 20:51:21 
         """
         if rtx_template is not None : # when template has been given, copy attributes and metadata
             # set attributes based on the given template
@@ -8327,7 +8335,6 @@ class RAMtx( ) :
             self._ramdata = rtx_template._ramdata
             self._dtype_of_feature_and_barcode_indices = rtx_template._dtype_of_feature_and_barcode_indices
             self._dtype_of_values = rtx_template._dtype_of_values
-            self.int_num_cpus = rtx_template.int_num_cpus
             self.verbose = rtx_template.verbose
             self.flag_debugging = rtx_template.flag_debugging
             self._mode = rtx_template._mode
@@ -8348,6 +8355,9 @@ class RAMtx( ) :
             
             # load a zarr spin lock server
             self._zsls = rtx_template._zsls
+            
+            # set attributes
+            self.int_num_cpus = rtx_template.int_num_cpus
         else :
             # set attributes 
             self._dtype_of_feature_and_barcode_indices = dtype_of_feature_and_barcode_indices
@@ -8355,7 +8365,6 @@ class RAMtx( ) :
             self._path_folder_ramtx = path_folder_ramtx
             self.verbose = verbose 
             self.flag_debugging = flag_debugging
-            self.int_num_cpus = int_num_cpus
             self._ramdata = ramdata
             self._mode = mode
             self._flag_is_read_only = flag_is_read_only
@@ -8372,6 +8381,9 @@ class RAMtx( ) :
             
             # load a zarr spin lock server
             self._zsls = zarrspinlockserver if isinstance( zarrspinlockserver, ZarrSpinLockServer ) else None
+            
+            # set attributes
+            self.int_num_cpus = int_num_cpus
 
             # compose metadata for the combined ramtx
             # %% COMBINED %%
@@ -8442,6 +8454,23 @@ class RAMtx( ) :
         if flag_spawn :
             self._zsls = ZarrSpinLockServer( flag_spawn = flag_spawn, filesystem_server = self.fs, template = self._zsls )
     @property
+    def int_num_cpus( self ) :
+        """ # 2023-02-27 20:50:10 
+        number of cpu cores to use for RamData and RamDataAxis operations
+        """
+        return self._int_num_cpus
+    @int_num_cpus.setter
+    def int_num_cpus( self, val ) :
+        """ # 2023-02-27 20:50:04 
+        change the number of cpu cores to use for RamData and RamDataAxis operations
+        """
+        self._int_num_cpus = val
+        # %% COMBINED %%
+        if self.is_combined : # propagate the change of 'int_num_cpus' to the component RamData objects.
+            for rtx in self._l_rtx :
+                if rtx is not None :
+                    rtx.int_num_cpus = val
+    @property
     def locking_server( self ) :
         """ # 2022-12-23 00:02:37 
         return 'ZarrSpinLockServer' object
@@ -8493,7 +8522,7 @@ class RAMtx( ) :
                 rtx_with_zarr_server = RAMtx( rtx_template = self, l_rtx = list( None if rtx is None else rtx.get_fork_safe_version( ) for rtx in self._l_rtx ) )
         return rtx_with_zarr_server
     def terminate_spawned_processes( self ) :
-        """ # 2022-12-08 18:59:11 
+        """ # 2023-02-26 22:33:09 
         destroy zarr server objects if they exists in the current RAMtx
         """
         if not hasattr( self, '_flag_is_terminated' ) : # terminate the spawned processes only once
@@ -8510,7 +8539,8 @@ class RAMtx( ) :
                 else : # dense matrix
                     if hasattr( self._za_mtx, 'terminate' ) :
                         self._za_mtx.terminate( )
-                self._zsls.terminate( ) # termiate the locking server
+                if self.use_locking : # %% FILE LOCKING %%
+                    self._zsls.terminate( ) # termiate the locking server
             elif self.is_combined :
                 # %% COMBINED %%
                 # destroy zarr server for each component RAMtx object
@@ -10358,13 +10388,23 @@ class RamData( ) :
         return self._int_index_component_reference
     @int_index_component_reference.setter
     def int_index_component_reference( self, val ) :
-        """ # 2022-09-22 02:35:58 
+        """ # 2023-02-27 20:30:46 
         validate and update the index of the reference component if 'combined' mode is used. if None is given, deactivate the 'reference' mode
         """
         if self.is_combined :
             if val is not None and not ( 0 <= val < self.int_num_components ) : # when invalid value was given, by default, use 0 as the reference ramdata
                 val = 0 
-            self._int_index_component_reference = val # set 'int_index_component_reference'
+            
+            if val != self._int_index_component_reference : # if the reference component has been changed.
+                self._int_index_component_reference = val # set 'int_index_component_reference'
+
+                if self.verbose : # report
+                    if val is not None : # if valid index has been given
+                        logging.info( f"RamData component '{val}' has been set as the reference RamData component." )
+
+                # unload the layer 
+                if self.layer is not None : # if a layer has been loaded, unload once the reference ramdata component has been changed.
+                    self.layer = None
     @property
     def index_ramdata_source_for_combined_barcodes_shared_across_ramdata( self ) :
         """ # 2022-09-20 15:03:26 
@@ -11080,7 +11120,7 @@ class RamData( ) :
         # locks of the output columns
         set_path_lock = set( ) # initialize a set for collecting 'path_lock' of the acquired locks
         for name_col in l_name_col :
-            if name_col not in ax.meta.columns : # skip if the name_col does not exists
+            if name_col not in ax.columns : # skip if the name_col does not exists
                 continue
             path_col = ax.meta._get_column_path( name_col = name_col, flag_exclude_components = flag_exclude_components ) # exclude columns in the components, since components should be considered as 'read-only'
             path_lock = f'{path_col}.lock'
@@ -11249,7 +11289,7 @@ class RamData( ) :
         """
         return f"<{'' if not self._mode == 'r' else '(read-only) '}RamData object ({'' if self.bc.filter is None else f'{self.bc.meta.n_rows}/'}{self.metadata[ 'int_num_barcodes' ]} barcodes X {'' if self.ft.filter is None else f'{self.ft.meta.n_rows}/'}{self.metadata[ 'int_num_features' ]} features" + ( '' if self.layer is None else f", {self.layer.int_num_records} records in the currently active layer '{self.layer.name}'" ) + f") stored at {self._path_folder_ramdata}{'' if self._path_folder_ramdata_mask is None else f' with local mask available at {self._path_folder_ramdata_mask}'}\n\twith the following layers : {self.layers}\n\t\tcurrent layer is '{self.layer.name if self.layer is not None else None}'>" # show the number of records of the current layer if available.
     def _repr_html_( self, index_component = None ) :
-        """ # 2022-09-18 22:16:13 
+        """ # 2023-02-23 22:16:42 
         display RamData in an interactive environment
         
         'index_component' : an integer indices of the component RamData
@@ -11262,7 +11302,7 @@ class RamData( ) :
                     'number_of_entries' : self.bc.meta._n_rows_unfiltered,
                     'number_of_entries_after_applying_filter' : self.bc.meta.n_rows,
                     'metadata' : {
-                        'columns' : sorted( self.bc.meta.columns ),
+                        'columns' : sorted( self.bc.columns ),
                         'settings' : {
                             'path_folder_zdf' : self.bc.meta._path_folder_zdf,
                             'path_folder_mask' : self.bc.meta._path_folder_mask,
@@ -11278,7 +11318,7 @@ class RamData( ) :
                     'number_of_entries' : self.ft.meta._n_rows_unfiltered,
                     'number_of_entries_after_applying_filter' : self.ft.meta.n_rows,
                     'metadata' : {
-                        'columns' : sorted( self.ft.meta.columns ),
+                        'columns' : sorted( self.ft.columns ),
                         'settings' : {
                             'path_folder_zdf' : self.ft.meta._path_folder_zdf,
                             'path_folder_mask' : self.ft.meta._path_folder_mask,
@@ -11318,7 +11358,7 @@ class RamData( ) :
             }
         } 
         component_header = "h2" if index_component is None else "h5"
-        name_title = f'<{component_header}>RamData{"" if index_component is None else f"-component ({index_component + 1})"}</{component_header}><div><tt>{self.__repr__( )[ 1 : -1 ]}</tt></div>'
+        name_title = f'<{component_header}>RamData{"" if index_component is None else f"-component ({index_component})"}</{component_header}><div><tt>{self.__repr__( )[ 1 : -1 ]}</tt></div>' # use 0-based coordinates
         str_html = html_from_dict( dict_data = dict_data, name_dict = name_title ) # retrieve html representation of current RamData
         if self.is_combined :
             # %% COMBINED %%
@@ -14761,7 +14801,7 @@ class RamData( ) :
             ax.change_or_save_filter( name_col_filter_training )
 
         # retrieve flags
-        flag_collect_neighbors = name_col_filter_for_collecting_neighbors in ax.meta.columns and int_num_nearest_neighbors_to_collect > 0 and not ax.are_all_entries_active # in order to collect neighbors, knnindex should only contains a subset of entries in the axis
+        flag_collect_neighbors = name_col_filter_for_collecting_neighbors in ax.columns and int_num_nearest_neighbors_to_collect > 0 and not ax.are_all_entries_active # in order to collect neighbors, knnindex should only contains a subset of entries in the axis
         
         # exit if the input column does not exist
         if name_col_x not in ax.meta :
