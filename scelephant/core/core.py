@@ -1056,13 +1056,13 @@ def MTX_10X_Summarize_Counts( path_folder_mtx_10x_input, verbose = False, int_nu
                 dict_name_set_feature_to_l_id_feature = dict( ) # initialize the dictionary
                 if str_preset in [ 'multiome', 'atac' ] :
                     if str_preset == 'multiome' :
-                        arr_id_feature_atac = Search_list_of_strings_with_multiple_query( arr_id_feature, '|mode=atac' )
+                        arr_id_feature_atac = bk.Search_list_of_strings_with_multiple_query( arr_id_feature, '|mode=atac' )
                         dict_name_set_feature_to_l_id_feature[ 'atac_all' ] = arr_id_feature_atac
                     elif str_preset == 'atac' :
                         arr_id_feature_atac = arr_id_feature
                     # add sets of promoter and gene_body features
-                    arr_id_feature_atac_promoter_and_gene_body = Search_list_of_strings_with_multiple_query( arr_id_feature_atac, '-genomic_region|', '-repeatmasker_ucsc|', '-regulatory_element|' )
-                    arr_id_feature_atac_promoter = Search_list_of_strings_with_multiple_query( arr_id_feature_atac_promoter_and_gene_body, 'promoter|' )
+                    arr_id_feature_atac_promoter_and_gene_body = bk.Search_list_of_strings_with_multiple_query( arr_id_feature_atac, '-genomic_region|', '-repeatmasker_ucsc|', '-regulatory_element|' )
+                    arr_id_feature_atac_promoter = bk.Search_list_of_strings_with_multiple_query( arr_id_feature_atac_promoter_and_gene_body, 'promoter|' )
                     dict_name_set_feature_to_l_id_feature[ 'atac_promoter_and_gene_body' ] = arr_id_feature_atac_promoter_and_gene_body    
                     dict_name_set_feature_to_l_id_feature[ 'atac_promoter' ] = arr_id_feature_atac_promoter
 
@@ -3517,12 +3517,12 @@ def create_ramtx_from_adata(
     int_num_bytes_in_a_chunk_in_a_chunk_metadata : int = 320000,
     int_max_num_categories_in_metadata : int = 10000 ,
     dict_kw_zdf : dict = { 'flag_store_string_as_categorical' : True, 'flag_load_data_after_adding_new_column' : False, 'flag_store_64bit_integer_as_float' : True },
-    int_num_str_repr_bc : int = 1,
-    int_num_str_repr_ft : int = 2,
+    l_name_col_str_repr_bc : list = [ 'index' ],
+    l_name_col_str_repr_ft : list = [ 'index', 'index' ],
     verbose : bool = False,
     flag_debugging : bool = False,
 ) :
-    """ # 2023-01-19 01:43:38 
+    """ # 2023-03-07 22:13:52 
     Write a given AnnData object as a RAMtx object
 
     Arguments:
@@ -3550,8 +3550,8 @@ def create_ramtx_from_adata(
     int_num_bytes_in_a_chunk_in_a_chunk_metadata : int = 320000, # the number of bytes in a chunk for metadata ZarrDataFrame objects
     int_max_num_categories_in_metadata : int = 10000 # ignore columns with more than 'int_max_num_categories_in_metadata' number of categories.
     dict_kw_zdf : dict = dict( ) # keyworded arguments for the initialization of the ZarrDataFrame
-    int_num_str_repr_bc : int = 1 # the number of columns for string representations of the barcode axis. The current index values of adata.obs will be duplicates this number of times and saved as a zarr object
-    int_num_str_repr_ft : int = 2 # the number of columns for string representations of the feature axis. The current index values of adata.var will be duplicates this number of times and saved as a zarr object
+    l_name_col_str_repr_bc : list = [ 'index' ] # the list of name of columns for string representations of the barcode axis. 'index' for using index values for string representations.
+    l_name_col_str_repr_ft : list = [ 'index', 'index' ] # the list of name of columns for string representations of the feature axis. 'index' for using index values for string representations.
     """
     # check flag
     path_file_flag_completion = f"{path_folder_output}ramtx.completed.flag"
@@ -3717,13 +3717,17 @@ def create_ramtx_from_adata(
     prepare data for the axes (features/barcodes)
     """
     ''' write barcodes and features files to zarr objects'''
-    for name_axis, int_num_entries, df, m, int_num_str_repr in zip( [ 'barcodes', 'features' ], [ int_num_barcodes, int_num_features ], [ adata.obs, adata.var ], [ adata.obsm, adata.varm ], [ int_num_str_repr_bc, int_num_str_repr_ft ] ) : 
+    for name_axis, int_num_entries, df, m, l_name_col_str_repr in zip( [ 'barcodes', 'features' ], [ int_num_barcodes, int_num_features ], [ adata.obs, adata.var ], [ adata.obsm, adata.varm ], [ l_name_col_str_repr_bc, l_name_col_str_repr_ft ] ) : 
         # initialize a ZarrDataFrame object for random access of number and categorical data of features/barcodes
         zdf = ZarrDataFrame( f'{path_folder_output}{name_axis}.num_and_cat.zdf', int_num_rows = int_num_entries, int_num_bytes_in_a_chunk = int_num_bytes_in_a_chunk_in_a_chunk_metadata, ** dict_kw_zdf ) # use the same chunk size for feature/barcode objects
 
         # retrieve string representations
-        arr_str_entry = df.index.values
-        arr_str = np.vstack( list( arr_str_entry for i in range( int_num_str_repr ) ) ).T # stack 'arr_str_entry' 'int_num_str_repr' number of times
+        l_l_str = [ ]
+        for name_col_str_repr in l_name_col_str_repr :
+            l_l_str.append( df.index.values if name_col_str_repr == 'index' else df[ name_col_str_repr ].values ) # collect string representations
+        arr_str = np.vstack( l_l_str ).T #  compose 'arr_str' 
+        int_num_str_repr = len( l_name_col_str_repr ) # retrieve 'int_num_str_repr'
+        del l_l_str
         
         # retrieve the chunk size for storing strings
         int_num_of_entries_in_a_chunk_metadata = zdf.get_int_num_rows_in_a_chunk( dtype = str, int_expected_length_of_string_for_string_dtype = int( np.ceil( np.mean( list( len( e ) for e in arr_str[ : 10 ].ravel( ) ) ) ) ) )
@@ -3800,13 +3804,13 @@ def create_ramdata_from_adata(
     int_num_bytes_in_a_chunk_in_a_chunk_metadata : int = 320000,
     int_max_num_categories_in_metadata : int = 10000 ,
     dict_kw_zdf : dict = { 'flag_store_string_as_categorical' : True, 'flag_load_data_after_adding_new_column' : False, 'flag_store_64bit_integer_as_float' : True },
-    int_num_str_repr_bc : int = 1,
-    int_num_str_repr_ft : int = 2,
+    l_name_col_str_repr_bc : list = [ 'index' ],
+    l_name_col_str_repr_ft : list = [ 'index', 'index' ],
     flag_multiprocessing : bool = True, 
     verbose : bool = False,
     flag_debugging : bool = False,
 ) :
-    """ # 2022-12-13 02:56:04 
+    """ # 2023-03-07 22:13:58 
     Write a given AnnData object as a RamData object
 
     Arguments:
@@ -3836,8 +3840,8 @@ def create_ramdata_from_adata(
     int_num_bytes_in_a_chunk_in_a_chunk_metadata : int = 320000, # the number of bytes in a chunk for metadata ZarrDataFrame objects
     int_max_num_categories_in_metadata : int = 10000 # ignore columns with more than 'int_max_num_categories_in_metadata' number of categories.
     dict_kw_zdf : dict = dict( ) # keyworded arguments for the initialization of the ZarrDataFrame
-    int_num_str_repr_bc : int = 1 # the number of columns for string representations of the barcode axis. The current index values of adata.obs will be duplicates this number of times and saved as a zarr object
-    int_num_str_repr_ft : int = 2 # the number of columns for string representations of the feature axis. The current index values of adata.var will be duplicates this number of times and saved as a zarr object
+    l_name_col_str_repr_bc : list = [ 'index' ] # the list of name of columns for string representations of the barcode axis. 'index' for using index values for string representations.
+    l_name_col_str_repr_ft : list = [ 'index', 'index' ] # the list of name of columns for string representations of the feature axis. 'index' for using index values for string representations.
 
     -- for RamData creation --
     name_layer : str : a name of the ramdata layer to create (default: raw)
@@ -3866,8 +3870,8 @@ def create_ramdata_from_adata(
         'int_num_bytes_in_a_chunk_in_a_chunk_metadata' : int_num_bytes_in_a_chunk_in_a_chunk_metadata,
         'int_max_num_categories_in_metadata' : int_max_num_categories_in_metadata,
         'dict_kw_zdf' : dict_kw_zdf,
-        'int_num_str_repr_bc' : int_num_str_repr_bc,
-        'int_num_str_repr_ft' : int_num_str_repr_ft,
+        'l_name_col_str_repr_bc' : l_name_col_str_repr_bc,
+        'l_name_col_str_repr_ft' : l_name_col_str_repr_ft,
         'verbose' : verbose,
         'flag_debugging' : flag_debugging,
     }
@@ -6965,6 +6969,11 @@ class ZarrDataFrame( ) :
             process_batch = __work,
             int_num_threads = self.int_num_cpus,
         )
+    def search_columns( self, * args, ** kwargs ) :
+        """ # 2023-03-05 19:14:17 
+        search columns
+        """
+        return bk.Search_list_of_strings_with_multiple_query( list( self.columns ), * args )
 ''' a class for representing axis of RamData (barcodes/features) '''
 class IndexMappingDictionary( ) :
     """ # 2022-09-02 00:53:27 
@@ -12726,7 +12735,18 @@ class RamData( ) :
         if flag_divide_by_sd :
             if not flag_name_col_variance_already_loaded : 
                 del self.ft.meta.dict[ name_col_variance ]
-    def identify_highly_variable_features( self, name_layer : str = 'normalized_log1p', int_num_highly_variable_features : int = 2000, float_min_mean : float = 0.01, float_min_variance : float = 0.01, str_suffix_summarized_metrics : str = '', name_col_filter : str = 'filter_normalized_log1p_highly_variable', flag_load_filter : bool = True, flag_show_graph : bool = True ) :
+    def identify_highly_variable_features( 
+        self, 
+        name_layer : str = 'normalized_log1p', 
+        int_num_highly_variable_features : int = 2000, 
+        float_min_mean : float = 0.01, 
+        float_min_variance : float = 0.01, 
+        str_suffix_summarized_metrics : str = '', 
+        name_col_filter : str = 'filter_normalized_log1p_highly_variable', 
+        name_col_batch : Union[ str, None ] = None,
+        flag_load_filter : bool = True, 
+        flag_show_graph : bool = True
+    ) :
         """ # 2022-09-07 23:21:11 
         identify highly variable features
         learns mean-variable relationship from the given data, and calculate residual variance to identify highly variable features.
@@ -15926,12 +15946,12 @@ class RamData( ) :
 
 
         # calculate gex metrics
-        df[ f'{name_layer}_sum_for_gex_mode' ] = df[ Search_list_of_strings_with_multiple_query( df.columns, f'{name_layer}_sum__', '-atac_mode' ) ].sum( axis = 1 ) # calcualte sum for gex mode outputs
+        df[ f'{name_layer}_sum_for_gex_mode' ] = df[ bk.Search_list_of_strings_with_multiple_query( df.columns, f'{name_layer}_sum__', '-atac_mode' ) ].sum( axis = 1 ) # calcualte sum for gex mode outputs
 
         # calcualte atac metrics
         if f'{name_layer}_sum___category_detailed___atac_mode' in df.columns.values : # check whether the ATAC mode has been used in the scarab output
-            df[ f'{name_layer}_sum_for_atac_mode' ] = df[ Search_list_of_strings_with_multiple_query( df.columns, f'{name_layer}_sum__', 'atac_mode' ) ].sum( axis = 1 ) # calcualte sum for atac mode outputs
-            df[ f'{name_layer}_sum_for_promoter_atac_mode' ] = df[ list( Search_list_of_strings_with_multiple_query( df.columns, f'{name_layer}_sum___category_detailed___promoter', 'atac_mode' ) ) ].sum( axis = 1 )
+            df[ f'{name_layer}_sum_for_atac_mode' ] = df[ bk.Search_list_of_strings_with_multiple_query( df.columns, f'{name_layer}_sum__', 'atac_mode' ) ].sum( axis = 1 ) # calcualte sum for atac mode outputs
+            df[ f'{name_layer}_sum_for_promoter_atac_mode' ] = df[ list( bk.Search_list_of_strings_with_multiple_query( df.columns, f'{name_layer}_sum___category_detailed___promoter', 'atac_mode' ) ) ].sum( axis = 1 )
             df[ f'{name_layer}_proportion_of_promoter_in_atac_mode' ] = df[ f'{name_layer}_sum_for_promoter_atac_mode' ] / df[ f'{name_layer}_sum_for_atac_mode' ] # calculate the proportion of reads in promoter
             df[ f'{name_layer}_proportion_of_promoter_and_gene_body_in_atac_mode' ] = ( df[ f'{name_layer}_sum_for_promoter_atac_mode' ] + df[ f'{name_layer}_sum___category_detailed___atac_mode' ] ) / df[ f'{name_layer}_sum_for_atac_mode' ] # calculate the proportion of reads in promoter
 
@@ -16005,4 +16025,84 @@ def pl_umap( adata, color : str, name_col_umap : str = 'X_umap', x_range : Union
     
     # draw scatter graph
     fig = px.scatter( df, x = 'UMAP-1', y = 'UMAP-2', color = name_col_color, hover_data = [ 'name_dataset', 'name_sample' ],color_continuous_scale = px.colors.sequential.Reds, title = f"gene expression of {color}" if flag_is_gene_expression_data_being_plotted else name_col_color )
+    return fig
+
+def scanpy_tutorial_recipe( adata ) :
+    """ # 2023-02-28 08:00:53 
+    a recipe for the scanpy pbmc3k tutorial
+    "https://scanpy-tutorials.readthedocs.io/en/latest/pbmc3k.html"
+    """
+    sc.pp.filter_cells( adata, min_genes=200 )
+    sc.pp.filter_genes( adata, min_cells=3 )
+    sc.pl.highest_expr_genes( adata, n_top=20,  )
+    # annotate the group of mitochondrial genes as 'mt'
+    adata.var['mt'] = adata.var_names.str.startswith('MT-' )   
+    sc.pp.calculate_qc_metrics( adata, qc_vars=['mt'], percent_top=None, log1p=False, inplace=True )
+    sc.pl.violin( adata, ['n_genes_by_counts', 'total_counts', 'pct_counts_mt'], jitter=0.4, multi_panel=True )
+    sc.pl.scatter( adata, x='total_counts', y='pct_counts_mt' )
+    sc.pl.scatter( adata, x='total_counts', y='n_genes_by_counts' )
+    sc.pp.normalize_total( adata, target_sum=1e4 )
+    sc.pp.log1p( adata )
+    sc.pp.highly_variable_genes( adata, min_mean=0.0125, max_mean=3, min_disp=0.5 )
+    sc.pl.highly_variable_genes( adata )
+    adata.raw = adata
+    adata = adata[:, adata.var.highly_variable]
+    sc.pp.scale( adata, max_value=10 )
+    sc.tl.pca( adata, svd_solver='arpack' )
+    sc.pl.pca_variance_ratio( adata, log=True )
+    sc.pp.neighbors( adata, n_neighbors=10, n_pcs=40 )
+    sc.tl.umap( adata )
+    sc.tl.leiden( adata )
+def SCANPY_UMAP_Plot_for_each_anno( adata, name_col : str ) :
+    """ # 2023-03-06 16:42:09 
+    adata, # AnnData to plot
+    name_col : str # name of the column of 'obs' that contains annotations
+    """
+    for name_anno in adata.obs[ name_col ].unique( ) :
+        adata.obs[ name_anno ] = ( adata.obs[ name_col ].values == name_anno ).astype( str ).astype( object )
+        sc.pl.umap( adata, color = name_anno )
+def Shankey_Compare_Annotations( l_anno_1, l_anno_2, int_min_num_entries_for_an_overlap : int = 3, flag_show_label : bool = True, font_size : int = 10, title : str = '', color = 'blue' ) :
+    """ # 2023-03-05 16:32:49 
+    draw a Shankey diagram using Plotly for the given lists of annotations
+    
+    l_anno_1 # first list of annotations 
+    l_anno_2 # second list of annotations 
+    int_min_num_entries_for_an_overlap : int = 3 # the minmum number of entries for a link (overlaps between two annotations) to be valid.
+    title : Union[ None, str ] = None # the name of the figure. if None is given, no title will be shown
+    font_size : int = 10, # the font size of the title
+    color = 'blue' # argument for plotly.graph_objects.Sankey
+    """
+    def _map( arr_anno, start_pos : int = 0 ) :
+        """
+        return a dictionary for mapping annotation to its integer representation and a list of unique annotation labels
+        """
+        l_anno_unique = bk.LIST_COUNT( arr_anno, duplicate_filter = None ).index.values # retrieve a list of unique annotations
+        return dict( ( e, i + start_pos ) for i, e in enumerate( l_anno_unique ) ), l_anno_unique
+
+    dict_map_1, arr_anno_unique_1 = _map( l_anno_1, start_pos = 0 )
+    dict_map_2, arr_anno_unique_2 = _map( l_anno_2, start_pos = len( dict_map_1 ) )
+    label = list( arr_anno_unique_1 ) + list( arr_anno_unique_2 ) if flag_show_label else None # compose a list of unique labels # does not show labels if 'flag_show_label' is False
+
+    # retrieve values for drawing the diagram
+    source, target, value = bk.LIST_COUNT( np.array( [ list( dict_map_1[ e ] for e in l_anno_1 ), list( dict_map_2[ e ] for e in l_anno_2 ) ], dtype = int ).T, duplicate_filter = int_min_num_entries_for_an_overlap ).reset_index( drop = False ).values.T
+    # compose a dataframe
+    
+    # draw a plot
+    import plotly.graph_objects as go
+
+    fig = go.Figure( data = [ go.Sankey(
+        node = dict(
+          pad = 15,
+          thickness = 20,
+          line = dict( color = "black", width = 0.5 ),
+          label = label,
+          color = color
+        ),
+        link = dict(
+          source = source, 
+          target = target,
+          value = value
+      ))])
+    if title is not None :
+        fig.update_layout( title_text = title, font_size = font_size )
     return fig

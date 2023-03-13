@@ -43,6 +43,18 @@ def To_window_path_compatible_str( a_string ) :
     '''
     return a_string.replace( '\n', '_' ).replace( ':', '_' ).replace( '"', '_' ).replace( '/', '_' ).replace( '\\', '_' ).replace( '|', '_' ).replace( '?', '_' ).replace( '*', '_' )
 
+def Search_list_of_strings_with_multiple_query( l_str, * l_query, return_mask = False, return_position = False ) :
+    ''' Search list of strings with multiple query. for negative query, add '-' in front of the query '''
+    arr_mask_matched = np.ones( len( l_str ), dtype = bool )
+    for query in l_query :
+        bool_query_positive = True
+        if query[ 0 ] == '-' :
+            bool_query_positive, query = False, query[ 1: ]
+        l_mask_matched_for_a_query = list( True if query in entry else False for entry in l_str ) if bool_query_positive else list( False if query in entry else True for entry in l_str )
+        arr_mask_matched = arr_mask_matched & np.array( l_mask_matched_for_a_query, dtype = 'bool' )
+    if return_position : return np.where( arr_mask_matched )[ 0 ]
+    return arr_mask_matched if return_mask else np.array( l_str, dtype = object )[ arr_mask_matched ]
+
 def MATPLOTLIB_savefig( title, dpi = 200, folder = None, close_fig = True, format = '.png' ) :
     if '.' not in format :
         format = '.' + format
