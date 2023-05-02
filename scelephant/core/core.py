@@ -1,15 +1,29 @@
 # # %% CORE %% 
 # # import internal modules
 
+"""
+>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+This part should be uncommented in core.py
+"""
+
 from .utils import *
 from .misc import *
 from . import biobookshelf as bk
 from . import BA
 
+"""
+||||||||||||||||||||||||||||||||
+"""
+
 # from scelephant.core import *
 # from biobookshelf import BA
 # import biobookshelf as bk
 # bk.Wide( 100 )
+
+"""
+This part should be uncommented in jupyter notebook
+<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+"""
 
 from typing import Union, List, Literal, Dict, Callable, Set, Iterable, Tuple
 import os
@@ -1013,7 +1027,7 @@ def create_ramdata_from_adata(
 
 ''' a class for Zarr-based DataFrame object '''
 class ZarrDataFrame( ) :
-    """ # 2023-04-20 02:23:49 
+    """ # 2023-04-26 20:53:45 
     storage-based persistant DataFrame backed by Zarr persistent arrays.
     each column can be separately loaded, updated, and unloaded.
     a filter can be set, which allows updating and reading ZarrDataFrame as if it only contains the rows indicated by the given filter.
@@ -1149,7 +1163,7 @@ class ZarrDataFrame( ) :
         zdf_template = None,
         flag_mask : bool = False,
     ) :
-        """ # 2023-04-19 10:07:01 
+        """ # 2023-04-26 20:53:38 
         """
         # set attributes from arguments
         if zdf_template is not None :
@@ -1263,9 +1277,6 @@ class ZarrDataFrame( ) :
                 int_num_rows = max( max( dict_index ) for dict_index in self._l_dict_index_mapping_interleaved ) + 1 # 0 based -> 1 based length
             else : # infer 'int_num_rows' for stacked czdf (combined zdf)
                 int_num_rows = sum( self._l_n_rows_unfiltered ) # assumes given zdf has valid number of rows
-                
-        # apply filter once the zdf is properly initialized
-        self.filter = ba_filter
 
         # open or initialize zdf and retrieve associated metadata
         if not zarr_exists( self.path_folder ) : # if the object does not exist, initialize ZarrDataFrame
@@ -1288,13 +1299,14 @@ class ZarrDataFrame( ) :
                 del self._dict_metadata[ 'int_num_rows_in_a_chunk' ]
                 self._dict_metadata[ 'int_num_bytes_in_a_chunk' ] = int_num_bytes_in_a_chunk
                 self.set_metadata( dict_metadata = self._dict_metadata )
-                
-            
             # handle the old versions of the zarrdataframe columns
             if 'columns' in self._dict_metadata :
                 if isinstance( self._dict_metadata[ 'columns' ], list ) :
                     self._dict_metadata[ 'columns' ] = dict( ( col, None ) for col in self._dict_metadata[ 'columns' ] )
                     self.set_metadata( self._dict_metadata ) # save metadata
+                
+        # apply filter once the zdf is properly initialized
+        self.filter = ba_filter
         
         # if a mask is given, open the mask zdf
         self._mask = None # initialize 'mask'
@@ -1589,16 +1601,16 @@ class ZarrDataFrame( ) :
     """ <Methods handling columns> """
     @property
     def metadata_columns( self ) :
-        ''' # 2023-02-14 23:59:16 
+        ''' # 2023-04-28 04:45:46 
         return the value of 'columns' key from the metadata of the current axis and its component axes.
         '''
         # initialize metadata of the columns
         metadata_columns = dict( )
         # retrieve metadata of the columns
-        metadata_columns = self._dict_metadata[ 'columns' ] | metadata_columns # add metadata of the columns of the current ZDF
+        metadata_columns = self.metadata[ 'columns' ] | metadata_columns # add metadata of the columns of the current ZDF
         # add metadata of the columns of mask
         if self._mask is not None : # if mask is available :
-            metadata_columns = self._mask._dict_metadata[ 'columns' ] | metadata_columns # add metadata of the columns of the mask ZDF
+            metadata_columns = self._mask.metadata[ 'columns' ] | metadata_columns # add metadata of the columns of the mask ZDF
         # add metadata of the columns from zdf components
         if self.is_combined :
             if self.is_interleaved :
@@ -1612,16 +1624,16 @@ class ZarrDataFrame( ) :
         return metadata_columns
     @property
     def metadata_columns_excluding_components( self ) :
-        ''' # 2023-02-14 23:59:19 
+        ''' # 2023-04-28 04:45:50 
         return the value of 'columns' key from the metadata of the current axis.
         '''
         # initialize metadata of the columns
         metadata_columns = dict( )
         # retrieve metadata of the columns
-        metadata_columns = self._dict_metadata[ 'columns' ] | metadata_columns # add metadata of the columns of the current ZDF
+        metadata_columns = self.metadata[ 'columns' ] | metadata_columns # add metadata of the columns of the current ZDF
         # add metadata of the columns of mask
         if self._mask is not None : # if mask is available :
-            metadata_columns = self._mask._dict_metadata[ 'columns' ] | metadata_columns # add metadata of the columns of the mask ZDF
+            metadata_columns = self._mask.metadata[ 'columns' ] | metadata_columns # add metadata of the columns of the mask ZDF
         return metadata_columns
     @property
     def columns( self ) :
@@ -3285,7 +3297,7 @@ class ZarrDataFrame( ) :
         else :
             return dict_cat_to_l_index
     def count_category( self, name_col : str, flag_use_integer_representation_of_category : bool = False ) :
-        """ # 2023-03-12 01:05:26 
+        """ # 2023-04-28 04:04:57 
         count the number of entries for each category (if a filter is active, only the active entries will be included)
         
         name_col : str # the name of the column containing categorical data
@@ -3293,6 +3305,7 @@ class ZarrDataFrame( ) :
         """
         # retrieve labels 
         arr_int_cat = self.get_categorical_data_as_integers( name_col = name_col ) # retrieve categories (in integer format)
+        arr_int_cat = arr_int_cat[ arr_int_cat != -1 ] # exclude NaN values, encoded by -1 values
         l_cat = self.get_categories( name_col ) 
         dict_int_cat_to_num_entries = bk.COUNTER( arr_int_cat ) # count labels
         dict_cat_to_num_entries = dict_int_cat_to_num_entries if flag_use_integer_representation_of_category else dict( ( l_cat[ int_cat ], dict_int_cat_to_num_entries[ int_cat ] ) for int_cat in dict_int_cat_to_num_entries ) # change labels
@@ -3348,9 +3361,9 @@ class ZarrDataFrame( ) :
         )
     def search_columns( self, * args, ** kwargs ) :
         """ # 2023-03-05 19:14:17 
-        search columns
+        search columns of the current object
         """
-        return bk.Search_list_of_strings_with_multiple_query( list( self.columns ), * args )
+        return bk.Search_list_of_strings_with_multiple_query( list( self.columns ), * args, ** kwargs )
     def lock( self, * l_name_col ) :
         """ # 2023-04-20 17:48:37 
         
@@ -4704,6 +4717,11 @@ class RamDataAxis( ) :
                 if dict_meta[ 'intended_function' ] == 'filter' :
                     l_name_col.append( name_col )
         return sorted( l_name_col ) # return the sorted list of name of the columns containing filters
+    def search_columns( self, * args, ** kwargs ) :
+        """ # 2023-03-05 19:14:17 
+        search columns of the metadata ZarrDataFrame
+        """
+        return self.meta.search_columns( * args, ** kwargs )
 ''' a class for RAMtx '''
 ''' a class for accessing Zarr-backed count matrix data (RAMtx, Random-Access matrix) '''
 class RAMtx( ) :
@@ -8286,7 +8304,9 @@ class RamData( ) :
         finally :
             if self.use_locking : # %% FILE LOCKING %%
                 release_locks_for_metadata_columns( )
-        
+                
+        # update attributes of metadata ZarrDataFrame # locking & metadata was updated by a cloned object of the ZarrDataFrame, and the attributes should be updated
+        ax.meta.get_metadata( ) 
         # report results
         if self.verbose :
             logger.info( f"summarize operation of {name_layer} in the '{'barcode' if flag_summarizing_barcode else 'feature'}' axis was completed" )
@@ -9293,21 +9313,25 @@ class RamData( ) :
         float_min_mean : float = 0.01,
         float_min_variance : float = 0.01,
         str_suffix_summarized_metrics : str = '',
+        str_suffix_mean_var_relationsip : str = '',
         name_col_filter : Union[ str, None ] = None,
         name_col_batch : Union[ str, None ] = None,
+        int_index_secondary : Union[ int, None ] = None, # the secondary index of the columns
         flag_load_filter : bool = True,
         flag_show_graph : bool = True,
     ) :
-        """ # 2023-04-21 20:02:46 
+        """ # 2023-05-01 11:29:24 
         identify highly variable features
         learns mean-variable relationship from the given data, and calculate residual variance to identify highly variable features.
 
         int_num_highly_variable_features : Union[ int, None ] = 3500, # number of highly variable features to select. if None is given. a threshold for the selection of highly variable features will be set automatically to '0'.
         float_min_mean : float = 0.01, # minimum mean expression for selecting highly variable features
         float_min_variance : float = 0.01, # minimum variance of expression for selecting highly variable features
-        str_suffix_summarized_metrics : str = '', # suffix of the new columns of the 'barcodes' axis that will contain summarized metrics of the features
+        str_suffix_summarized_metrics : str = '', # suffix of the new columns of the 'feature' axis that will contain summarized metrics of the features (mean, variance). [Important] when the barcode selection is changed, 'str_suffix_summarized_metrics' should be also changed to recalculate mean and variance of each feature.
+        str_suffix_mean_var_relationsip : str = '', # suffix of the new columns of the 'feature' axis that will contain metrics from the learned mean-variance relationship. [Important] when the feature selection is changed, 'str_suffix_mean_var_relationsip' should be also changed to relearn mean-variance relationships of the selected features.
         name_col_filter : Union[ str, None ] = None, # the name of column that will contain a feature/barcode filter containing selected highly variable features (and barcode filter for cells that have non-zero expression values for the selected list of highly-variable features)
         name_col_batch : Union[ str, None ] = None, # the name of the column containing batch information. if None is given, all selected barcodes will be treated as a single batch.
+        int_index_secondary : Union[ int, None ] = None, # the secondary index of the columns
         flag_load_filter : bool = True, # if True, load the filter of the column name 'name_col_filter' after the analysis has been completed.
         flag_show_graph : bool = True, # show graphs
         ==========
@@ -9378,7 +9402,7 @@ class RamData( ) :
                 ax.meta.set_column_metadata( name_col, dict_metadata ) # update column metadata
 
             def summarize_sum_and_dev_for_each_batch( self, int_entry_of_axis_for_querying, arr_int_entries_of_axis_not_for_querying, arr_value ) :
-                ''' # 2022-08-01 21:05:02 
+                ''' # 2023-04-28 04:35:02 
                 calculate sum and deviation of the values of the current entry
 
                 assumes 'int_num_records' for each batch > 0
@@ -9390,6 +9414,8 @@ class RamData( ) :
                 dict_batch_to_arr_value = dict( ) # a dictionary that will contain arr_value for each batch
                 for int_entries_of_axis_not_for_querying, value in zip( arr_int_entries_of_axis_not_for_querying, arr_value ) :
                     batch = dict_batch[ int_entries_of_axis_not_for_querying ]
+                    if batch == -1 : # ignore NaN values, represented by the -1 value
+                        continue
                     if batch not in dict_batch_to_arr_value :
                         dict_batch_to_arr_value[ batch ] = [ ]
                     dict_batch_to_arr_value[ batch ].append( value )
@@ -9398,7 +9424,7 @@ class RamData( ) :
                 summarize values for each batch
                 """
                 dict_summary = dict( ( name_col, np.full( ( int_num_batches, ), fill_value, dtype = dtype ) ) for name_col, fill_value, dtype in zip( l_name_col_summarized, l_fill_value, l_dtype ) ) # initialize 'dict_summary'
-                for batch in list( dict_batch_to_arr_value ) : # for the available 'batch'
+                for batch in list( dict_batch_to_arr_value ) : # iterate over the list of available 'batch'
                     arr_value_of_a_batch = np.array( dict_batch_to_arr_value.pop( batch ), dtype = arr_value.dtype ) # retrieve 'arr_value_of_a_batch' # convert to numpy array
 
                     int_num_records = len( arr_value_of_a_batch ) # retrieve the number of records of the current entry
@@ -9544,50 +9570,76 @@ class RamData( ) :
             """
             (1) Calculate metrics for identification of highly variable features
             """
+            def __get_values( name_col, flag_all_rows : bool = False ) :
+                """ get values from the metadata ZDF 
+                flag_all_rows : bool = False # get values of all rows
+                """
+                if flag_all_rows :
+                    return ax.meta[ name_col, :, int_index_secondary ] if int_index_secondary is not None else ax.meta[ name_col, : ]
+                else :
+                    return ax.meta[ name_col, None, int_index_secondary ] if int_index_secondary is not None else ax.meta[ name_col ]
+            def __set_values( name_col, values, flag_all_rows : bool = False ) :
+                """ set values of the metadata ZDF 
+                flag_all_rows : bool = False # get values of all rows
+                """
+                if flag_all_rows :
+                    if int_index_secondary is not None :
+                        ax.meta[ name_col, :, int_index_secondary ] = values
+                    else :
+                        ax.meta[ name_col, : ] = values
+                else :
+                    if int_index_secondary is not None :
+                        ax.meta[ name_col, None, int_index_secondary ] = values
+                    else :
+                        ax.meta[ name_col ] = values
+            
             # set the name of the columns that will be used in the current method
             name_col_for_mean, name_col_for_variance = f'{name_layer}_mean{str_suffix_summarized_metrics}', f'{name_layer}_variance{str_suffix_summarized_metrics}'
 
-            # check if required metadata (mean and variance data of features) is not available, and if not, calculate and save the data
+            # check if required metadata (mean and variance data of features) is not available, and if not, calculate and save the metrics of the features
             if name_col_for_mean not in ax.meta or name_col_for_variance not in ax.meta :
                 self.summarize( name_layer, 'feature', 'sum_and_dev', str_suffix = str_suffix_summarized_metrics ) # calculate mean and variance for features
 
-            # load mean and variance data in memory
-            arr_mean = ax.meta[ name_col_for_mean ]
-            arr_var = ax.meta[ name_col_for_variance ]
+            # check if required metadata (mean and variance data of features) is not available, and if not, calculate and save the learned mean-variance relationship of the features.
+            name_col_score = f'{name_layer}__float_score_highly_variable_feature{str_suffix_summarized_metrics}{str_suffix_mean_var_relationsip}' # compose the name of the column that contains the scores for the selection of highly variable features
+            if name_col_score not in ax.meta : # if the output column does not exist, learn the mean-variance relationship
+                # load mean and variance data in memory
+                arr_mean = __get_values( name_col_for_mean )
+                arr_var = __get_values( name_col_for_variance )
 
-            if flag_show_graph :
-                plt.plot( arr_mean[ : : 10 ], arr_var[ : : 10 ], '.', alpha = 0.01 )
-                bk.MATPLOTLIB_basic_configuration( x_scale = 'log', y_scale = 'log', x_label = 'mean', y_label = 'variance', title = f"mean-variance relationship\nin '{name_layer}'" )
-                plt.show( )
+                if flag_show_graph :
+                    plt.plot( arr_mean[ : : 10 ], arr_var[ : : 10 ], '.', alpha = 0.01 )
+                    bk.MATPLOTLIB_basic_configuration( x_scale = 'log', y_scale = 'log', x_label = 'mean', y_label = 'variance', title = f"mean-variance relationship\nin '{name_layer}'" )
+                    plt.show( )
 
-            # learn mean-variance relationship for the data
-            mask = ~ np.isnan( arr_var ) # exclude values containing np.nan
-            if mask.sum( ) == 0 : # exit if no valid data is available for fitting
-                return
-            mean_var_relationship_fit = np.polynomial.polynomial.Polynomial.fit( arr_mean[ mask ], arr_var[ mask ], 2 ) # fit using polynomial with degree 2
-            del mask # delete temporary object
+                # learn mean-variance relationship for the data
+                mask = ~ np.isnan( arr_var ) # exclude values containing np.nan
+                if mask.sum( ) == 0 : # exit if no valid data is available for fitting
+                    return
+                mean_var_relationship_fit = np.polynomial.polynomial.Polynomial.fit( arr_mean[ mask ], arr_var[ mask ], 2 ) # fit using polynomial with degree 2
+                del mask # delete temporary object
 
-            # initialize output values
-            n = len( arr_mean ) # the number of output entries
-            arr_ratio_of_variance_to_expected_variance_from_mean = np.full( n, np.nan )
-            arr_diff_of_variance_to_expected_variance_from_mean = np.full( n, np.nan )
+                # initialize output values
+                n = len( arr_mean ) # the number of output entries
+                arr_ratio_of_variance_to_expected_variance_from_mean = np.full( n, np.nan )
+                arr_diff_of_variance_to_expected_variance_from_mean = np.full( n, np.nan )
 
-            for i in range( n ) : # iterate each row
-                mean, var = arr_mean[ i ], arr_var[ i ] # retrieve var and mean
-                if not np.isnan( var ) : # if current entry is valid
-                    var_expected = mean_var_relationship_fit( mean ) # calculate expected variance from the mean
-                    if var_expected == 0 : # handle the case when the current expected variance is zero 
-                        arr_ratio_of_variance_to_expected_variance_from_mean[ i ] = np.nan
-                        arr_diff_of_variance_to_expected_variance_from_mean[ i ] = np.nan
-                    else :
-                        arr_ratio_of_variance_to_expected_variance_from_mean[ i ] = var / var_expected
-                        arr_diff_of_variance_to_expected_variance_from_mean[ i ] = var - var_expected
+                for i in range( n ) : # iterate each row
+                    mean, var = arr_mean[ i ], arr_var[ i ] # retrieve var and mean
+                    if not np.isnan( var ) : # if current entry is valid
+                        var_expected = mean_var_relationship_fit( mean ) # calculate expected variance from the mean
+                        if var_expected == 0 : # handle the case when the current expected variance is zero 
+                            arr_ratio_of_variance_to_expected_variance_from_mean[ i ] = np.nan
+                            arr_diff_of_variance_to_expected_variance_from_mean[ i ] = np.nan
+                        else :
+                            arr_ratio_of_variance_to_expected_variance_from_mean[ i ] = var / var_expected
+                            arr_diff_of_variance_to_expected_variance_from_mean[ i ] = var - var_expected
 
-            # add data to feature metadata
-            ax.meta[ f'{name_layer}__float_ratio_of_variance_to_expected_variance_from_mean{str_suffix_summarized_metrics}' ] = arr_ratio_of_variance_to_expected_variance_from_mean
-            ax.meta[ f'{name_layer}__float_diff_of_variance_to_expected_variance_from_mean{str_suffix_summarized_metrics}' ] = arr_diff_of_variance_to_expected_variance_from_mean
-            ax.meta[ f'{name_layer}__float_score_highly_variable_feature{str_suffix_summarized_metrics}' ] = arr_ratio_of_variance_to_expected_variance_from_mean * arr_diff_of_variance_to_expected_variance_from_mean # calculate the product of the ratio and difference of variance to expected variance for scoring and sorting highly variable features
-
+                # add data to the feature metadata
+                __set_values( f'{name_layer}__float_ratio_of_variance_to_expected_variance_from_mean{str_suffix_summarized_metrics}{str_suffix_mean_var_relationsip}', arr_ratio_of_variance_to_expected_variance_from_mean )
+                __set_values( f'{name_layer}__float_diff_of_variance_to_expected_variance_from_mean{str_suffix_summarized_metrics}{str_suffix_mean_var_relationsip}', arr_diff_of_variance_to_expected_variance_from_mean )
+                __set_values( name_col_score, arr_ratio_of_variance_to_expected_variance_from_mean * arr_diff_of_variance_to_expected_variance_from_mean ) # calculate the product of the ratio and difference of variance to expected variance for scoring and sorting highly variable features # save the scores
+                
             """
             (2) identify of highly variable features
             """
@@ -9595,7 +9647,7 @@ class RamData( ) :
             ba = ax.all( ) if ax.filter is None else ax.filter # retrieve filter
 
             # filter using variance and mean values
-            ba = ax.AND( ba, ax.meta[ name_col_for_variance, : ] > float_min_variance, ax.meta[ name_col_for_mean, : ] > float_min_mean ) 
+            ba = ax.AND( ba, __get_values( name_col_for_variance, flag_all_rows = True ) > float_min_variance, __get_values( name_col_for_mean, flag_all_rows = True ) > float_min_mean ) 
             ax.filter = ba
 
             if len( ax.meta ) < int_num_highly_variable_features :
@@ -9604,13 +9656,13 @@ class RamData( ) :
                 int_num_highly_variable_features = len( ax.meta )
 
             # calculate a threshold for highly variable score
-            arr_scores = ax.meta[ f'{name_layer}__float_score_highly_variable_feature{str_suffix_summarized_metrics}' ]
-            float_min_score_highly_variable = arr_scores[ np.lexsort( ( ax.meta[ name_col_for_mean ], arr_scores ) )[ - int_num_highly_variable_features ] ]
+            arr_scores = __get_values( name_col_score ) # retrieve the scores
+            float_min_score_highly_variable = arr_scores[ np.lexsort( ( __get_values( name_col_for_mean ), arr_scores ) )[ - int_num_highly_variable_features ] ]
             del arr_scores
 
             # filter using highly variable score
             ax.filter = None
-            ba = ax.AND( ba, ax.meta[ f'{name_layer}__float_score_highly_variable_feature{str_suffix_summarized_metrics}' ] > float_min_score_highly_variable ) 
+            ba = ax.AND( ba, __get_values( name_col_score, flag_all_rows = True ) > float_min_score_highly_variable ) 
             
             if name_col_filter is not None : # if the name of the output column is valid
                 ax.save_as_filter( ba, name_col_filter ) # save the filter using the given name
@@ -11357,7 +11409,14 @@ class RamData( ) :
             
             # prepare next batch
             self.change_filter( name_col_filter_subsampled ) # change filter to currently subsampled entries for the next round
-    def subsample_for_each_clus( self, name_col_label : str, int_num_entries_to_subsample : int = 100000, index_col_of_name_col_label : Union[ int, None ] = -1, name_col_filter : str = 'filter_pca', name_col_filter_subsampled : Union[ str, None ] = None ) :
+    def subsample_for_each_clus( 
+        self, 
+        name_col_label : str, 
+        int_num_entries_to_subsample : int = 100000, 
+        index_col_of_name_col_label : Union[ int, None ] = -1, 
+        name_col_filter : str = 'filter_pca', 
+        name_col_filter_subsampled : Union[ str, None ] = None
+    ) :
         """ # 2022-11-15 02:13:41 
         
         perform simple subsampling by selecting a fixed number of cells for each cluster
@@ -11365,8 +11424,8 @@ class RamData( ) :
         int_num_entries_to_subsample : int = 100000 # the number of entries to subsample
         name_col_label : str # the name of column of the 'barcode' axis containing cluster labels
         index_col_of_name_col_label : Union[ int, None ] = -1 # index of the column containing cluster labels
-        name_col_filter : str = 'filter_pca' # the name of the column of the 'barcode' axis containing barcode filters
-        name_col_filter_subsampled : Union[ str, None ] = None # the name of the column of the 'barcode' axis containing subsampled barcode filters
+        name_col_filter : str = 'filter_pca' # the name of the input column of the 'barcode' axis containing the input barcode filter
+        name_col_filter_subsampled : Union[ str, None ] = None # the name of the output column of the 'barcode' axis containing the output, a subsampled barcode filter
         """
         # retrieve axis
         ax = self.bc

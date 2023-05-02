@@ -9,6 +9,7 @@ import datetime
 import pickle
 import matplotlib.pyplot as plt
 from uuid import uuid4
+from copy import deepcopy
 
 def Wide( int_percent_html_code_cell_width = 95 ) :
     """ 
@@ -43,17 +44,29 @@ def To_window_path_compatible_str( a_string ) :
     '''
     return a_string.replace( '\n', '_' ).replace( ':', '_' ).replace( '"', '_' ).replace( '/', '_' ).replace( '\\', '_' ).replace( '|', '_' ).replace( '?', '_' ).replace( '*', '_' )
 
-def Search_list_of_strings_with_multiple_query( l_str, * l_query, return_mask = False, return_position = False ) :
-    ''' Search list of strings with multiple query. for negative query, add '-' in front of the query '''
+def Search_list_of_strings_with_multiple_query( l_str, * l_query, flag_ignore_case : bool = True, return_mask = False, return_position = False ) :
+    ''' # 2023-04-28 01:04:38 
+    Search list of strings with multiple query. for negative query, add '-' in front of the query 
+    
+    flag_ignore_case : bool = True # ignore cases by default
+    '''
+    
     arr_mask_matched = np.ones( len( l_str ), dtype = bool )
+    l_str_input = l_str # save the reference to the original object
+    if flag_ignore_case :
+        l_str = deepcopy( l_str ) # copy l_str 'before' converting to lower cases
+        for i in range( len( l_str ) ) :
+            l_str[ i ] = l_str[ i ].lower( )
     for query in l_query :
         bool_query_positive = True
         if query[ 0 ] == '-' :
             bool_query_positive, query = False, query[ 1: ]
+        if flag_ignore_case :
+            query = query.lower( ) # convert the query to lower case
         l_mask_matched_for_a_query = list( True if query in entry else False for entry in l_str ) if bool_query_positive else list( False if query in entry else True for entry in l_str )
         arr_mask_matched = arr_mask_matched & np.array( l_mask_matched_for_a_query, dtype = 'bool' )
     if return_position : return np.where( arr_mask_matched )[ 0 ]
-    return arr_mask_matched if return_mask else np.array( l_str, dtype = object )[ arr_mask_matched ]
+    return arr_mask_matched if return_mask else np.array( l_str_input, dtype = object )[ arr_mask_matched ] # return a subset of the list of input strings
 
 def MATPLOTLIB_savefig( title, dpi = 200, folder = None, close_fig = True, format = '.png' ) :
     if '.' not in format :
