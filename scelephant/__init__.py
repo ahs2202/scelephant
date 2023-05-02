@@ -7,4 +7,4 @@ __version__ = "0.0.10"
 
 # import modules
 
-__all__ = [ "core" ]
+__all__ = ["core"]
