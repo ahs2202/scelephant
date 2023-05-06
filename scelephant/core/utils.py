@@ -6439,3 +6439,28 @@ class ZarrSpinLockServer:
             )  # remove the released lock's 'path_folder_lock' from the list of the acquired lock objects
 
     """ </Methods for Locking> """
+
+# other utility functions
+def get_path_compatible_str( 
+    str_input : str,
+    str_invalid_char : str = "<>:/\|?*" + '"', # reserved characters in Windows file system # a string containing all the characters incompatible with a file path string
+    int_max_num_bytes_in_a_folder_name : int = 255, # the maximum number of bytes for a folder name in Linux
+) :
+    """ # 2023-05-05 22:51:50 
+    get path-compatible string from the input string, by replacing file-system-incompatible characters with escape characters.
+    if the input string is incompatible with operating system (Linux, specifically), a 'FileNotFoundError' error will be raised.
+    
+    str_invalid_char : str = '/', # a string containing all the characters incompatible with a file path string
+    int_max_num_bytes_in_a_folder_name : int = 255, # the maximum number of bytes for a folder name in Linux
+    """
+    str_input_original = str_input # record the input column name
+    # replace invalid characters in the column name
+    for chr_invalid in str_invalid_char :
+        if chr_invalid in str_input :
+            str_input = str_input.replace( chr_invalid, "((" + str( ord( chr_invalid ) ) + "))" )
+
+    # check the length limit
+    if len( str_input.encode( ) ) > int_max_num_bytes_in_a_folder_name :
+        raise FileNotFoundError( f"the number of bytes for the path-compatible string '{str_input}' exceeded the maximum number of bytes, {int_max_num_bytes_in_a_folder_name}. '{str_input_original}' cannot be used." )
+
+    return str_input
