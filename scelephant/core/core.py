@@ -1397,7 +1397,7 @@ def create_ramdata_from_adata(
 
 
 class ZarrDataFrame:
-    """# 2023-05-06 01:10:12 
+    """# 2023-05-06 01:10:12
     storage-based persistant DataFrame backed by Zarr persistent arrays.
     each column can be separately loaded, updated, and unloaded.
     a filter can be set, which allows updating and reading ZarrDataFrame as if it only contains the rows indicated by the given filter.
@@ -1767,9 +1767,9 @@ class ZarrDataFrame:
 
         # handle input arguments
         self._str_invalid_char = (
-            "<>:/\|?*" + '"' # reserved characters in Windows file system
+            "<>:/\|?*" + '"'  # reserved characters in Windows file system
             if self._dict_metadata["flag_enforce_name_col_with_only_valid_characters"]
-            else "/" # reserved characters in Linux file system
+            else "/"  # reserved characters in Linux file system
         )
 
         # initialize loaded data
@@ -1797,16 +1797,18 @@ class ZarrDataFrame:
         """
         return list(self.columns)
 
-    def _get_folder_name_from_column_name( self, name_col : str ) :
-        """ # 2023-05-05 22:51:50 
+    def _get_folder_name_from_column_name(self, name_col: str):
+        """# 2023-05-05 22:51:50
         get folder name (compatible with operating system) from column name, by replacing file-system-incompatible characters with escape characters.
         if the column name is incompatible with operating system (Linux, specifically), a 'FileNotFoundError' error will be raised.
         """
-        return get_path_compatible_str( 
-            str_input = name_col,
-            str_invalid_char = self._str_invalid_char,
-            int_max_num_bytes_in_a_folder_name = 255 - 5, # the maximum number of bytes for a folder name in Linux (255) # additional number of bytes (5) required for certain operations of the ZarrDataFrame object
+        return get_path_compatible_str(
+            str_input=name_col,
+            str_invalid_char=self._str_invalid_char,
+            int_max_num_bytes_in_a_folder_name=255
+            - 5,  # the maximum number of bytes for a folder name in Linux (255) # additional number of bytes (5) required for certain operations of the ZarrDataFrame object
         )
+
     @property
     def path_folder(self):
         """# 2023-04-12 17:19:28"""
@@ -2237,7 +2239,9 @@ class ZarrDataFrame:
         if (
             name_col is not None and name_col in self
         ):  # use 'name_col' as a template if valid name_col has been given
-            name_folder = self._get_folder_name_from_column_name( name_col ) # retrieve the name of the folder
+            name_folder = self._get_folder_name_from_column_name(
+                name_col
+            )  # retrieve the name of the folder
             if name_col in self._dict_metadata["columns"]:  # search the current zdf
                 path_col = f"{self._path_folder_zdf}{name_folder}/"
             elif (
@@ -2411,13 +2415,15 @@ class ZarrDataFrame:
             )  # release the lock
 
     def get_column_metadata(self, name_col: str):
-        """# 2023-05-06 00:35:09 
+        """# 2023-05-06 00:35:09
         get metadata of a given column
         """
         if (
             name_col in self.columns_excluding_components
         ):  # if the current column is present in the current object
-            name_folder = self._get_folder_name_from_column_name( name_col ) # retrieve the name of the folder
+            name_folder = self._get_folder_name_from_column_name(
+                name_col
+            )  # retrieve the name of the folder
             # if mask is available return the metadata from the mask
             if (
                 self._mask is not None and name_col in self._mask
@@ -2442,13 +2448,15 @@ class ZarrDataFrame:
             return dict_col_metadata
 
     def set_column_metadata(self, name_col: str, dict_col_metadata: dict):
-        """# 2023-05-06 00:35:14 
+        """# 2023-05-06 00:35:14
         a method for setting metadata of a given column (and the metadata of the current object)
         """
         if (
             name_col in self.columns_excluding_components
         ):  # if the column is located in the current object
-            name_folder = self._get_folder_name_from_column_name( name_col ) # retrieve the name of the folder
+            name_folder = self._get_folder_name_from_column_name(
+                name_col
+            )  # retrieve the name of the folder
             # if mask is available return the metadata from the mask
             if (
                 self._mask is not None and name_col in self._mask
@@ -2504,7 +2512,9 @@ class ZarrDataFrame:
         if (
             name_col in self.columns_excluding_components
         ):  # if the column is present in the current object
-            name_folder = self._get_folder_name_from_column_name( name_col ) # retrieve the name of the folder
+            name_folder = self._get_folder_name_from_column_name(
+                name_col
+            )  # retrieve the name of the folder
             # if mask is available return the metadata from the mask
             if (
                 self._mask is not None and name_col in self._mask
@@ -2696,7 +2706,7 @@ class ZarrDataFrame:
         name_col_availability: Union[None, str] = None,
         flag_retrieve_from_all_interleaved_components: bool = False,
     ) -> None:
-        """# 2023-05-06 03:44:27 
+        """# 2023-05-06 03:44:27
         perform lazy-loading of a given column using the column containing availability values.
         it will automatically detect the source objects based on the current setting.
 
@@ -2745,7 +2755,7 @@ class ZarrDataFrame:
             return
         # check whether the sink column is being lazy-loaded
         path_column_sink = (
-            f"{self._path_folder_zdf}{self._get_folder_name_from_column_name( name_col_sink )}/" # retrieve the name of the folder
+            f"{self._path_folder_zdf}{self._get_folder_name_from_column_name( name_col_sink )}/"  # retrieve the name of the folder
             if path_column_sink is None
             else path_column_sink
         )
@@ -2800,7 +2810,9 @@ class ZarrDataFrame:
                         f"[ZDF][lazy_load] internal mode is active, but 'name_col_sink' has not been given"
                     )
                 return
-            name_folder_sink = self._get_folder_name_from_column_name( name_col_sink ) # retrieve the name of the folder
+            name_folder_sink = self._get_folder_name_from_column_name(
+                name_col_sink
+            )  # retrieve the name of the folder
             path_column_sink = f"{self._path_folder_zdf}{name_folder_sink}/"
             name_col_availability = f"{name_col_sink}__availability__"
             if (
@@ -3251,7 +3263,9 @@ class ZarrDataFrame:
         ):  # if the column does not exists in the current ZarrDataFrame (excluding component zdf objects )
             try:
                 # check whether the given name_col is valid (invalid column name will raise an error)
-                name_folder = self._get_folder_name_from_column_name( name_col ) # retrieve 'name_folder'
+                name_folder = self._get_folder_name_from_column_name(
+                    name_col
+                )  # retrieve 'name_folder'
 
                 # retrieve path of the column
                 path_folder_col = f"{self._path_folder_zdf}{name_folder}/"
@@ -3271,7 +3285,7 @@ class ZarrDataFrame:
                     flag_lock_acquired = self._zsls.acquire_lock(
                         f"{path_folder_col}.lock"
                     )
-                
+
                 """ 
                 compose metadata
                 """
@@ -3483,7 +3497,9 @@ class ZarrDataFrame:
             name_col not in self
         ):  # if name_col is not valid (name_col does not exists in current ZDF, including the mask), exit by returning None
             return None
-        name_folder = self._get_folder_name_from_column_name( name_col ) # retrieve the name of the folder
+        name_folder = self._get_folder_name_from_column_name(
+            name_col
+        )  # retrieve the name of the folder
         # load data from mask/combined ZarrDataFrame
         if (
             self._flag_use_lazy_loading
@@ -3753,7 +3769,7 @@ class ZarrDataFrame:
         )  # a flag indicating indexing in non-primary axis is active
 
         # check whether the given name_col contains invalid characters(s), and retrieve the name of the folder where the column will be stored.
-        name_folder = self._get_folder_name_from_column_name( name_col )
+        name_folder = self._get_folder_name_from_column_name(name_col)
 
         """
         2) set data
@@ -4229,9 +4245,7 @@ class ZarrDataFrame:
             self.update_metadata(l_name_col_to_be_deleted=[name_col])  # update metadata
             # delete the column from the disk ZarrDataFrame object
 
-            path_prefix_col = (
-                f"{self._path_folder_zdf}{self._get_folder_name_from_column_name( name_col )}"  # define prefix for column
-            )
+            path_prefix_col = f"{self._path_folder_zdf}{self._get_folder_name_from_column_name( name_col )}"  # define prefix for column
             if self.use_locking:  # %% FILE LOCKING %%
                 self._zsls.wait_lock(
                     f"{path_prefix_col}.lock"
@@ -4650,8 +4664,10 @@ class ZarrDataFrame:
                     f"{name_col} not available in the current ZarrDataFrame, exiting"
                 )
             return
-        
-        name_folder = self._get_folder_name_from_column_name( name_col ) # retrieve the name of the folder
+
+        name_folder = self._get_folder_name_from_column_name(
+            name_col
+        )  # retrieve the name of the folder
         if self._mask is not None:  # if mask is available
             if (
                 name_col not in self._mask
@@ -4685,8 +4701,10 @@ class ZarrDataFrame:
                     f"{name_col} not available in the current ZarrDataFrame, exiting"
                 )
             return
-        
-        name_folder = self._get_folder_name_from_column_name( name_col ) # retrieve the name of the folder
+
+        name_folder = self._get_folder_name_from_column_name(
+            name_col
+        )  # retrieve the name of the folder
         if self._mask is not None:  # if mask is available
             if (
                 name_col not in self._mask
@@ -4782,7 +4800,7 @@ class ZarrDataFrame:
             )  # update metadata
 
     def resize(self, int_num_rows_new: int, flag_avoid_shrinking: bool = True):
-        """# 2023-05-06 01:00:54 
+        """# 2023-05-06 01:00:54
 
         int_num_rows_new : int, # the new number of rows (for resizing zdf)
         flag_avoid_shrinking : bool = True # ignore function call if the number of rows decreases
@@ -4814,7 +4832,9 @@ class ZarrDataFrame:
 
         # resize all columns
         for name_col in self.columns:  # for each column
-            name_folder = self._get_folder_name_from_column_name( name_col ) # retrieve the name of the folder
+            name_folder = self._get_folder_name_from_column_name(
+                name_col
+            )  # retrieve the name of the folder
             if self._zsls is None:
                 _resize_column(name_folder)
             else:
@@ -4958,7 +4978,9 @@ class ZarrDataFrame:
                 )
             return
 
-        name_col_temp = f"{name_col}.{bk.UUID( )[ : 4 ]}"  # retrieve a temporary column name
+        name_col_temp = (
+            f"{name_col}.{bk.UUID( )[ : 4 ]}"  # retrieve a temporary column name
+        )
         self.initialize_column(
             name_col_temp, name_col_template=name_col, flag_rechunk_primary_axis=True
         )  # initialize the column using the column of the current zdf object  # rechunk along the primary axis
@@ -10143,7 +10165,7 @@ class RamDataLayer:
 
 
 class RamData:
-    """# 2023-05-06 11:35:48 
+    """# 2023-05-06 11:35:48
     This class provides frameworks for single-cell transcriptomic/genomic data analysis, utilizing RAMtx data structures, which is backed by Zarr persistant arrays.
     Extreme lazy loading strategies used by this class allows efficient parallelization of analysis of single cell data with minimal memory footprint, loading only essential data required for analysis.
 
@@ -11116,16 +11138,23 @@ class RamData:
             "deep_learning.keras.embedder",
         ],
     ):
-        """ # 2023-05-06 07:06:35 
+        """# 2023-05-06 07:06:35
         get a prefix of the file name of the model.
         replaces characters incompatible with the file system with escape characters
         """
-        return get_path_compatible_str( 
-            str_input = name_model,
-            str_invalid_char = "<>:/\|?*" + '"', # reserved characters in Windows file system
-            int_max_num_bytes_in_a_folder_name = 255 - len( type_model ) - 1 - 7, # the maximum number of bytes for a folder name in Linux (255) # additional number of bytes (8) required for certain operations of the RamData
-        ) + f'.{type_model}'
-    
+        return (
+            get_path_compatible_str(
+                str_input=name_model,
+                str_invalid_char="<>:/\|?*"
+                + '"',  # reserved characters in Windows file system
+                int_max_num_bytes_in_a_folder_name=255
+                - len(type_model)
+                - 1
+                - 7,  # the maximum number of bytes for a folder name in Linux (255) # additional number of bytes (8) required for certain operations of the RamData
+            )
+            + f".{type_model}"
+        )
+
     def get_model_path(
         self,
         name_model: str,
@@ -11166,8 +11195,10 @@ class RamData:
             """# 2022-09-17 23:57:45
             get name of the file of a given model
             """
-            str_prefix_file_model = self.get_model_prefix( name_model, type_model ) # retrieve the prefix of the file
-            
+            str_prefix_file_model = self.get_model_prefix(
+                name_model, type_model
+            )  # retrieve the prefix of the file
+
             if type_model in self._set_type_model_picklable:  # handle picklable models
                 name_file_model = f"{str_prefix_file_model}.pickle"
             else:  # other models will be tar-gzipped
@@ -11272,7 +11303,7 @@ class RamData:
         ],
         index_component: Union[int, None] = None,
     ):
-        """# 2023-05-06 17:57:01 
+        """# 2023-05-06 17:57:01
         load model from the current RamData.
 
         name_model : str # the name of the model
@@ -11283,8 +11314,10 @@ class RamData:
             name_model, type_model, flag_exclude_components=False
         ):  # if the model does not exist in the current ramdata, return None
             return None
-        
-        str_prefix_file_model = self.get_model_prefix( name_model, type_model ) # retrieve the prefix of the file 
+
+        str_prefix_file_model = self.get_model_prefix(
+            name_model, type_model
+        )  # retrieve the prefix of the file
 
         # handle inputs
         if self.is_combined:
@@ -11436,7 +11469,7 @@ class RamData:
         ],
         dict_metadata_description: dict = dict(),
     ):
-        """# 2023-05-06 17:51:32 
+        """# 2023-05-06 17:51:32
         save model to RamData. if mask is available, save model to the mask
 
         'model' : input model
@@ -11456,8 +11489,8 @@ class RamData:
         filesystem_operations("mkdir", path_folder_models, exist_ok=True)
 
         # retrieve the prefix of the file
-        str_prefix_file_model = self.get_model_prefix( name_model, type_model ) 
-        
+        str_prefix_file_model = self.get_model_prefix(name_model, type_model)
+
         try:
             # locking
             if self.use_locking:  # %% FILE LOCKING %%
@@ -11500,9 +11533,7 @@ class RamData:
             elif (
                 type_model in self._set_type_model_keras_model
             ):  # handle 'dict_model' containing 'dl_model'
-                path_prefix_model = (
-                    f"{path_folder_models_local}{str_prefix_file_model}"
-                )
+                path_prefix_model = f"{path_folder_models_local}{str_prefix_file_model}"
                 path_file_model = path_prefix_model + ".tar.gz"
                 dl_model = model.pop(
                     "dl_model"
@@ -11566,7 +11597,7 @@ class RamData:
             "deep_learning.keras.embedder",
         ],
     ):
-        """# 2023-05-06 11:30:38 
+        """# 2023-05-06 11:30:38
         delete model of the RamData if the model exists in the RamData
 
         'name_model' : the name of the model. if the same type of model with the same model name already exists, it will be overwritten
@@ -11588,9 +11619,9 @@ class RamData:
         # define a folder for storage of models
         path_folder_models = f"{self._path_folder_ramdata_modifiable}models/"  # define a folder to save/load model
         filesystem_operations("mkdir", path_folder_models, exist_ok=True)
-        
+
         # retrieve the prefix of the file
-        str_prefix_file_model = self.get_model_prefix( name_model, type_model ) 
+        str_prefix_file_model = self.get_model_prefix(name_model, type_model)
 
         try:
             # locking
@@ -11601,9 +11632,7 @@ class RamData:
 
             # delete model
             if type_model in self._set_type_model_picklable:  # handle picklable models
-                path_file_model = (
-                    f"{path_folder_models}{str_prefix_file_model}.pickle"
-                )
+                path_file_model = f"{path_folder_models}{str_prefix_file_model}.pickle"
             else:
                 path_prefix_model = f"{path_folder_models}{str_prefix_file_model}"
                 path_file_model = path_prefix_model + ".tar.gz"
@@ -11646,7 +11675,7 @@ class RamData:
         name_model_new: str,
         flag_allow_copying: bool = False,
     ):
-        """# 2023-05-06 11:33:46 
+        """# 2023-05-06 11:33:46
         rename a model
 
         name_layer_current : str # the name of the previous layer
@@ -11692,9 +11721,13 @@ class RamData:
 
         # define a folder for storage of models
         path_folder_models = f"{self._path_folder_ramdata_modifiable}models/"  # define a folder to save/load model
-        
-        str_prefix_file_model = self.get_model_prefix( name_model, type_model ) # retrieve the prefix of the file
-        str_prefix_file_model_new = self.get_model_prefix( name_model_new, type_model ) # retrieve the prefix of the new file
+
+        str_prefix_file_model = self.get_model_prefix(
+            name_model, type_model
+        )  # retrieve the prefix of the file
+        str_prefix_file_model_new = self.get_model_prefix(
+            name_model_new, type_model
+        )  # retrieve the prefix of the new file
 
         try:
             # locking
@@ -11708,9 +11741,7 @@ class RamData:
 
             # rename a model
             if type_model in self._set_type_model_picklable:  # handle picklable models
-                path_file_model = (
-                    f"{path_folder_models}{str_prefix_file_model}.pickle"
-                )
+                path_file_model = f"{path_folder_models}{str_prefix_file_model}.pickle"
                 path_file_model_new = (
                     f"{path_folder_models}{str_prefix_file_model_new}.pickle"
                 )
