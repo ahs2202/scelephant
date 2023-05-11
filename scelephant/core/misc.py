@@ -109,6 +109,7 @@ def scanpy_tutorial_recipe(adata):
     a recipe for the scanpy pbmc3k tutorial
     "https://scanpy-tutorials.readthedocs.io/en/latest/pbmc3k.html"
     """
+    import scanpy as sc
     sc.pp.filter_cells(adata, min_genes=200)
     sc.pp.filter_genes(adata, min_cells=3)
     sc.pl.highest_expr_genes(
@@ -140,6 +141,7 @@ def scanpy_tutorial_recipe(adata):
     sc.pp.neighbors(adata, n_neighbors=10, n_pcs=40)
     sc.tl.umap(adata)
     sc.tl.leiden(adata)
+    return adata
 
 
 def SCANPY_UMAP_Plot_for_each_anno(adata, name_col: str):
