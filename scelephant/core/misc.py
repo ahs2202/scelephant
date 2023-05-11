@@ -110,6 +110,7 @@ def scanpy_tutorial_recipe(adata):
     "https://scanpy-tutorials.readthedocs.io/en/latest/pbmc3k.html"
     """
     import scanpy as sc
+
     sc.pp.filter_cells(adata, min_genes=200)
     sc.pp.filter_genes(adata, min_cells=3)
     sc.pl.highest_expr_genes(

@@ -11785,8 +11785,8 @@ class RamData:
             logger.info(
                 f"{name_model}|{type_model} model was rename to {name_model_new}|{type_model}"
             )
-            
-    def search_models( self, * args, ** kwargs ) :
+
+    def search_models(self, *args, **kwargs):
         """# 2023-03-05 19:14:17
         search models of the current RamData object
         """
@@ -12057,7 +12057,7 @@ class RamData:
     """ </Layer Methods> """
 
     def _determine_axis(self, axis: Union[int, str]):
-        """# 2023-05-10 18:17:13 
+        """# 2023-05-10 18:17:13
         return a flag indicating whether the input axis represent the 'barcode' axis
 
         axis : Union[ int, str ]
@@ -19693,16 +19693,36 @@ class RamData:
         return df_marker
 
     """ exploration & visualization functions """
-    def get_word_count( 
+
+    def get_word_count(
         self,
-        axis : Union[ int, str ] = 'barcodes',
-        l_name_col : Union[ None, List ] = None,
-        l_l_query : Union[ None, List[ List ] ] = [ [ 'cell_type', '-ontology' ], [ 'celltype', '-ontology' ] ],
-        name_col_group : Union[ None, str ] = None,
-        l_stop_words : List = [ '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'of', 'the', '', 'cell', 'cells' ],
-        l_delimitors : List = [ ',', ' ', ';', '_', '/' ],
-    ) :
-        """ # 2023-05-11 19:57:57 
+        axis: Union[int, str] = "barcodes",
+        l_name_col: Union[None, List] = None,
+        l_l_query: Union[None, List[List]] = [
+            ["cell_type", "-ontology"],
+            ["celltype", "-ontology"],
+        ],
+        name_col_group: Union[None, str] = None,
+        l_stop_words: List = [
+            "0",
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8",
+            "9",
+            "of",
+            "the",
+            "",
+            "cell",
+            "cells",
+        ],
+        l_delimitors: List = [",", " ", ";", "_", "/"],
+    ):
+        """# 2023-05-11 19:57:57
         retrieve word count of a given list of columns of the given axis containing string categorical values. The resulting word count can be used to draw word cloud
 
         axis : Union[ int, str ] = 'barcodes', # axis from which to collect the metadata
@@ -19713,209 +19733,376 @@ class RamData:
         l_delimitors : List = [ ',', ' ', ';', '_', '/' ], # list of characters to use when separating the categorical labels in the metadata to obtain the word count data.
         """
         # determine the axis
-        flag_axis_is_barcode = self._determine_axis( axis )
-        ax = self.bc if flag_axis_is_barcode else self.ft # retrieve the axis
+        flag_axis_is_barcode = self._determine_axis(axis)
+        ax = self.bc if flag_axis_is_barcode else self.ft  # retrieve the axis
 
         # retrieve 'l_name_col'
-        if l_name_col is None : # if 'l_name_col' is not given, retrieve list of name_col using the queries
-            if l_l_query is None :
-                raise KeyError( "No columns have been specified to retrieve categorical string data. Please set either 'l_name_col' or 'l_l_query'" )
-            set_name_col = set( )
-            for l_query in l_l_query :
-                set_name_col.update( self.bc.search_columns( * l_query ) )
-            l_name_col = list( set_name_col ) # retrieve list of columns
+        if (
+            l_name_col is None
+        ):  # if 'l_name_col' is not given, retrieve list of name_col using the queries
+            if l_l_query is None:
+                raise KeyError(
+                    "No columns have been specified to retrieve categorical string data. Please set either 'l_name_col' or 'l_l_query'"
+                )
+            set_name_col = set()
+            for l_query in l_l_query:
+                set_name_col.update(self.bc.search_columns(*l_query))
+            l_name_col = list(set_name_col)  # retrieve list of columns
 
         # retrieve groups
         flag_group_is_used = False
-        if name_col_group is not None : # if the group
-            l_group = ax.meta.get_categories( name_col_group ) # retrieve categories that will be used to group entries
-            if len( l_group ) > 0 : # if valid categories exist
+        if name_col_group is not None:  # if the group
+            l_group = ax.meta.get_categories(
+                name_col_group
+            )  # retrieve categories that will be used to group entries
+            if len(l_group) > 0:  # if valid categories exist
                 flag_group_is_used = True
-                arr_group = ax.meta.get_categorical_data_as_integers( name_col_group ) # retrieve data
+                arr_group = ax.meta.get_categorical_data_as_integers(
+                    name_col_group
+                )  # retrieve data
 
         # prepare
-        set_stop_words = set( l_stop_words )
-        str_delim_universal = '1fcf2a7f0cf04246a6dbb089256c16e2' # a string that will be used as a universal delimiter
+        set_stop_words = set(l_stop_words)
+        str_delim_universal = "1fcf2a7f0cf04246a6dbb089256c16e2"  # a string that will be used as a universal delimiter
 
         # count words for each column
-        for name_col in l_name_col : # for each column
-            l_cat = ax.meta.get_categories( name_col ) # retrieve categories        
-            if len( l_cat ) > 0 : # if valid categories exist
+        for name_col in l_name_col:  # for each column
+            l_cat = ax.meta.get_categories(name_col)  # retrieve categories
+            if len(l_cat) > 0:  # if valid categories exist
                 # count word for each category
-                l_dict_word_count_cat = [ ]
-                for cat in l_cat :
-                    for delim in l_delimitors :
-                        if delim in cat :
-                            cat = cat.replace( delim, str_delim_universal )
-                    dict_count = bk.COUNTER( cat.split( str_delim_universal ) )
-                    dict_count = dict( ( e, dict_count[ e ] ) for e in dict_count if e not in set_stop_words )
-                    l_dict_word_count_cat.append( dict_count )
+                l_dict_word_count_cat = []
+                for cat in l_cat:
+                    for delim in l_delimitors:
+                        if delim in cat:
+                            cat = cat.replace(delim, str_delim_universal)
+                    dict_count = bk.COUNTER(cat.split(str_delim_universal))
+                    dict_count = dict(
+                        (e, dict_count[e])
+                        for e in dict_count
+                        if e not in set_stop_words
+                    )
+                    l_dict_word_count_cat.append(dict_count)
 
-                if flag_group_is_used : # count words for each group by iterating the entries
-                    dict_int_group_to_dict_word_count = dict( )
-                    for int_cat, int_group in zip( ax.meta.get_categorical_data_as_integers( name_col ), arr_group ) : # int_category, int_group of each entry
-                        if int_group not in dict_int_group_to_dict_word_count :
-                            dict_int_group_to_dict_word_count[ int_group ] = dict( )
-                        if int_cat == -1 : # ignore NaN values
+                if (
+                    flag_group_is_used
+                ):  # count words for each group by iterating the entries
+                    dict_int_group_to_dict_word_count = dict()
+                    for int_cat, int_group in zip(
+                        ax.meta.get_categorical_data_as_integers(name_col), arr_group
+                    ):  # int_category, int_group of each entry
+                        if int_group not in dict_int_group_to_dict_word_count:
+                            dict_int_group_to_dict_word_count[int_group] = dict()
+                        if int_cat == -1:  # ignore NaN values
                             continue
                         # update word count
-                        dict_word_count_cat = l_dict_word_count_cat[ int_cat ] # retrieve the word count of the category
-                        for word in dict_word_count_cat :
-                            if word not in dict_int_group_to_dict_word_count[ int_group ] :
-                                dict_int_group_to_dict_word_count[ int_group ][ word ] = dict_word_count_cat[ word ]
-                            else :
-                                dict_int_group_to_dict_word_count[ int_group ][ word ] += dict_word_count_cat[ word ]
-                else :
-                    dict_word_count = dict( )
-                    for int_cat in ax.meta.get_categorical_data_as_integers( name_col ) : # int_category of each entry
-                        if int_cat == -1 : # ignore NaN values
+                        dict_word_count_cat = l_dict_word_count_cat[
+                            int_cat
+                        ]  # retrieve the word count of the category
+                        for word in dict_word_count_cat:
+                            if word not in dict_int_group_to_dict_word_count[int_group]:
+                                dict_int_group_to_dict_word_count[int_group][
+                                    word
+                                ] = dict_word_count_cat[word]
+                            else:
+                                dict_int_group_to_dict_word_count[int_group][
+                                    word
+                                ] += dict_word_count_cat[word]
+                else:
+                    dict_word_count = dict()
+                    for int_cat in ax.meta.get_categorical_data_as_integers(
+                        name_col
+                    ):  # int_category of each entry
+                        if int_cat == -1:  # ignore NaN values
                             continue
                         # update word count
-                        dict_word_count_cat = l_dict_word_count_cat[ int_cat ] # retrieve the word count of the category
-                        for word in dict_word_count_cat :
-                            if word not in dict_word_count :
-                                dict_word_count[ word ] = dict_word_count_cat[ word ]
-                            else :
-                                dict_word_count[ word ] += dict_word_count_cat[ word ]
+                        dict_word_count_cat = l_dict_word_count_cat[
+                            int_cat
+                        ]  # retrieve the word count of the category
+                        for word in dict_word_count_cat:
+                            if word not in dict_word_count:
+                                dict_word_count[word] = dict_word_count_cat[word]
+                            else:
+                                dict_word_count[word] += dict_word_count_cat[word]
 
         # return the results
-        if flag_group_is_used :
-            return dict( ( l_group[ int_group ], dict_int_group_to_dict_word_count[ int_group ] ) for int_group in dict_int_group_to_dict_word_count ) # replace int_group with group
-        else :
+        if flag_group_is_used:
+            return dict(
+                (l_group[int_group], dict_int_group_to_dict_word_count[int_group])
+                for int_group in dict_int_group_to_dict_word_count
+            )  # replace int_group with group
+        else:
             return dict_word_count
 
-    def visualize_word_count( 
+    def visualize_word_count(
         self,
-        word_count : Dict, # a dictionary returned by 'get_word_count' function
-        plot_type : Literal[ 'wordcloud', 'cloud', 'wc', 'piechart', 'pie' ] = 'wordcloud',
-        l_group : Union[ None, List ] = None, # a subset of the name of the categories representing 
-        kwargs_wordcloud : Dict = dict( ),
-        int_num_subplots_in_a_row : int = 3, # number of subplots for each row
-        int_diameter_pixel : int = 300, # diameter of the word cloud
-        title : Union[ str, None ] = None, # title of the plot
-        int_max_num_characters_in_a_line : int = 30, # the limit of the number of characters that can be written in a single line. if the name of the category exceed this number, a new line character will be added.
-        float_min_frequency_of_a_word : float = 0.025, # the minimum frequency of a word to be included in the pie chart
-    ) :
-        """ # 2023-05-12 01:12:03 
+        word_count: Dict,  # a dictionary returned by 'get_word_count' function
+        plot_type: Literal["wordcloud", "cloud", "wc", "piechart", "pie"] = "wordcloud",
+        l_group: Union[
+            None, List
+        ] = None,  # a subset of the name of the categories representing
+        kwargs_wordcloud: Dict = dict(),
+        int_num_subplots_in_a_row: int = 3,  # number of subplots for each row
+        int_diameter_pixel: int = 300,  # diameter of the word cloud
+        title: Union[str, None] = None,  # title of the plot
+        int_max_num_characters_in_a_line: int = 30,  # the limit of the number of characters that can be written in a single line. if the name of the category exceed this number, a new line character will be added.
+        float_min_frequency_of_a_word: float = 0.025,  # the minimum frequency of a word to be included in the pie chart
+    ):
+        """# 2023-05-12 01:12:03
         visualize word clouds
 
         word_count : Dict, # a dictionary returned by 'get_word_count' function
         plot_type : Literal[ 'wordcloud', 'cloud', 'wc', 'piechart', 'pie' ] = 'wordcloud',
-        l_group : Union[ None, List ] = None, # a subset of the name of the categories representing 
+        l_group : Union[ None, List ] = None, # a subset of the name of the categories representing
         kwargs_wordcloud : Dict = dict( ),
         int_num_subplots_in_a_row : int = 3, # number of subplots for each row
         int_diameter_pixel : int = 500, # diameter of the word cloud
         title : Union[ str, None ] = 'Word Cloud', # title of the plot
         """
-        flag_draw_word_cloud = plot_type in { 'wordcloud', 'cloud', 'wc' } # retrieve a flag for drawing word cloud
+        flag_draw_word_cloud = plot_type in {
+            "wordcloud",
+            "cloud",
+            "wc",
+        }  # retrieve a flag for drawing word cloud
         # import packages and settings
-        if flag_draw_word_cloud :
+        if flag_draw_word_cloud:
             import matplotlib.pyplot as plt
             from wordcloud import WordCloud
 
             # create mask for drawing word cloud
             x, y = np.ogrid[:int_diameter_pixel, :int_diameter_pixel]
-            int_radius = int( int_diameter_pixel / 2 )
-            mask = (x - int_radius ) ** 2 + (y - int_radius ) ** 2 > int( int_radius * 0.95 ) ** 2
+            int_radius = int(int_diameter_pixel / 2)
+            mask = (x - int_radius) ** 2 + (y - int_radius) ** 2 > int(
+                int_radius * 0.95
+            ) ** 2
             mask = 255 * mask.astype(int)
 
-            kwargs_wordcloud_default = { 'prefer_horizontal' : 1, 'repeat' : False, 'relative_scaling' : 0.5, 'background_color' : "white", 'mode' : 'RGB', 'mask' : mask } # default settings
-            kwargs_wordcloud_default.update( kwargs_wordcloud ) # update kwargs
-            if 'colormap' in kwargs_wordcloud_default : # remove the 'colormap' keyword
-                kwargs_wordcloud_default.pop( 'colormap' )
+            kwargs_wordcloud_default = {
+                "prefer_horizontal": 1,
+                "repeat": False,
+                "relative_scaling": 0.5,
+                "background_color": "white",
+                "mode": "RGB",
+                "mask": mask,
+            }  # default settings
+            kwargs_wordcloud_default.update(kwargs_wordcloud)  # update kwargs
+            if "colormap" in kwargs_wordcloud_default:  # remove the 'colormap' keyword
+                kwargs_wordcloud_default.pop("colormap")
 
             # define list of color map to use
-            l_cmap = [ 'pink', 'spring', 'summer', 'autumn', 'winter', 'cool', 'Wistia', 'copper', 'viridis', 'plasma', 'inferno', 'magma', 'cividis', 'coolwarm', 'twilight', 'twilight_shifted', 'hsv', 'brg', 'gist_rainbow', 'rainbow', 'jet', 'turbo', 'nipy_spectral', 'gnuplot', 'flag', 'prism' ]
-            int_num_cmap = len( l_cmap )
-        else :
+            l_cmap = [
+                "pink",
+                "spring",
+                "summer",
+                "autumn",
+                "winter",
+                "cool",
+                "Wistia",
+                "copper",
+                "viridis",
+                "plasma",
+                "inferno",
+                "magma",
+                "cividis",
+                "coolwarm",
+                "twilight",
+                "twilight_shifted",
+                "hsv",
+                "brg",
+                "gist_rainbow",
+                "rainbow",
+                "jet",
+                "turbo",
+                "nipy_spectral",
+                "gnuplot",
+                "flag",
+                "prism",
+            ]
+            int_num_cmap = len(l_cmap)
+        else:
             import plotly.graph_objects as go
             from plotly.subplots import make_subplots
 
-        if len( word_count ) == 0 :
+        if len(word_count) == 0:
             return
-        if isinstance( word_count[ list( word_count )[ 0 ] ], dict ) : # if word count dictionary for each group was given
-            word_count = dict( ( k, word_count[ k ] ) for k in word_count if len( word_count[ k ] ) > 0 ) # exclude empty group
-            if l_group is not None : # if 'l_group' has been given, only use the groups in 'l_group'
-                set_group = set( l_group )
-                word_count = dict( ( k, word_count[ k ] ) for k in word_count if k in set_group )
-            int_num_group = len( word_count )
-            if int_num_group == 0 :
+        if isinstance(
+            word_count[list(word_count)[0]], dict
+        ):  # if word count dictionary for each group was given
+            word_count = dict(
+                (k, word_count[k]) for k in word_count if len(word_count[k]) > 0
+            )  # exclude empty group
+            if (
+                l_group is not None
+            ):  # if 'l_group' has been given, only use the groups in 'l_group'
+                set_group = set(l_group)
+                word_count = dict(
+                    (k, word_count[k]) for k in word_count if k in set_group
+                )
+            int_num_group = len(word_count)
+            if int_num_group == 0:
                 return
 
             # initialize the plot
-            int_num_subplots_in_a_col = int( np.ceil( int_num_group / int_num_subplots_in_a_row ) ) # get 'int_num_subplots_in_a_col'
-            l_group_to_plot = list( word_count ) if l_group is None else list( group for group in l_group if group in word_count ) # retrieve the list of group for plotting (preserve the order in 'l_group' if the list was given.)
-            if flag_draw_word_cloud :
-                fig, axes = plt.subplots( int_num_subplots_in_a_col, int_num_subplots_in_a_row, figsize = ( int_num_subplots_in_a_row * 3.5, int_num_subplots_in_a_col * 5 ) ) # automatically set a figsize according to the grid
-            else :
-                fig = make_subplots( int_num_subplots_in_a_col, int_num_subplots_in_a_row, specs=[ [ {'type':'domain'} ] * ( int_num_subplots_in_a_row ) ] * int_num_subplots_in_a_col, subplot_titles = list( STR.Insert_characters_every_n_characters( e, int_max_num_characters_in_a_line, '<br>' ) for e in l_group_to_plot ) )
+            int_num_subplots_in_a_col = int(
+                np.ceil(int_num_group / int_num_subplots_in_a_row)
+            )  # get 'int_num_subplots_in_a_col'
+            l_group_to_plot = (
+                list(word_count)
+                if l_group is None
+                else list(group for group in l_group if group in word_count)
+            )  # retrieve the list of group for plotting (preserve the order in 'l_group' if the list was given.)
+            if flag_draw_word_cloud:
+                fig, axes = plt.subplots(
+                    int_num_subplots_in_a_col,
+                    int_num_subplots_in_a_row,
+                    figsize=(
+                        int_num_subplots_in_a_row * 3.5,
+                        int_num_subplots_in_a_col * 5,
+                    ),
+                )  # automatically set a figsize according to the grid
+            else:
+                fig = make_subplots(
+                    int_num_subplots_in_a_col,
+                    int_num_subplots_in_a_row,
+                    specs=[[{"type": "domain"}] * (int_num_subplots_in_a_row)]
+                    * int_num_subplots_in_a_col,
+                    subplot_titles=list(
+                        STR.Insert_characters_every_n_characters(
+                            e, int_max_num_characters_in_a_line, "<br>"
+                        )
+                        for e in l_group_to_plot
+                    ),
+                )
 
             # iterate each group to make a plot
-            index_group = 0 
-            for i in range( int_num_subplots_in_a_col ) :
-                for j in range( int_num_subplots_in_a_row ) :
-                    if flag_draw_word_cloud :
-                        ax = axes[i][j] # retrieve the ax
-                        if index_group == int_num_group : # if all groups were visualized, fill empty subplots
+            index_group = 0
+            for i in range(int_num_subplots_in_a_col):
+                for j in range(int_num_subplots_in_a_row):
+                    if flag_draw_word_cloud:
+                        ax = axes[i][j]  # retrieve the ax
+                        if (
+                            index_group == int_num_group
+                        ):  # if all groups were visualized, fill empty subplots
                             ax.axis("off")
-                        else :
-                            group = l_group_to_plot[ index_group ] # retrieve group
-                            ax.set_title( STR.Insert_characters_every_n_characters( group, int_max_num_characters_in_a_line, '\n' ), fontsize = 10 ) # use group name as a title
+                        else:
+                            group = l_group_to_plot[index_group]  # retrieve group
+                            ax.set_title(
+                                STR.Insert_characters_every_n_characters(
+                                    group, int_max_num_characters_in_a_line, "\n"
+                                ),
+                                fontsize=10,
+                            )  # use group name as a title
                             ax.axis("off")
-                            wc = WordCloud( colormap = kwargs_wordcloud[ 'colormap' ] if 'colormap' in kwargs_wordcloud else l_cmap[ int( np.random.random( ) * int_num_cmap ) ], ** kwargs_wordcloud_default )
-                            wc.generate_from_frequencies( word_count[ group ] )
+                            wc = WordCloud(
+                                colormap=kwargs_wordcloud["colormap"]
+                                if "colormap" in kwargs_wordcloud
+                                else l_cmap[int(np.random.random() * int_num_cmap)],
+                                **kwargs_wordcloud_default,
+                            )
+                            wc.generate_from_frequencies(word_count[group])
                             ax.imshow(wc, interpolation="bilinear")
-                            index_group += 1 # update the index
+                            index_group += 1  # update the index
 
-                    else :
-                        if index_group != int_num_group : # if all groups were visualized, fill empty subplots
-                            group = l_group_to_plot[ index_group ] # retrieve group
+                    else:
+                        if (
+                            index_group != int_num_group
+                        ):  # if all groups were visualized, fill empty subplots
+                            group = l_group_to_plot[index_group]  # retrieve group
 
-                            s = pd.Series( word_count[ group ] ).sort_values( ascending = False )
-                            s = s[ s / s.sum( ) > float_min_frequency_of_a_word ] # exclude words with the minimum frequency
-                            fig.add_trace(go.Pie(labels=s.index.values, values=s.values, textinfo='label', name=STR.Insert_characters_every_n_characters( group, int_max_num_characters_in_a_line, '<br>' )), i + 1, j + 1 ) # , scalegroup='one'
-                            index_group += 1 # update the index
+                            s = pd.Series(word_count[group]).sort_values(
+                                ascending=False
+                            )
+                            s = s[
+                                s / s.sum() > float_min_frequency_of_a_word
+                            ]  # exclude words with the minimum frequency
+                            fig.add_trace(
+                                go.Pie(
+                                    labels=s.index.values,
+                                    values=s.values,
+                                    textinfo="label",
+                                    name=STR.Insert_characters_every_n_characters(
+                                        group, int_max_num_characters_in_a_line, "<br>"
+                                    ),
+                                ),
+                                i + 1,
+                                j + 1,
+                            )  # , scalegroup='one'
+                            index_group += 1  # update the index
 
             # set the figure size
-            if not flag_draw_word_cloud :
-                fig.update_layout( width = int_num_subplots_in_a_row * 350, height = int_num_subplots_in_a_col * 500, autosize = False )
+            if not flag_draw_word_cloud:
+                fig.update_layout(
+                    width=int_num_subplots_in_a_row * 350,
+                    height=int_num_subplots_in_a_col * 500,
+                    autosize=False,
+                )
 
             # set the title
-            if title is not None : 
-                if flag_draw_word_cloud :
-                    fig.suptitle( STR.Insert_characters_every_n_characters( title, int_max_num_characters_in_a_line, '\n' ) )
-                else :
-                    fig.update_layout(title_text = STR.Insert_characters_every_n_characters( title, int_max_num_characters_in_a_line, '<br>' ) )
-        else : # if a word count of all entries as one group has been given.
-            if flag_draw_word_cloud :
-                fig, ax = plt.subplots( 1, 1, figsize = ( 3.5, 5 ) )
+            if title is not None:
+                if flag_draw_word_cloud:
+                    fig.suptitle(
+                        STR.Insert_characters_every_n_characters(
+                            title, int_max_num_characters_in_a_line, "\n"
+                        )
+                    )
+                else:
+                    fig.update_layout(
+                        title_text=STR.Insert_characters_every_n_characters(
+                            title, int_max_num_characters_in_a_line, "<br>"
+                        )
+                    )
+        else:  # if a word count of all entries as one group has been given.
+            if flag_draw_word_cloud:
+                fig, ax = plt.subplots(1, 1, figsize=(3.5, 5))
 
                 ax.axis("off")
-                wc = WordCloud( colormap = kwargs_wordcloud[ 'colormap' ] if 'colormap' in kwargs_wordcloud else l_cmap[ int( np.random.random( ) * int_num_cmap ) ], ** kwargs_wordcloud_default )
-                wc.generate_from_frequencies( word_count )
+                wc = WordCloud(
+                    colormap=kwargs_wordcloud["colormap"]
+                    if "colormap" in kwargs_wordcloud
+                    else l_cmap[int(np.random.random() * int_num_cmap)],
+                    **kwargs_wordcloud_default,
+                )
+                wc.generate_from_frequencies(word_count)
                 ax.imshow(wc, interpolation="bilinear")
-            else :
-                s = pd.Series( word_count ).sort_values( ascending = False )
-                s = s[ s / s.sum( ) > float_min_frequency_of_a_word ] # exclude words with the minimum frequency
-                fig = go.Figure(data=[go.Pie(labels=s.index.values, values=s.values, textinfo='label+percent')])
+            else:
+                s = pd.Series(word_count).sort_values(ascending=False)
+                s = s[
+                    s / s.sum() > float_min_frequency_of_a_word
+                ]  # exclude words with the minimum frequency
+                fig = go.Figure(
+                    data=[
+                        go.Pie(
+                            labels=s.index.values,
+                            values=s.values,
+                            textinfo="label+percent",
+                        )
+                    ]
+                )
 
             # set the figure size
-            if not flag_draw_word_cloud :
-                fig.update_layout( width = 700, height = 500, autosize = False )
+            if not flag_draw_word_cloud:
+                fig.update_layout(width=700, height=500, autosize=False)
 
             # set the title
-            if title is not None : 
-                if flag_draw_word_cloud :
-                    fig.suptitle( STR.Insert_characters_every_n_characters( title, int_max_num_characters_in_a_line, '\n' ) )
-                else :
-                    fig.update_layout(title_text = STR.Insert_characters_every_n_characters( title, int_max_num_characters_in_a_line, '<br>' ) )
+            if title is not None:
+                if flag_draw_word_cloud:
+                    fig.suptitle(
+                        STR.Insert_characters_every_n_characters(
+                            title, int_max_num_characters_in_a_line, "\n"
+                        )
+                    )
+                else:
+                    fig.update_layout(
+                        title_text=STR.Insert_characters_every_n_characters(
+                            title, int_max_num_characters_in_a_line, "<br>"
+                        )
+                    )
 
         # show the plot
-        if flag_draw_word_cloud :
-            plt.show() 
-        else :
-            fig.show( ) 
-    
+        if flag_draw_word_cloud:
+            plt.show()
+        else:
+            fig.show()
+
     """ scarab-associated methods for analyzing RamData """
 
     def _classify_feature_of_scarab_output_(

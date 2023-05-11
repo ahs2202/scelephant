@@ -211,6 +211,7 @@ def Search_Subsequence(
     'index_start_window' :
     """
     import regex
+
     # set default values
     str_matched_subsequence = None
     index_start_subsequence = -1  # 0-based coordinates
@@ -278,6 +279,7 @@ def Search_Subsequences(
     'int_min_num_errors' : an internal argument. the minimum number of errors for the search. used in the recursive calling of this function internally.
     """
     import regex
+
     l_sr = []  # initialize search results
 
     def _initialize_search_result_():
