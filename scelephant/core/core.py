@@ -351,6 +351,7 @@ str_release_note = [
     """
 ]
 
+
 # for creating RamData from AnnData
 def create_ramtx_from_mtx(
     path_folder_mtx_10x_input: str,
@@ -2801,10 +2802,12 @@ class ZarrDataFrame:
             return
 
         # retrieve a flag indicating all entries will be available in the sink column
-        flag_will_be_fully_loaded = isinstance(queries, slice) and queries == slice( None )
+        flag_will_be_fully_loaded = isinstance(queries, slice) and queries == slice(
+            None
+        )
 
         # retrieve list of integer representations of the entries
-#         l_int_entry = list(self.get_integer_indices(queries))
+        #         l_int_entry = list(self.get_integer_indices(queries))
 
         # retrieve operation modes
         flag_mode_internal = (
@@ -2850,7 +2853,7 @@ class ZarrDataFrame:
             path_column_sink
         ):  # if sink column does not exist
             # initialize sink column by retrieving the value of the first entry
-            logger.info( f"initializing { path_column_sink =} with {flag_mode_write = }" )
+            logger.info(f"initializing { path_column_sink =} with {flag_mode_write = }")
             self.lazy_load(
                 queries=[0],
                 flag_mode_write=False,
@@ -2862,13 +2865,21 @@ class ZarrDataFrame:
             )  # 'read' mode
 
         # initialize availability column # does not initialize availability column when all entries will be loaded in a single access
-        flag_name_col_availability_existed = name_col_availability in self # set a flag indicating the availability column existed
-        flag_created_in_a_single_access = flag_will_be_fully_loaded and not flag_name_col_availability_existed # retrieve a flag indicating all the entries of the column will be populated in a single access, allowing the algorithm to skip many time-consuming steps of the operations
-        if (
-            not ( flag_name_col_availability_existed or flag_will_be_fully_loaded )
+        flag_name_col_availability_existed = (
+            name_col_availability in self
+        )  # set a flag indicating the availability column existed
+        flag_created_in_a_single_access = (
+            flag_will_be_fully_loaded and not flag_name_col_availability_existed
+        )  # retrieve a flag indicating all the entries of the column will be populated in a single access, allowing the algorithm to skip many time-consuming steps of the operations
+        if not (
+            flag_name_col_availability_existed or flag_will_be_fully_loaded
         ):  # if 'name_col_availability' column does not exist, initialize the column
             self.initialize_column(name_col_availability, dtype=bool, fill_value=False)
-        dict_col_metadata_availbility = dict( ) if flag_created_in_a_single_access else self.get_column_metadata( name_col_availability )  # retrieve metadata # load dummy dictionary if 'flag_will_be_fully_loaded' is True and the availability column did not exist
+        dict_col_metadata_availbility = (
+            dict()
+            if flag_created_in_a_single_access
+            else self.get_column_metadata(name_col_availability)
+        )  # retrieve metadata # load dummy dictionary if 'flag_will_be_fully_loaded' is True and the availability column did not exist
         if (
             "flag_is_availability_column" not in dict_col_metadata_availbility
         ):  # initialize metadata for availability column
@@ -2888,14 +2899,29 @@ class ZarrDataFrame:
                     name_col_availability, queries
                 ] = True  # update availability column
         else:
-            flag_created_in_a_single_access_from_stacked_axes = flag_created_in_a_single_access and not self.is_interleaved # retrieve a flag indicating the column will be created in a single acess from the 'stacked' axes
-            if not flag_created_in_a_single_access_from_stacked_axes :
+            flag_created_in_a_single_access_from_stacked_axes = (
+                flag_created_in_a_single_access and not self.is_interleaved
+            )  # retrieve a flag indicating the column will be created in a single acess from the 'stacked' axes
+            if not flag_created_in_a_single_access_from_stacked_axes:
                 # retrieve values from source and update sink column (read operation)
-                l_int_entry_that_needs_fetching = self.get_integer_indices( queries, flag_return_as_an_array = True )[ slice( None ) if flag_created_in_a_single_access else ~self[name_col_availability, queries] ]  # retrieve int_entry that need updates
-                
-            if flag_created_in_a_single_access_from_stacked_axes or len(l_int_entry_that_needs_fetching) > 0:
-                if not flag_created_in_a_single_access : # update the availability column's metadata only when the column will not be created in a single access
-                    dict_col_metadata_availbility["int_num_entries_available"] += len( l_int_entry_that_needs_fetching )  # update the number of entries available
+                l_int_entry_that_needs_fetching = self.get_integer_indices(
+                    queries, flag_return_as_an_array=True
+                )[
+                    slice(None)
+                    if flag_created_in_a_single_access
+                    else ~self[name_col_availability, queries]
+                ]  # retrieve int_entry that need updates
+
+            if (
+                flag_created_in_a_single_access_from_stacked_axes
+                or len(l_int_entry_that_needs_fetching) > 0
+            ):
+                if (
+                    not flag_created_in_a_single_access
+                ):  # update the availability column's metadata only when the column will not be created in a single access
+                    dict_col_metadata_availbility["int_num_entries_available"] += len(
+                        l_int_entry_that_needs_fetching
+                    )  # update the number of entries available
 
                 # fetch data according to the modes of current zdf
                 if self.is_mask and self.is_combined:
@@ -2922,11 +2948,19 @@ class ZarrDataFrame:
                     else:
                         za_sink.open(path_column_sink, mode="a")
                     # fetch and save fetched data to the output column
-                    if flag_created_in_a_single_access :
-                        sl_all = slice( None, None, None )
-                        za_sink.set_orthogonal_selection( sl_all, za_source.get_orthogonal_selection( sl_all ), )  # update sink column values from values using the source ZarrDataFrame
-                    else :
-                        za_sink.set_orthogonal_selection( l_int_entry_that_needs_fetching, za_source.get_orthogonal_selection( l_int_entry_that_needs_fetching ), )  # update sink column values from values using the source ZarrDataFrame
+                    if flag_created_in_a_single_access:
+                        sl_all = slice(None, None, None)
+                        za_sink.set_orthogonal_selection(
+                            sl_all,
+                            za_source.get_orthogonal_selection(sl_all),
+                        )  # update sink column values from values using the source ZarrDataFrame
+                    else:
+                        za_sink.set_orthogonal_selection(
+                            l_int_entry_that_needs_fetching,
+                            za_source.get_orthogonal_selection(
+                                l_int_entry_that_needs_fetching
+                            ),
+                        )  # update sink column values from values using the source ZarrDataFrame
                 elif self.is_combined:
                     # %% COMBINED MODE %%
                     # iterate over components
@@ -2968,7 +3002,9 @@ class ZarrDataFrame:
                                 zdf_template=zdf,
                                 name_col_template=name_col_sink,
                             )
-                            if not flag_will_be_fully_loaded : # if all data will be loaded in a single access, do not mark the column as being lazy loaded
+                            if (
+                                not flag_will_be_fully_loaded
+                            ):  # if all data will be loaded in a single access, do not mark the column as being lazy loaded
                                 za_sink.open(path_column_sink, mode="a")
                                 za_sink.set_attrs(
                                     flag_is_being_lazy_loaded=True
@@ -3013,12 +3049,30 @@ class ZarrDataFrame:
                                     path_column_sink, mode="a"
                                 )  # open sink zarr object
 
-                        if flag_created_in_a_single_access_from_stacked_axes : # when 'flag_created_in_a_single_access_from_stacked_axes' is True, use efficient algorithm to load the values
-                            if flag_mode_internal : 
-                                self[name_col_sink, slice( dict_index_mapping_from_combined_to_component.int_offset, dict_index_mapping_from_combined_to_component.int_offset + dict_index_mapping_from_combined_to_component.int_length_component_axis ) ] = zdf[ name_col_sink, slice( None ) ]  # update sink column values from values using the source ZarrDataFrame
-                            else :
-                                za_sink.set_orthogonal_selection( slice( dict_index_mapping_from_combined_to_component.int_offset, dict_index_mapping_from_combined_to_component.int_offset + dict_index_mapping_from_combined_to_component.int_length_component_axis ), zdf[ name_col_sink, slice( None ) ], )  # update sink column values from values using the source ZarrDataFrame
-                        else :
+                        if (
+                            flag_created_in_a_single_access_from_stacked_axes
+                        ):  # when 'flag_created_in_a_single_access_from_stacked_axes' is True, use efficient algorithm to load the values
+                            if flag_mode_internal:
+                                self[
+                                    name_col_sink,
+                                    slice(
+                                        dict_index_mapping_from_combined_to_component.int_offset,
+                                        dict_index_mapping_from_combined_to_component.int_offset
+                                        + dict_index_mapping_from_combined_to_component.int_length_component_axis,
+                                    ),
+                                ] = zdf[
+                                    name_col_sink, slice(None)
+                                ]  # update sink column values from values using the source ZarrDataFrame
+                            else:
+                                za_sink.set_orthogonal_selection(
+                                    slice(
+                                        dict_index_mapping_from_combined_to_component.int_offset,
+                                        dict_index_mapping_from_combined_to_component.int_offset
+                                        + dict_index_mapping_from_combined_to_component.int_length_component_axis,
+                                    ),
+                                    zdf[name_col_sink, slice(None)],
+                                )  # update sink column values from values using the source ZarrDataFrame
+                        else:
                             # retrieve coordinates of the component zdf
                             l_int_entry_combined, l_int_entry_component = (
                                 [],
@@ -3039,7 +3093,9 @@ class ZarrDataFrame:
                                             ba_retrieved[
                                                 int_entry_combined
                                             ] = 1  # update the flag
-                                            l_int_entry_combined.append(int_entry_combined)
+                                            l_int_entry_combined.append(
+                                                int_entry_combined
+                                            )
                                             l_int_entry_component.append(
                                                 dict_index_mapping_from_combined_to_component[
                                                     int_entry_combined
@@ -3080,8 +3136,9 @@ class ZarrDataFrame:
         # update availability column
         # when all entries were loaded, delete the availbility column and modify the sink column metadata
         if (
-            ( dict_col_metadata_availbility["int_num_entries_available"] == self._n_rows_unfiltered ) or ( flag_will_be_fully_loaded and flag_name_col_availability_existed )
-        ):
+            dict_col_metadata_availbility["int_num_entries_available"]
+            == self._n_rows_unfiltered
+        ) or (flag_will_be_fully_loaded and flag_name_col_availability_existed):
             del self[name_col_availability]  # delete the column
             # update metadata of the sink column
             za_sink.open(path_column_sink, mode="a")
@@ -3092,8 +3149,10 @@ class ZarrDataFrame:
                 name_col_availability, dict_col_metadata_availbility
             )  # save metadata
 
-    def get_integer_indices(self, queries=None, flag_return_as_an_array : bool = False, dtype = 'i8' ):
-        """# 2023-05-19 21:37:26 
+    def get_integer_indices(
+        self, queries=None, flag_return_as_an_array: bool = False, dtype="i8"
+    ):
+        """# 2023-05-19 21:37:26
         return an iterator of the integer indices from advanced indexing queries.
 
         queries # slice, list of integer indices, bitarray, numpy arrays (boolean) are one of the possible queries
@@ -3105,28 +3164,36 @@ class ZarrDataFrame:
             queries, tuple
         ):  # if a tuple is given as queries, assumes it contains a list of coordinate arrays
             queries = queries[0]  # retrieve coordinates in the first axis
-            if not flag_return_as_an_array :
-                queries = iter( queries ) # change it to iterator
+            if not flag_return_as_an_array:
+                queries = iter(queries)  # change it to iterator
         elif isinstance(queries, slice):  # if a slice object has been given
-            st, en, step = queries.indices(self._n_rows_unfiltered) # parse the slice object
-            queries = np.arange( st, en, step, dtype = dtype ) if flag_return_as_an_array else range( st, en, step ) # convert slice to range or list of indices
+            st, en, step = queries.indices(
+                self._n_rows_unfiltered
+            )  # parse the slice object
+            queries = (
+                np.arange(st, en, step, dtype=dtype)
+                if flag_return_as_an_array
+                else range(st, en, step)
+            )  # convert slice to range or list of indices
         else:
             # detect boolean mask
             flag_queries_in_bool_mask = BA.detect_boolean_mask(queries)
             # convert boolean masks to np.ndarray object
             if flag_queries_in_bool_mask:
-                if flag_return_as_an_array :
+                if flag_return_as_an_array:
                     if isinstance(queries, bitarray):  # if type is bitarray
-                        queries = BA.to_array( queries ) # convert to numpy boolean array
-                    else :
+                        queries = BA.to_array(queries)  # convert to numpy boolean array
+                    else:
                         # handle list of boolean values
                         if not isinstance(queries, np.ndarray):
                             queries = np.array(queries, dtype=bool)  # change to ndarray
                         # handle np.ndarray
                         if isinstance(queries, np.ndarray) and queries.dtype != bool:
                             queries = queries.astype(bool)  # change to ndarray
-                    queries = np.where( queries )[ 0 ] # retrieve an array of integer indices
-                else :
+                    queries = np.where(queries)[
+                        0
+                    ]  # retrieve an array of integer indices
+                else:
                     if not isinstance(queries, bitarray):  # if type is not bitarray
                         # handle list of boolean values
                         if not isinstance(queries, np.ndarray):
@@ -3138,10 +3205,16 @@ class ZarrDataFrame:
                             queries
                         )  # convert numpy boolean array to bitarray
                     queries = BA.find(queries)  # convert bitarray to generator
-        if flag_return_as_an_array :
-            return np.array( list( queries ), dtype = dtype ) if hasattr(queries, "__next__") else queries # convert iterator to an array
-        else :
-            return iter(queries) if hasattr(queries, "__iter__") else queries # iterate over integer indices
+        if flag_return_as_an_array:
+            return (
+                np.array(list(queries), dtype=dtype)
+                if hasattr(queries, "__next__")
+                else queries
+            )  # convert iterator to an array
+        else:
+            return (
+                iter(queries) if hasattr(queries, "__iter__") else queries
+            )  # iterate over integer indices
 
     def initialize_column(
         self,
@@ -3500,7 +3573,6 @@ class ZarrDataFrame:
         flag_indexing_in_non_primary_axis = (
             coords_rest is not None
         )  # a flag indicating indexing in non-primary axis is active
-        
 
         """
         # retrieve data
@@ -3781,7 +3853,7 @@ class ZarrDataFrame:
 
         # check whether the given name_col contains invalid characters(s), and retrieve the name of the folder where the column will be stored.
         name_folder = self._get_folder_name_from_column_name(name_col)
-        
+
         """
         2) set data
         """
@@ -5097,7 +5169,7 @@ class ZarrDataFrame:
                     name_col
                 )  # add the column to the set of name_col with newly acquired locks
         return set_name_col_released
-    
+
     def get_word_count(
         self,
         l_name_col: Union[None, List] = None,
@@ -5124,8 +5196,8 @@ class ZarrDataFrame:
             "cells",
         ],
         l_delimitors: List = [",", " ", ";", "_", "/"],
-    ) -> Dict :
-        """# 2023-05-12 14:51:54 
+    ) -> Dict:
+        """# 2023-05-12 14:51:54
         retrieve word count of a given list of columns containing string categorical values. The resulting word count can be used to draw word cloud
 
         l_name_col : Union[ None, List ] = None, # the list of name_col to collect the metadata (categorical data)
@@ -5143,11 +5215,15 @@ class ZarrDataFrame:
                     "No columns have been specified to retrieve categorical string data. Please set either 'l_name_col' or 'l_l_query'"
                 )
             set_name_col = set()
-            for l_query in l_l_query: # for each list of queries
-                set_name_col.update(self.search_columns(*l_query)) # search columns using the query
-            l_name_col = list(set_name_col)  # retrieve list of columns 
-        else :
-            l_name_col = list( set(self.columns).intersection(l_name_col) ) # retrieve a valid list of column names
+            for l_query in l_l_query:  # for each list of queries
+                set_name_col.update(
+                    self.search_columns(*l_query)
+                )  # search columns using the query
+            l_name_col = list(set_name_col)  # retrieve list of columns
+        else:
+            l_name_col = list(
+                set(self.columns).intersection(l_name_col)
+            )  # retrieve a valid list of column names
 
         # retrieve groups
         flag_group_is_used = False
@@ -5164,9 +5240,9 @@ class ZarrDataFrame:
         # prepare
         set_stop_words = set(l_stop_words)
         str_delim_universal = "1fcf2a7f0cf04246a6dbb089256c16e2"  # a string that will be used as a universal delimiter
-        
-        def _update_count( dict_count_to_be_updated, dict_count_for_update ) :
-            """ # 2023-05-12 16:16:24  """
+
+        def _update_count(dict_count_to_be_updated, dict_count_for_update):
+            """# 2023-05-12 16:16:24"""
             for key in dict_count_for_update:
                 if key not in dict_count_to_be_updated:
                     dict_count_to_be_updated[key] = dict_count_for_update[key]
@@ -5176,16 +5252,16 @@ class ZarrDataFrame:
 
         # define a function to get a word count dictionary of a column
         def __map(pipe_receiver, pipe_sender):
-            """# 2023-05-12 14:59:03 """
+            """# 2023-05-12 14:59:03"""
             zdf = self.get_fork_safe_version()  # get the fork-safe version
             while True:
                 ins = pipe_receiver.recv()
                 if ins is None:
                     break
                 name_col = ins  # parse 'ins'
-                
+
                 # get a word count dictionary of a column
-                word_count_of_a_col = dict( ) # initialize 'word_count_of_a_col'
+                word_count_of_a_col = dict()  # initialize 'word_count_of_a_col'
                 l_cat = zdf.get_categories(name_col)  # retrieve categories
                 if len(l_cat) > 0:  # if valid categories exist
                     # count word for each category
@@ -5211,9 +5287,12 @@ class ZarrDataFrame:
                             if int_cat == -1:  # ignore NaN values
                                 continue
                             if int_group not in word_count_of_a_col:
-                                word_count_of_a_col[int_group] = dict( )
+                                word_count_of_a_col[int_group] = dict()
                             # update word count
-                            _update_count( word_count_of_a_col[int_group], l_dict_word_count_cat[ int_cat ] ) # retrieve the word count of the category
+                            _update_count(
+                                word_count_of_a_col[int_group],
+                                l_dict_word_count_cat[int_cat],
+                            )  # retrieve the word count of the category
                     else:
                         for int_cat in zdf.get_categorical_data_as_integers(
                             name_col
@@ -5221,41 +5300,49 @@ class ZarrDataFrame:
                             if int_cat == -1:  # ignore NaN values
                                 continue
                             # update word count
-                            _update_count( word_count_of_a_col, l_dict_word_count_cat[ int_cat ] ) # retrieve the word count of the category
-                pipe_sender.send( word_count_of_a_col ) # return the result
+                            _update_count(
+                                word_count_of_a_col, l_dict_word_count_cat[int_cat]
+                            )  # retrieve the word count of the category
+                pipe_sender.send(word_count_of_a_col)  # return the result
             zdf.terminate_spawned_processes()  # terminate the servers
-        word_count = dict( ) # intialize the word count output
-        def __reduce( word_count_of_a_col ) :
+
+        word_count = dict()  # intialize the word count output
+
+        def __reduce(word_count_of_a_col):
             """# 2023-05-12 15:11:49"""
-            if len( word_count_of_a_col ) == 0 : # ignore an empty result
+            if len(word_count_of_a_col) == 0:  # ignore an empty result
                 return
-            if flag_group_is_used :
-                for int_group in word_count_of_a_col :
-                    if int_group in word_count : # if the group already exist in the output dictionary, update the count
-                        _update_count( word_count[ int_group ], word_count_of_a_col[ int_group ] ) # update count
-                    else :
-                        word_count[ int_group ] = word_count_of_a_col[ int_group ] # transfer count
-            else :
-                _update_count( word_count, word_count_of_a_col ) # update count
-            
+            if flag_group_is_used:
+                for int_group in word_count_of_a_col:
+                    if (
+                        int_group in word_count
+                    ):  # if the group already exist in the output dictionary, update the count
+                        _update_count(
+                            word_count[int_group], word_count_of_a_col[int_group]
+                        )  # update count
+                    else:
+                        word_count[int_group] = word_count_of_a_col[
+                            int_group
+                        ]  # transfer count
+            else:
+                _update_count(word_count, word_count_of_a_col)  # update count
+
         # paralleize work for each column
         bk.Multiprocessing_Batch_Generator_and_Workers(
-            gen_batch=iter(
-                l_name_col # for each column
-            ),
+            gen_batch=iter(l_name_col),  # for each column
             process_batch=__map,
             post_process_batch=__reduce,
             int_num_threads=self.int_num_cpus,
         )
-                                
+
         # return the results
         if flag_group_is_used:
             return dict(
-                (l_group[int_group], word_count[int_group])
-                for int_group in word_count
+                (l_group[int_group], word_count[int_group]) for int_group in word_count
             )  # replace int_group with group
         else:
             return word_count
+
 
 """ a class for representing axis of RamData (barcodes/features) """
 
@@ -5280,14 +5367,17 @@ class IndexMappingDictionary:
         self._int_length_component_axis = int_length_component_axis
         self._int_offset = int_offset
         self._flag_component_to_combined = flag_component_to_combined
+
     @property
-    def int_length_component_axis( self ) :
-        """ # 2023-05-19 23:36:55 """
+    def int_length_component_axis(self):
+        """# 2023-05-19 23:36:55"""
         return self._int_length_component_axis
+
     @property
-    def int_offset( self ) :
-        """ # 2023-05-19 23:36:55 """
+    def int_offset(self):
+        """# 2023-05-19 23:36:55"""
         return self._int_offset
+
     def __getitem__(self, int_entry_component):
         """# 2022-08-30 11:57:21
         perform mapping
@@ -5310,7 +5400,7 @@ class IndexMappingDictionary:
 
 
 class RamDataAxis:
-    """# 2023-05-14 22:36:21 
+    """# 2023-05-14 22:36:21
     a memory-efficient container of features/barcodes and associated metadata for a given RamData object.
 
     # 2022-08-29 12:45:51
@@ -6412,7 +6502,7 @@ class RamDataAxis:
         a shortcut for self.columns
         """
         return self.columns
-    
+
     @property
     def ba_active_entries(self):
         """# 2022-07-16 17:38:04
@@ -7344,7 +7434,7 @@ class RamDataAxis:
         return bk.Search_list_of_strings_with_multiple_query(
             self.filters, *args, **kwargs
         )
-    
+
     def search_columns(self, *args, **kwargs):
         """# 2023-03-05 19:14:17
         search columns of the metadata ZarrDataFrame
@@ -10356,7 +10446,7 @@ class RamDataLayer:
 
 
 class RamData:
-    """# 2023-05-14 14:49:19 
+    """# 2023-05-14 14:49:19
     This class provides frameworks for single-cell transcriptomic/genomic data analysis, utilizing RAMtx data structures, which is backed by Zarr persistant arrays.
     Extreme lazy loading strategies used by this class allows efficient parallelization of analysis of single cell data with minimal memory footprint, loading only essential data required for analysis.
 
@@ -12991,7 +13081,7 @@ class RamData:
         dtype_sparse_mtx_index=np.float64,
         dict_metadata_description: Union[dict, None] = dict(),
     ):
-        """# 2023-05-14 14:49:12 
+        """# 2023-05-14 14:49:12
         this function apply a function and/or filters to the records of the given data, and create a new data object with 'name_layer_new' as its name.
 
         example usage: calculate normalized count data, perform log1p transformation, cell filtering, etc.
@@ -14067,12 +14157,15 @@ class RamData:
         """
         Run Processes
         """
-        if len(l_args) > 0: # if the number of operations is non zero, perform operations
+        if (
+            len(l_args) > 0
+        ):  # if the number of operations is non zero, perform operations
             # since a zarr object will be modified by multiple processes, setting 'numcodecs.blosc.use_threads' to False as recommended by the zarr documentation
             zarr_start_multiprocessing_write()
 
             if (
-                self.contains_remote and name_layer not in self.layers_excluding_components
+                self.contains_remote
+                and name_layer not in self.layers_excluding_components
             ):  #  or is_remote_url( path_folder_ramdata_output )
                 # if current RamData contains data hosted remotely and current layer consists of components (which indicates that zarr objects from remote locations will be used), avoid multi-processing due to current lack of support for multi-processing on Zarr HTTPStore. Also, when output folder is a remote location, avoid multiprocessing 'RAMtx_Apply' since s3fs appears to be not fork-safe
                 for args in l_args:
@@ -14087,7 +14180,7 @@ class RamData:
 
             # revert to the original the setting
             zarr_end_multiprocessing_write()
-            
+
             """
             update the metadata
             """
@@ -14122,7 +14215,7 @@ class RamData:
                     name_layer=name_layer_new,
                     dict_metadata_description=dict_metadata_description,
                 )  # add layer to the current ramdata
-        else : # if no operations are performed 
+        else:  # if no operations are performed
             if self.verbose:
                 logger.info(
                     "[RamData.apply] no operation was performed (output already exists)."
@@ -14711,7 +14804,7 @@ class RamData:
                 ax.change_filter(name_col_filter)
             return
 
-        ba_filter_backup = ax.filter # back up the current filter
+        ba_filter_backup = ax.filter  # back up the current filter
         if (
             name_col_batch is not None and name_col_batch in ax_not_for_querying.meta
         ):  # if 'name_col_batch' is a valid column
@@ -15301,7 +15394,7 @@ class RamData:
         int_total_count_target: int = 10000,
         int_num_highly_variable_features: int = 2000,
         max_value: float = 10,
-        name_col_filter_highly_variable : str ="filter_normalized_log1p_highly_variable",
+        name_col_filter_highly_variable: str = "filter_normalized_log1p_highly_variable",
         dict_kw_hv: dict = {
             "float_min_mean": 0.01,
             "float_min_variance": 0.01,
@@ -15614,7 +15707,7 @@ class RamData:
                 )  # set prefix as ''
 
             # identify highly variable genes
-            if name_col_filter_highly_variable is not None :
+            if name_col_filter_highly_variable is not None:
                 self.identify_highly_variable_features(
                     name_layer=name_layer_log_transformed,
                     int_num_highly_variable_features=int_num_highly_variable_features,
@@ -15804,7 +15897,7 @@ class RamData:
                 self.bc.change_filter(name_col_filter_filtered_barcode)
 
             # identify highly variable features (with filtered barcodes)
-            if name_col_filter_highly_variable is not None :
+            if name_col_filter_highly_variable is not None:
                 self.identify_highly_variable_features(
                     name_layer_log_transformed,
                     int_num_highly_variable_features=int_num_highly_variable_features,
@@ -19923,8 +20016,14 @@ class RamData:
         # determine the axis
         flag_axis_is_barcode = self._determine_axis(axis)
         ax = self.bc if flag_axis_is_barcode else self.ft  # retrieve the axis
-        
-        return ax.meta.get_word_count( l_name_col = l_name_col, l_l_query = l_l_query, name_col_group = name_col_group, l_stop_words = l_stop_words, l_delimitors = l_delimitors )
+
+        return ax.meta.get_word_count(
+            l_name_col=l_name_col,
+            l_l_query=l_l_query,
+            name_col_group=name_col_group,
+            l_stop_words=l_stop_words,
+            l_delimitors=l_delimitors,
+        )
 
     def visualize_word_count(
         self,

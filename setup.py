@@ -21,7 +21,7 @@ setup(
     url="https://github.com/ahs2202/scelephant",
     license="GPLv3",
     packages=find_packages(),
-    python_requires='>=3.8, <4',
+    python_requires=">=3.8, <4",
     include_package_data=True,
     install_requires=[
         # essentials
