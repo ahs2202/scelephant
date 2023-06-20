@@ -14622,14 +14622,16 @@ class RamData:
         for id_model in set_id_model:  # for each valid model
             name_model, type_model = id_model.rsplit("|", 1)
 
-            try :
+            try:
                 # load the model
                 model = self.load_model(
                     name_model=name_model,
                     type_model=type_model,
                 )
-            except :
-                logger.error( f"Unable to load the {name_model}|{type_model} model, skipping the model." )
+            except:
+                logger.error(
+                    f"Unable to load the {name_model}|{type_model} model, skipping the model."
+                )
                 continue
             """ prepare """
             if (
@@ -14659,8 +14661,10 @@ class RamData:
                         if model["filter"][index]:
                             ba_subset[index_subset] = True
                 # if no entries are active after the subset, continue skip the current model
-                if ba_subset.count( ) == 0 :
-                    logger.warning( f"no entries are active for {id_model = }, and the model will be skipped." )
+                if ba_subset.count() == 0:
+                    logger.warning(
+                        f"no entries are active for {id_model = }, and the model will be skipped."
+                    )
                     continue
                 # set the filter of the output object
                 ax_subset.filter = ba_subset
@@ -19388,9 +19392,9 @@ class RamData:
         int_num_layers_for_each_dropout=6,  # dropout layer will be added for every this number of layers
         batch_size=400,
         epochs=100,
-        model = None,
+        model=None,
     ):
-        """# 2023-06-20 22:01:54 
+        """# 2023-06-20 22:01:54
         use deep-learning based model, built using Keras modules, to classify (predict labels) or embed (predict embeddings) entries.
 
         name_model : str # the name of the output model containing knn index
@@ -19490,7 +19494,9 @@ class RamData:
         # setting for a neural network
         int_num_components_x = X.shape[1]
 
-        if model is None : # if a compiled tensorflow model has not been given, construct and compile the model using the given settings.
+        if (
+            model is None
+        ):  # if a compiled tensorflow model has not been given, construct and compile the model using the given settings.
             # initialize sequential model
             model = tf.keras.Sequential()
 
@@ -19523,7 +19529,7 @@ class RamData:
             # build the model
             model._name = name_model
             model.build(input_shape=(1, int_num_components_x))
-        model.summary() # print the model summary
+        model.summary()  # print the model summary
 
         # split test/training dataset
         X_train, X_test, y_train, y_test = train_test_split(
