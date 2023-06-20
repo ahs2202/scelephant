@@ -14475,11 +14475,15 @@ class RamData:
         for id_model in set_id_model:  # for each valid model
             name_model, type_model = id_model.rsplit("|", 1)
 
-            # load the model
-            model = self.load_model(
-                name_model=name_model,
-                type_model=type_model,
-            )
+            try :
+                # load the model
+                model = self.load_model(
+                    name_model=name_model,
+                    type_model=type_model,
+                )
+            except :
+                logger.error( f"Unable to load the {name_model}|{type_model} model, skipping the model." )
+                continue
             """ prepare """
             if (
                 "identifier" in model
@@ -14507,6 +14511,10 @@ class RamData:
                     ):  # retrieve indices of input and output ramdata objects
                         if model["filter"][index]:
                             ba_subset[index_subset] = True
+                # if no entries are active after the subset, continue skip the current model
+                if ba_subset.count( ) == 0 :
+                    logger.warning( f"no entries are active for {id_model = }, and the model will be skipped." )
+                    continue
                 # set the filter of the output object
                 ax_subset.filter = ba_subset
 
@@ -19099,7 +19107,7 @@ class RamData:
                                     mask_not_outlier
                                 ]
                                 if len(weights) == int_num_neighbors:
-                                    print("outliers not filtered out")
+                                    logger.warning("outliers not filtered out")
                                     plt.plot(*y_knnindex_of_an_entry.T, ".")
                                     plt.show()
                             res = (y_knnindex_of_an_entry.T * weights).sum(
@@ -19233,8 +19241,9 @@ class RamData:
         int_num_layers_for_each_dropout=6,  # dropout layer will be added for every this number of layers
         batch_size=400,
         epochs=100,
+        model = None,
     ):
-        """# 2023-02-17 18:49:21
+        """# 2023-06-20 22:01:54 
         use deep-learning based model, built using Keras modules, to classify (predict labels) or embed (predict embeddings) entries.
 
         name_model : str # the name of the output model containing knn index
@@ -19244,7 +19253,8 @@ class RamData:
         axis : Union[ int, str ] = 'barcodes' # axis from which to retrieve X
         int_num_components_x : Union[ None, int ] = None # by default, use all components available in X
         n_neighbors : int = 10 # the number of neighbors to use
-        dict_kw_pynndescent : dict = { 'low_memory' : True, 'n_jobs' : None, 'compressed' : False } # the additional keyworded arguments for pynndescent index
+        dict_kw_pynndescent : dict = { 'low_memory' : True, 'n_jobs' : None, 'compressed' : False } # the additional keyworded arguments for pynndescent index,
+        model = None, # a complied tensorflow model. If a deep learning model of different neural network architecture is desired, the model can be complied separately and given through this argument.
         """
         import tensorflow as tf
         from sklearn.model_selection import train_test_split
@@ -19333,39 +19343,40 @@ class RamData:
         # setting for a neural network
         int_num_components_x = X.shape[1]
 
-        # initialize sequential model
-        model = tf.keras.Sequential()
+        if model is None : # if a compiled tensorflow model has not been given, construct and compile the model using the given settings.
+            # initialize sequential model
+            model = tf.keras.Sequential()
 
-        # add hiddle dense layers according to the setting
-        for index_layer, int_num_nodes in enumerate(l_int_num_nodes):
-            model.add(layers.Dense(int_num_nodes))
-            model.add(layers.Activation("relu"))
-            if float_rate_dropout > 0:
-                if index_layer % int_num_layers_for_each_dropout == 0:
-                    model.add(layers.Dropout(float_rate_dropout))
+            # add hiddle dense layers according to the setting
+            for index_layer, int_num_nodes in enumerate(l_int_num_nodes):
+                model.add(layers.Dense(int_num_nodes))
+                model.add(layers.Activation("relu"))
+                if float_rate_dropout > 0:
+                    if index_layer % int_num_layers_for_each_dropout == 0:
+                        model.add(layers.Dropout(float_rate_dropout))
 
-        # add final output layer according to each operation
-        if flag_embedder:
-            # %% EMBEDDER %%
-            model.add(layers.Dense(y.shape[1]))
-            model.add(layers.Activation("sigmoid"))
-            model.compile(
-                loss="mean_absolute_error", optimizer="adam", metrics=["accuracy"]
-            )
-        else:
-            # %% CLASSIFIER %%
-            model.add(layers.Dense(len(y[0])))
-            model.add(layers.Activation("softmax"))
-            model.compile(
-                loss="categorical_crossentropy",
-                optimizer="adam",
-                metrics=[tf.keras.metrics.AUC(), "accuracy"],
-            )
+            # add final output layer according to each operation
+            if flag_embedder:
+                # %% EMBEDDER %%
+                model.add(layers.Dense(y.shape[1]))
+                model.add(layers.Activation("sigmoid"))
+                model.compile(
+                    loss="mean_absolute_error", optimizer="adam", metrics=["accuracy"]
+                )
+            else:
+                # %% CLASSIFIER %%
+                model.add(layers.Dense(len(y[0])))
+                model.add(layers.Activation("softmax"))
+                model.compile(
+                    loss="categorical_crossentropy",
+                    optimizer="adam",
+                    metrics=[tf.keras.metrics.AUC(), "accuracy"],
+                )
 
-        # build and print model
-        model._name = name_model
-        model.build(input_shape=(1, int_num_components_x))
-        model.summary()
+            # build the model
+            model._name = name_model
+            model.build(input_shape=(1, int_num_components_x))
+        model.summary() # print the model summary
 
         # split test/training dataset
         X_train, X_test, y_train, y_test = train_test_split(
