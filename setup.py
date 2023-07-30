@@ -12,7 +12,7 @@ with open(os.path.join(HERE, "README.md")) as fid:
 
 setup(
     name="scelephant",
-    version="0.1.0",
+    version="0.1.2",
     author="Hyunsu An",
     author_email="ahs2202@gm.gist.ac.kr",
     description="SC-elephant (Single-Cell Extremely Large Data Analysis Platform)",
@@ -25,8 +25,9 @@ setup(
     include_package_data=True,
     install_requires=[
         # essentials
-        "zarr>=2.13.3",
-        "fsspec>=2022.11.0",
+        "zarr>=2.16.0",
+        "fsspec>=2023.6.0",
+        "s3fs>=2023.6.0",
         "numcodecs>=0.9.1",
         "bitarray>=2.4.1",
         "scanpy>=1.9.1",

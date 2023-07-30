@@ -1,5 +1,5 @@
 # SC-Elephant (Single-Cell Extremely Large Data Analysis Platform)
-Aa python package for the analysis of extremely large single-cell data in a highly memory-efficient manner, with support for simultaneous editing (collaborative analysis). 
+Aa python package for the analysis of extremely large single-cell data in a highly memory-efficient manner, with the support for simultaneous editing (collaborative analysis). 
 
 The main intentions of the development of this package are the followings:
 

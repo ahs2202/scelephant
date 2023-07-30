@@ -1,0 +1,19 @@
+{
+    "dict_col_metadata": {
+        "dict_metadata_description": null,
+        "flag_categorical": true,
+        "flag_filtered": true,
+        "l_value_unique": [
+            "0",
+            "6",
+            "8",
+            "3",
+            "5",
+            "9",
+            "4",
+            "1",
+            "2",
+            "7"
+        ]
+    }
+}
