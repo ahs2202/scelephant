@@ -1,9 +1,0 @@
-{
-    "dict_metadata": {
-        "set_modes": [
-            "sparse_for_querying_features",
-            "sparse_for_querying_barcodes"
-        ],
-        "version": "0.1.0"
-    }
-}
