@@ -150,27 +150,30 @@ def CB_Match_Batch(
     return df_id_cell_matched, df_sample_matched
 
 
-def SC_Add_metadata( adata, df_metadata, suffix : str = '', inplace : bool = True ) :
-    """ # 2023-09-08 14:20:58 
+def SC_Add_metadata(adata, df_metadata, suffix: str = "", inplace: bool = True):
+    """# 2023-09-08 14:20:58
     Add metadata to the given AnnData
-    
+
     adata
     df_metadata
     suffix : str = '', the suffix to the columns that will be added to AnnData.obs
-    inplace : bool = True # 
+    inplace : bool = True #
     """
-    df_matched, _ = CB_Match_Batch( adata.obs.index.values, df_metadata.index.values )
+    df_matched, _ = CB_Match_Batch(adata.obs.index.values, df_metadata.index.values)
 
-    df_metadata = df_metadata.copy( ) # copy the metadata dataframe
-    df_matched.dropna( subset = [ 'id_cell_2', 'id_cell_1' ], inplace = True )
-    df_metadata[ 'id_cell_1' ] = df_matched.set_index( 'id_cell_2' )[ 'id_cell_1' ] # map id_cell
-    df_metadata.dropna( subset = ['id_cell_1'], inplace = True ) # drop invalid cells
-    df_metadata.set_index( 'id_cell_1', inplace = True )
-    if not inplace : 
-        adata = adata.copy( ) # copy the anndata
-    adata.obs = adata.obs.join( df_metadata, rsuffix = suffix ) # add the metadata
-    
-    return adata # return the anndata
+    df_metadata = df_metadata.copy()  # copy the metadata dataframe
+    df_matched.dropna(subset=["id_cell_2", "id_cell_1"], inplace=True)
+    df_metadata["id_cell_1"] = df_matched.set_index("id_cell_2")[
+        "id_cell_1"
+    ]  # map id_cell
+    df_metadata.dropna(subset=["id_cell_1"], inplace=True)  # drop invalid cells
+    df_metadata.set_index("id_cell_1", inplace=True)
+    if not inplace:
+        adata = adata.copy()  # copy the anndata
+    adata.obs = adata.obs.join(df_metadata, rsuffix=suffix)  # add the metadata
+
+    return adata  # return the anndata
+
 
 def SCANPY_Detect_cell_barcode_from_cell_id(adata):
     """# 2022-03-24 20:35:22
@@ -465,23 +468,32 @@ def __function_for_adjusting_thresholds_for_filtering_empty_droplets__(
             break
     return min_counts, min_features, min_cells
 
-def _get_matrix_market_data_type_from_line( line ) :
-    """ # 2023-09-10 16:06:24 
+
+def _get_matrix_market_data_type_from_line(line):
+    """# 2023-09-10 16:06:24
     analyze the line to get matrix market data type in string format ('real' or 'integer')
     """
-    try :
-        return line.split( '%%MatrixMarket' )[ 1 ].strip( ).split( )[ 2 ]
-    except :
-        return # if an error occurs, return None
-    
-def _MTX_Detect_data_type( path_file_mtx ) :
-    """ # 2023-09-10 16:01:34 
+    try:
+        return line.split("%%MatrixMarket")[1].strip().split()[2]
+    except:
+        return  # if an error occurs, return None
+
+
+def _MTX_Detect_data_type(path_file_mtx):
+    """# 2023-09-10 16:01:34
     detect data type of the input matrix file
     """
-    with (gzip.open( path_file_mtx, 'rt' ) if '.gz' == path_file_mtx[ -3 : ] else open( path_file_mtx, 'r' ) ) as file :
-        str_data_type = _get_matrix_market_data_type_from_line( file.readline( ) ) # matrix market header line is present in the first line
-    return str_data_type # return the datatype
-    
+    with (
+        gzip.open(path_file_mtx, "rt")
+        if ".gz" == path_file_mtx[-3:]
+        else open(path_file_mtx, "r")
+    ) as file:
+        str_data_type = _get_matrix_market_data_type_from_line(
+            file.readline()
+        )  # matrix market header line is present in the first line
+    return str_data_type  # return the datatype
+
+
 def MTX_10X_Split(
     path_folder_mtx_10x_output,
     int_max_num_entries_for_chunk=10000000,
@@ -745,17 +757,22 @@ def MTX_10X_Feature_add_prefix_or_suffix(
 
 
 def __MTX_10X_Combine__renumber_barcode_or_feature_index_mtx_10x__(
-    path_file_input : str, path_folder_mtx_10x_output : str, flag_renumber_feature_index : bool, str_data_type : str
+    path_file_input: str,
+    path_folder_mtx_10x_output: str,
+    flag_renumber_feature_index: bool,
+    str_data_type: str,
 ):
     """
     internal function for MTX_10X_Combine
-    # 2023-09-10 17:15:05 
-    
+    # 2023-09-10 17:15:05
+
     flag_renumber_feature_index : bool : if True, assumes barcodes are not shared between matrices and renumber features only. If False, assumes features are not shared between matrices and renumber barcodes only.
     str_data_type : str # matrix market datatype in string format
     """
     global dict_id_entry_to_index_entry
-    flag_matrix_contain_float_values = str_data_type == 'real' # retrieve a flag indicating the matrix is containing float values
+    flag_matrix_contain_float_values = (
+        str_data_type == "real"
+    )  # retrieve a flag indicating the matrix is containing float values
     for (
         path_folder_mtx_10x,
         int_total_n_entries_of_previously_written_matrices,
@@ -791,11 +808,17 @@ def __MTX_10X_Combine__renumber_barcode_or_feature_index_mtx_10x__(
                     if len(line) == 0:
                         break
                     """ parse a record """
-                    l_str = line.strip().split() # parse a record of a matrix-market format file
-                    if flag_matrix_contain_float_values : # parse float data type
-                        id_row, id_column, value = int( l_str[ 0 ] ), int( l_str[ 1 ] ), float( l_str[ 2 ] )
-                    else : # parse integer data type
-                        id_row, id_column, value = tuple( int(float(e)) for e in l_str )  
+                    l_str = (
+                        line.strip().split()
+                    )  # parse a record of a matrix-market format file
+                    if flag_matrix_contain_float_values:  # parse float data type
+                        id_row, id_column, value = (
+                            int(l_str[0]),
+                            int(l_str[1]),
+                            float(l_str[2]),
+                        )
+                    else:  # parse integer data type
+                        id_row, id_column, value = tuple(int(float(e)) for e in l_str)
 
                     newfile.write(
                         (
@@ -842,7 +865,7 @@ def MTX_10X_Combine(
     verbose=False,
 ):
     """
-    # 2023-09-10 17:14:57 
+    # 2023-09-10 17:14:57
     Combine 10X count matrix files from the given list of folders and write combined output files to the given output folder 'path_folder_mtx_10x_output'
     If there are no shared cells between matrix files, a low-memory mode will be used. The output files will be simply combined since no count summing operation is needed. Only feature matrix will be loaded and updated in the memory.
     'id_feature' should be unique across all features. if id_feature is not unique, features with duplicated id_features will lead to combining of the features into a single feature (with combined counts/values).
@@ -855,8 +878,15 @@ def MTX_10X_Combine(
 
     # create an output folder
     filesystem_operations("mkdir", path_folder_mtx_10x_output, exist_ok=True)
-    
-    str_data_type = 'real' if sum( _MTX_Detect_data_type( f"{path_folder}matrix.mtx.gz" ) == 'real' for path_folder in l_path_folder_mtx_10x_input ) else 'integer' # retrieve datatype of the operation. if at least one matrix contains real data type, treat all matrices as matrix containing real data
+
+    str_data_type = (
+        "real"
+        if sum(
+            _MTX_Detect_data_type(f"{path_folder}matrix.mtx.gz") == "real"
+            for path_folder in l_path_folder_mtx_10x_input
+        )
+        else "integer"
+    )  # retrieve datatype of the operation. if at least one matrix contains real data type, treat all matrices as matrix containing real data
 
     if (
         not flag_low_memory_mode_because_there_is_no_shared_feature_between_mtxs
@@ -1056,7 +1086,11 @@ def MTX_10X_Combine(
             df_input,
             __MTX_10X_Combine__renumber_barcode_or_feature_index_mtx_10x__,
             int_num_threads,
-            global_arguments=[path_folder_mtx_10x_output, flag_renumber_feature_index, str_data_type],
+            global_arguments=[
+                path_folder_mtx_10x_output,
+                flag_renumber_feature_index,
+                str_data_type,
+            ],
         )
         #         filesystem_operations( 'rm', f'{path_folder_mtx_10x_output}dict_id_entry_to_index_entry.pickle' ) # remove pickle file
 
@@ -1170,12 +1204,12 @@ def __Combine_Dictionaries__(path_folder_mtx_10x_input, name_dict):
 
 
 def __MTX_10X_Summarize_Counts__summarize_counts_for_each_mtx_10x__(
-    path_file_input : str, path_folder_mtx_10x_input : str, str_data_type : str
+    path_file_input: str, path_folder_mtx_10x_input: str, str_data_type: str
 ):
     """
     internal function for MTX_10X_Summarize_Count
-    # 2023-09-10 16:37:13 
-    
+    # 2023-09-10 16:37:13
+
     str_data_type : str # matrix market datatype in string format
     """
     """ survey the metrics """
@@ -1186,8 +1220,10 @@ def __MTX_10X_Summarize_Counts__summarize_counts_for_each_mtx_10x__(
     dict_id_row_to_count = dict()
     dict_id_row_to_n_cells = dict()
     dict_id_row_to_log_transformed_count = dict()
-    
-    flag_matrix_contain_float_values = str_data_type == 'real' # retrieve a flag indicating the matrix is containing float values
+
+    flag_matrix_contain_float_values = (
+        str_data_type == "real"
+    )  # retrieve a flag indicating the matrix is containing float values
 
     global dict_name_set_feature_to_set_id_row  # use global read-only object
     dict_name_set_feature_to_dict_id_column_to_count = dict(
@@ -1217,12 +1253,18 @@ def __MTX_10X_Summarize_Counts__summarize_counts_for_each_mtx_10x__(
                 if len(line) == 0:
                     break
                 """ parse a record, and update metrics """
-                l_str = line.strip().split() # parse a record of a matrix-market format file
-                if flag_matrix_contain_float_values : # parse float data type
-                    id_row, id_column, value = int( l_str[ 0 ] ), int( l_str[ 1 ] ), float( l_str[ 2 ] )
-                else : # parse integer data type
-                    id_row, id_column, value = tuple( int(float(e)) for e in l_str )  
-                
+                l_str = (
+                    line.strip().split()
+                )  # parse a record of a matrix-market format file
+                if flag_matrix_contain_float_values:  # parse float data type
+                    id_row, id_column, value = (
+                        int(l_str[0]),
+                        int(l_str[1]),
+                        float(l_str[2]),
+                    )
+                else:  # parse integer data type
+                    id_row, id_column, value = tuple(int(float(e)) for e in l_str)
+
                 """ 1-based > 0-based coordinates """
                 id_row -= 1
                 id_column -= 1
@@ -1262,9 +1304,7 @@ def __MTX_10X_Summarize_Counts__summarize_counts_for_each_mtx_10x__(
                 """ update log transformed counts, calculated by 'X_new = log_10(X_old + 1)', for each feature """
                 if id_row not in dict_id_row_to_log_transformed_count:
                     dict_id_row_to_log_transformed_count[id_row] = 0
-                dict_id_row_to_log_transformed_count[id_row] += math.log10(
-                    value + 1
-                )
+                dict_id_row_to_log_transformed_count[id_row] += math.log10(value + 1)
 
                 """ read the next line """
                 line = (
@@ -1382,7 +1422,9 @@ def MTX_10X_Summarize_Counts(
             flag_split_mtx=flag_split_mtx,
             flag_split_mtx_again=flag_split_mtx_again,
         )
-        str_data_type = _MTX_Detect_data_type( path_file_input_mtx ) # retrieve the data type of the matrix in string format
+        str_data_type = _MTX_Detect_data_type(
+            path_file_input_mtx
+        )  # retrieve the data type of the matrix in string format
 
         """ prepare 'dict_name_set_feature_to_set_id_row' for summarizing total counts for given sets of features """
         global dict_name_set_feature_to_set_id_row
@@ -1981,11 +2023,11 @@ dict_id_column_previous_to_id_column_current, dict_id_row_previous_to_id_row_cur
 
 
 def __MTX_10X_Filter__filter_mtx_10x__(
-    path_file_input : str, 
-    path_folder_mtx_10x_output : str,
-    str_data_type : str,
+    path_file_input: str,
+    path_folder_mtx_10x_output: str,
+    str_data_type: str,
 ):
-    """# 2023-09-10 16:37:33 
+    """# 2023-09-10 16:37:33
     __MTX_10X_Filter__filter_mtx_10x__
 
     str_data_type : str # matrix market datatype in string format
@@ -1996,7 +2038,9 @@ def __MTX_10X_Filter__filter_mtx_10x__(
     int_n_entries = (
         0  # total number of entries written by the current process after filtering
     )
-    flag_matrix_contain_float_values = str_data_type == 'real' # retrieve a flag indicating the matrix is containing float values
+    flag_matrix_contain_float_values = (
+        str_data_type == "real"
+    )  # retrieve a flag indicating the matrix is containing float values
     #     dict_id_column_previous_to_id_column_current = bk.PICKLE_Read( f'{path_folder_mtx_10x_output}dict_id_column_previous_to_id_column_current.pickle' ) # retrieve id_feature to index_feature mapping
     #     dict_id_row_previous_to_id_row_current = bk.PICKLE_Read( f'{path_folder_mtx_10x_output}dict_id_row_previous_to_id_row_current.pickle' ) # retrieve id_feature to index_feature mapping
     """ write a filtered matrix.mtx.gz for each split mtx file """
@@ -2018,19 +2062,27 @@ def __MTX_10X_Filter__filter_mtx_10x__(
                             break
                         line = file.readline().decode()  # read the next line
                     # process the description line
-                    int_num_rows, int_num_columns, int_num_entries = tuple( int(e) for e in line.strip().split() )  # retrieve the number of rows, number of columns and number of entries
+                    int_num_rows, int_num_columns, int_num_entries = tuple(
+                        int(e) for e in line.strip().split()
+                    )  # retrieve the number of rows, number of columns and number of entries
                     line = file.readline().decode()  # read the next line
                 """ process entries"""
                 while True:
                     if len(line) == 0:
                         break
                     """ parse a record """
-                    l_str = line.strip().split() # parse a record of a matrix-market format file
-                    if flag_matrix_contain_float_values : # parse float data type
-                        id_row, id_column, value = int( l_str[ 0 ] ), int( l_str[ 1 ] ), float( l_str[ 2 ] )
-                    else : # parse integer data type
-                        id_row, id_column, value = tuple( int(float(e)) for e in l_str )  
-                        
+                    l_str = (
+                        line.strip().split()
+                    )  # parse a record of a matrix-market format file
+                    if flag_matrix_contain_float_values:  # parse float data type
+                        id_row, id_column, value = (
+                            int(l_str[0]),
+                            int(l_str[1]),
+                            float(l_str[2]),
+                        )
+                    else:  # parse integer data type
+                        id_row, id_column, value = tuple(int(float(e)) for e in l_str)
+
                     """ 1-based > 0-based coordinates """
                     id_row -= 1
                     id_column -= 1
@@ -2039,7 +2091,29 @@ def __MTX_10X_Filter__filter_mtx_10x__(
                         id_row in dict_id_row_previous_to_id_row_current
                         and id_column in dict_id_column_previous_to_id_column_current
                     ):
-                        newfile.write( ( " ".join( tuple( map( str, [ dict_id_row_previous_to_id_row_current[ id_row ] + 1, dict_id_column_previous_to_id_column_current[ id_column ] + 1, value, ], ) ) ) + "\n" ).encode() )  # map id_row and id_column of the previous matrix to those of the filtered matrix (new matrix) # 0-based > 1-based coordinates
+                        newfile.write(
+                            (
+                                " ".join(
+                                    tuple(
+                                        map(
+                                            str,
+                                            [
+                                                dict_id_row_previous_to_id_row_current[
+                                                    id_row
+                                                ]
+                                                + 1,
+                                                dict_id_column_previous_to_id_column_current[
+                                                    id_column
+                                                ]
+                                                + 1,
+                                                value,
+                                            ],
+                                        )
+                                    )
+                                )
+                                + "\n"
+                            ).encode()
+                        )  # map id_row and id_column of the previous matrix to those of the filtered matrix (new matrix) # 0-based > 1-based coordinates
                         int_n_entries += 1  # update the total number of entries written by the current process
                     line = file.readline().decode()  # read the next line
     return int_n_entries  # returns the total number of entries written by the current process
@@ -2097,8 +2171,10 @@ def MTX_10X_Filter(
     path_file_input_bc = f"{path_folder_mtx_10x_input}barcodes.tsv.gz"
     path_file_input_feature = f"{path_folder_mtx_10x_input}features.tsv.gz"
     path_file_input_mtx = f"{path_folder_mtx_10x_input}matrix.mtx.gz"
-    
-    str_data_type = _MTX_Detect_data_type( path_file_input_mtx ) # retrieve the data type of the matrix in string format
+
+    str_data_type = _MTX_Detect_data_type(
+        path_file_input_mtx
+    )  # retrieve the data type of the matrix in string format
 
     # check whether all required files are present
     if sum(
@@ -2275,7 +2351,7 @@ def MTX_10X_Filter(
             "index_mtx_10x": np.arange(len(l_path_file_mtx_10x)),
         }
     )
-    
+
     l_int_n_entries = bk.Multiprocessing(
         df_input,
         __MTX_10X_Filter__filter_mtx_10x__,
