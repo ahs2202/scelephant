@@ -1,0 +1,9 @@
+{
+    "dict_col_metadata": {
+        "dict_metadata_description": {
+            "intended_function": "filter"
+        },
+        "flag_categorical": false,
+        "flag_filtered": false
+    }
+}

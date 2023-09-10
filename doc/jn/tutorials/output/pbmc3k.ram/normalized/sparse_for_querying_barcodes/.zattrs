@@ -1,0 +1,11 @@
+{
+    "dict_metadata": {
+        "flag_ramtx_sorted_by_id_feature": false,
+        "int_num_barcodes": 2700,
+        "int_num_features": 32738,
+        "int_num_records": 2286884,
+        "mode": "sparse_for_querying_barcodes",
+        "str_completed_time": "2023/08/06 11:56",
+        "version": "0.1.2"
+    }
+}

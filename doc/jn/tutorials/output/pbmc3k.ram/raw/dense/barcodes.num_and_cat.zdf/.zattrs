@@ -1,0 +1,12 @@
+{
+    "dict_metadata": {
+        "columns": {},
+        "flag_enforce_name_col_with_only_valid_characters": false,
+        "flag_store_string_as_categorical": true,
+        "int_num_bytes_in_a_chunk": 320000,
+        "int_num_rows": 2700,
+        "is_combined": false,
+        "is_interleaved": false,
+        "version": "0.1.2"
+    }
+}

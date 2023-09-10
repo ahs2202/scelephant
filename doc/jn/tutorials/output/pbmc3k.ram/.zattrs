@@ -1,0 +1,22 @@
+{
+    "dict_metadata": {
+        "identifier": "3b2cf4ff8b284be4b05fc85f29b621cc",
+        "int_num_barcodes": 2700,
+        "int_num_features": 32738,
+        "layers": {
+            "normalized": {},
+            "normalized_log1p": {},
+            "normalized_log1p_capped": {},
+            "raw": {}
+        },
+        "models": {
+            "ipca|ipca": {
+                "file_size_in_bytes": 570353,
+                "identifier_of_the_ramdata_of_origin": "3b2cf4ff8b284be4b05fc85f29b621cc"
+            }
+        },
+        "path_folder_mtx_10x_input": "data/filtered_gene_bc_matrices/hg19/",
+        "str_completed_time": "2023/08/06 11:55",
+        "version": "0.1.2"
+    }
+}
