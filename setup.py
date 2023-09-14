@@ -39,6 +39,7 @@ setup(
         "hdbscan>=0.8.28",
         "leidenalg>=0.8.10",
         "igraph>=0.9.11",
+        "h5py>=3.8.0",
         # "rapidfuzz>=2.13.7", # for autocompletion feature
         #         'pyopa>=0.8.2',
         #         'numpy>=1.22.4',
