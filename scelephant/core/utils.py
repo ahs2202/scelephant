@@ -6590,70 +6590,88 @@ def get_path_compatible_str(
 
     return str_input
 
-def MTX_Convert_10x_MEX_to_10x_HDF5_Format( path_folder_matrix_input_mex_format : str, path_file_matrix_output_hdf5_format : str, name_genome : str = 'unknown' ) :
-    """ # 2023-09-14 23:00:26 
+
+def MTX_Convert_10x_MEX_to_10x_HDF5_Format(
+    path_folder_matrix_input_mex_format: str,
+    path_file_matrix_output_hdf5_format: str,
+    name_genome: str = "unknown",
+):
+    """# 2023-09-14 23:00:26
     path_folder_matrix_input_mex_format : str # the path of the input 10x MEX matrix folder
     path_file_matrix_output_hdf5_format : str # the path of the output 10x HDF5 matrix file
-    name_genome : str = 'unknown' # the name of the genome 
+    name_genome : str = 'unknown' # the name of the genome
     """
-    ''' import libaries '''
+    """ import libaries """
     import h5py
 
-    ''' read 10x MEX format '''
+    """ read 10x MEX format """
     # read mtx file as a tabular format
-    df_mtx = pd.read_csv( f"{path_folder_matrix_input_mex_format}matrix.mtx.gz", sep=" ", comment="%")
+    df_mtx = pd.read_csv(
+        f"{path_folder_matrix_input_mex_format}matrix.mtx.gz", sep=" ", comment="%"
+    )
     df_mtx.columns = ["id_row", "id_column", "read_count"]
-    df_mtx.sort_values( 'id_column', inplace = True ) # sort using id_cell
+    df_mtx.sort_values("id_column", inplace=True)  # sort using id_cell
     # read barcodes
-    arr_bc = pd.read_csv( f"{path_folder_matrix_input_mex_format}barcodes.tsv.gz", sep = '\t', header = None ).values.ravel( )
+    arr_bc = pd.read_csv(
+        f"{path_folder_matrix_input_mex_format}barcodes.tsv.gz", sep="\t", header=None
+    ).values.ravel()
     # read feature tables
-    df_feature = pd.read_csv(f"{path_folder_matrix_input_mex_format}features.tsv.gz", sep="\t", header=None)
+    df_feature = pd.read_csv(
+        f"{path_folder_matrix_input_mex_format}features.tsv.gz", sep="\t", header=None
+    )
     df_feature.columns = ["id_feature", "feature", "feature_type"]
 
+    """ write hdf5 file """
+    newfile = h5py.File(path_file_matrix_output_hdf5_format, "w")  # open new HDF5 file
 
-    ''' write hdf5 file '''
-    newfile = h5py.File( path_file_matrix_output_hdf5_format, 'w' ) # open new HDF5 file
-
-    def _write_string_array( handle, name_array : str, arr_str : List[ str ] ) :
-        """ # 2023-09-14 21:41:14 
+    def _write_string_array(handle, name_array: str, arr_str: List[str]):
+        """# 2023-09-14 21:41:14
         write a string array to a HDF5 object
         """
-        handle.create_dataset( name_array, ( len( arr_str ), ), dtype = 'S' + str( np.max( list( len( e ) for e in arr_str ) ) ), data = list( e.encode( 'ascii', 'ignore' ) for e in arr_str ) ) # writing string dtype array 
+        handle.create_dataset(
+            name_array,
+            (len(arr_str),),
+            dtype="S" + str(np.max(list(len(e) for e in arr_str))),
+            data=list(e.encode("ascii", "ignore") for e in arr_str),
+        )  # writing string dtype array
 
     # create matrix group
-    mtx = newfile.create_group( 'matrix' ) 
+    mtx = newfile.create_group("matrix")
 
     # write barcodes
-    _write_string_array( mtx, 'barcodes', arr_bc )
+    _write_string_array(mtx, "barcodes", arr_bc)
 
     # # write id/names
 
     # write data
     arr = df_mtx.read_count.values
-    flag_dtype_is_integer = np.issubdtype(arr.dtype, np.integer) # check integer dtype
-    mtx.create_dataset( 'data', ( len( arr ), ), 'i8' if flag_dtype_is_integer else 'f', arr ) 
+    flag_dtype_is_integer = np.issubdtype(arr.dtype, np.integer)  # check integer dtype
+    mtx.create_dataset("data", (len(arr),), "i8" if flag_dtype_is_integer else "f", arr)
 
     # write indices
-    arr = df_mtx.id_row.values - 1 # 1 -> 0-based coordinates
-    mtx.create_dataset( 'indices', ( len( arr ), ), 'i8', arr ) 
+    arr = df_mtx.id_row.values - 1  # 1 -> 0-based coordinates
+    mtx.create_dataset("indices", (len(arr),), "i8", arr)
 
     # write shape
-    mtx.create_dataset( 'shape', ( 2, ), 'i8', [ len( df_feature ), len( arr_bc ) ] ) 
+    mtx.create_dataset("shape", (2,), "i8", [len(df_feature), len(arr_bc)])
 
     # write indptr
     arr = df_mtx.id_column.values
-    arr = [ 0 ] + list( np.where( np.diff( arr ) )[ 0 ] + 1 ) + [ len( arr ) ] # retrieve 'the start of each column' of the matrix (data / indices)
-    mtx.create_dataset( 'indptr', ( len( arr ), ), 'i8', arr ) 
+    arr = (
+        [0] + list(np.where(np.diff(arr))[0] + 1) + [len(arr)]
+    )  # retrieve 'the start of each column' of the matrix (data / indices)
+    mtx.create_dataset("indptr", (len(arr),), "i8", arr)
 
     # create matrix group
-    ft = mtx.create_group( 'features' ) 
+    ft = mtx.create_group("features")
 
     # write features/id, features/name, features/feature_type
-    _write_string_array( ft, 'id', df_feature.id_feature.values )
-    _write_string_array( ft, 'name', df_feature.feature.values )
-    _write_string_array( ft, 'feature_type', df_feature.feature_type.values )
-    _write_string_array( ft, 'genome', [ name_genome ] * len( df_feature ) ) # add genome data type (required for scanpy)
-
+    _write_string_array(ft, "id", df_feature.id_feature.values)
+    _write_string_array(ft, "name", df_feature.feature.values)
+    _write_string_array(ft, "feature_type", df_feature.feature_type.values)
+    _write_string_array(
+        ft, "genome", [name_genome] * len(df_feature)
+    )  # add genome data type (required for scanpy)
 
     # close the file
-    newfile.close( )
+    newfile.close()
