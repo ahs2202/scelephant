@@ -6596,7 +6596,7 @@ def MTX_Convert_10x_MEX_to_10x_HDF5_Format(
     path_file_matrix_output_hdf5_format: str,
     name_genome: str = "unknown",
 ):
-    """# 2023-09-14 23:00:26
+    """# 2023-09-15 01:36:49 
     path_folder_matrix_input_mex_format : str # the path of the input 10x MEX matrix folder
     path_file_matrix_output_hdf5_format : str # the path of the output 10x HDF5 matrix file
     name_genome : str = 'unknown' # the name of the genome
@@ -6657,10 +6657,23 @@ def MTX_Convert_10x_MEX_to_10x_HDF5_Format(
 
     # write indptr
     arr = df_mtx.id_column.values
-    arr = (
-        [0] + list(np.where(np.diff(arr))[0] + 1) + [len(arr)]
-    )  # retrieve 'the start of each column' of the matrix (data / indices)
-    mtx.create_dataset("indptr", (len(arr),), "i8", arr)
+    arr = arr - 1 # 1>0-based coordinate
+    int_num_bc = len( arr_bc ) # retrieve the number of barcodes
+    int_num_records = len( arr ) # retrieve the number of records
+    arr_indptr = np.zeros( int_num_bc + 1, dtype = 'i8' ) # initialize 'arr_indptr'
+    arr_indptr[ -1 ] = int_num_records # last entry should be the number of the records
+    id_col_current = arr[ 0 ] # initialize 'id_col_current'
+    for i, id_col in enumerate( arr ) :
+        if id_col_current != id_col :
+            if id_col_current + 1 < id_col : # if there are some skipped columns ('barcodes' with zero number of records)
+                for id_col_with_no_records in range( id_col_current + 1, id_col ) :
+                    arr_indptr[ id_col_with_no_records ] = i # add 'indptr' for the 'barcodes' with zero number of records
+            id_col_current = id_col # update 'id_col_current'
+            arr_indptr[ id_col ] = i
+    if id_col_current + 1 < int_num_bc :
+        for id_col_with_no_records in range( id_col_current + 1, int_num_bc ) :
+            arr_indptr[ id_col_with_no_records ] = int_num_records # add 'indptr' for the 'barcodes' with zero number of records
+    mtx.create_dataset("indptr", (len(arr_indptr),), "i8", arr_indptr)
 
     # create matrix group
     ft = mtx.create_group("features")
