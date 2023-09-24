@@ -6694,3 +6694,106 @@ def MTX_Convert_10x_MEX_to_10x_HDF5_Format(
 
     # close the file
     newfile.close()
+
+"""
+classes and functions for file system operations usimg managers
+"""
+from multiprocessing.managers import BaseManager
+import zarr
+
+class ManagerFileSystem(BaseManager):
+    pass
+
+
+class HostedFileSystemOperator:
+    """# 2023-01-08 23:00:20
+    A class intended for performing asynchronous file system operations in a separate, managed process. By using multiple managers, concurrent, asynchronous operations can be performed in multiple processes. These managers can be used multiple times.
+    
+    dict_kwargs_s3 : dict = dict( ) # s3 credentials to use
+    """
+
+    # constructor
+    def __init__(self, dict_kwargs_s3 : dict = dict( )):
+        import s3fs
+        import zarr
+        # save the settings
+        self._dict_kwargs_s3 = dict_kwargs_s3
+        
+        # open async/sync version of s3fs
+        self._as3 = s3fs.S3FileSystem( asynchronous=True, **dict_kwargs_s3 )
+        self._s3 = s3fs.S3FileSystem( **dict_kwargs_s3 )
+        print( self._s3 )
+
+    def exists(self, path_src : str, **kwargs):
+        """# 2023-01-08 23:05:40
+        return the list of keys
+        """
+        return self._s3.exists(path_src, **kwargs)
+
+    def rm(self, path_src : str, flag_recursive: bool = True, **kwargs):
+        """# 2023-01-08 23:05:40
+        return the list of keys
+        """
+        return self._s3.rm(path_src, recursive=flag_recursive, **kwargs)  # delete files
+    
+    def glob(self, path_src : str, flag_recursive: bool = True, **kwargs):
+        """# 2023-01-08 23:05:40
+        return the list of keys
+        """
+        return list(
+            "s3://" + e for e in self._s3.glob(path_src, **kwargs)
+        )  # 's3://' prefix should be added
+
+    def mkdir(self, path_src : str, **kwargs):
+        """# 2023-01-08 23:05:40
+        return the list of keys
+        """
+        # use default 'exist_ok' value
+        if "exist_ok" not in kwargs:
+            kwargs["exist_ok"] = True
+        return self._s3.makedirs(path_src, **kwargs)
+
+    def mv(self, path_src : str, path_dest : str, flag_recursive: bool = True, **kwargs):
+        """# 2023-01-08 23:05:40
+        return the list of keys
+        """
+        if not self._s3.exists(
+            path_dest, **kwargs
+        ):  # avoid overwriting of the existing file
+            return self._s3.mv(path_src, path_dest, recursive=flag_recursive, **kwargs)
+        else:
+            return "destionation file already exists, exiting"
+
+    def cp(self, path_src : str, path_dest : str, flag_recursive: bool = True, **kwargs):
+        """# 2023-01-08 23:05:40
+        return the list of keys
+        """
+        if is_s3_url(path_src) and is_s3_url(path_dest):  # copy from s3 to s3
+            return self._s3.copy(path_src, path_dest, recursive=flag_recursive, **kwargs)
+        elif is_s3_url(path_src):  # copy from s3 to local
+            return self._s3.get(path_src, path_dest, recursive=flag_recursive, **kwargs)
+        elif is_s3_url(path_dest):  # copy from local to s3
+            return self._s3.put(path_src, path_dest, recursive=flag_recursive, **kwargs)
+
+    def isdir(self, path_src : str, **kwargs):
+        """# 2023-01-08 23:05:40
+        return the list of keys
+        """
+        return self._s3.isdir(path_src)
+    
+    def get_zarr_metadata(self, path_src : str, **kwargs):
+        """# 2023-01-08 23:05:40
+        return the list of keys
+        ❤️ test
+        """
+        return dict( zarr.open( path_src ).attrs )
+
+    def say_hello(self, path_src : str, **kwargs):
+        """# 2023-01-08 23:05:40
+        return the list of keys
+        ❤️ test
+        """
+        return 'hello'
+    
+# register the manager
+ManagerFileSystem.register("HostedFileSystemOperator", HostedFileSystemOperator)
