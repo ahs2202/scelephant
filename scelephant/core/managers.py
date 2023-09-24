@@ -5,6 +5,7 @@ from multiprocessing.managers import BaseManager
 import numpy as np
 from typing import Union, List, Dict
 import zarr
+import s3fs
 import asyncio
 import aiofiles
 import aiohttp
@@ -56,6 +57,34 @@ async def fetch_http_files_async( l_path_file: List[ str ] ) -> List[ str ] :
         l_content = loop.run_until_complete( asyncio.gather( * list( fetch_http_file_async( session, path_file ) for path_file in l_path_file ) ) ) # read the contents
     return l_content
 
+# async def start_s3_files_async_session( s3 ):
+#     ''' # 2023-09-24 23:17:06 
+#     return async s3 session
+#     '''
+#     return await s3.set_session()
+
+# async def close_s3_files_async_session( session ):
+#     ''' # 2023-09-24 23:17:06 
+#     return async s3 session
+#     '''
+#     await session.close( )
+
+async def read_s3_files_async( l_path_file : List[ str ], dict_kwargs_s3 : dict = dict( ) ):
+    s3 = s3fs.S3FileSystem( asynchronous = True, ** dict_kwargs_s3 )
+    session = await s3.set_session( refresh = True )
+    loop = get_or_create_eventloop( )
+    l_content = loop.run_until_complete( asyncio.gather( * list( s3._cat_file( path_file ) for path_file in l_path_file ) ) ) # read the contents
+    await session.close( )
+    return l_content
+
+async def put_s3_files_async( l_path_file_local : List[ str ], l_path_file_remote : List[ str ], dict_kwargs_s3 : dict = dict( ) ):
+    s3 = s3fs.S3FileSystem( asynchronous = True, ** dict_kwargs_s3 )
+    session = await s3.set_session( refresh = True )
+    loop = get_or_create_eventloop( )
+    l_content = loop.run_until_complete( asyncio.gather( * list( s3._put_file( path_file_local, path_file_remote ) for path_file_local, path_file_remote in zip( l_path_file_local, l_path_file_remote ) ) ) ) # copy the files
+    await session.close( )
+    return l_content
+
 ''' class for performing file system opertions '''
 
 class FileSystemOperator:
@@ -72,8 +101,18 @@ class FileSystemOperator:
         self._dict_kwargs_s3 = dict_kwargs_s3
         
         # open async/sync version of s3fs
-        self._as3 = s3fs.S3FileSystem( asynchronous=True, **dict_kwargs_s3 )
+        self._as3 = s3fs.S3FileSystem( asynchronous = True, **dict_kwargs_s3 )
         self._s3 = s3fs.S3FileSystem( **dict_kwargs_s3 )
+        
+        # start the async session
+#         self._as3_session = asyncio.run( start_s3_files_async_session( self._as3 ) )
+    
+#     def terminate( self ) :
+#         """ # 2023-09-24 23:20:23 
+#         terminate the session
+#         """
+#         # stop the async session
+#         asyncio.run( close_s3_files_async_session( self._as3_session ) )
 
     def exists(self, path_src : str, **kwargs):
         """# 2023-01-08 23:05:40
@@ -146,7 +185,7 @@ class FileSystemOperator:
         loop = get_or_create_eventloop()
         return loop.run_until_complete( asyncio.gather( * list( read_local_file_async(path_file, mode) for path_file in l_path_file ) ) )
     
-    def write_local_files_async(self, dict_path_file_to_content : dict, mode = 'rt') :
+    def write_local_files_async(self, dict_path_file_to_content : dict, mode = 'wt') :
         """ # 2023-09-24 19:42:55 
         write local files asynchronously
         """
@@ -158,6 +197,18 @@ class FileSystemOperator:
         read remote http files asynchronously
         """
         result = asyncio.run( fetch_http_files_async( l_path_file ) )
+        return result
+    
+    def read_s3_files_async( self, l_path_file : List[ str ] ) :
+        """ # 2023-09-24 23:13:15 
+        """
+        result = asyncio.run( read_s3_files_async( l_path_file, self._dict_kwargs_s3 ) )
+        return result
+
+    def put_s3_files_async( self, l_path_file_local : List[ str ], l_path_file_remote : List[ str ] ) :
+        """ # 2023-09-24 23:15:06 
+        """
+        result = asyncio.run( put_s3_files_async( l_path_file_local, l_path_file_remote, self._dict_kwargs_s3 ) )
         return result
     
 class ZarrObject:
