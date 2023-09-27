@@ -6595,7 +6595,7 @@ def MTX_Convert_10x_MEX_to_10x_HDF5_Format(
     path_folder_matrix_input_mex_format: str,
     path_file_matrix_output_hdf5_format: str,
     name_genome: str = "unknown",
-    flag_round_float : bool = True,
+    flag_round_float: bool = True,
 ):
     """# 2023-09-15 01:36:49
     path_folder_matrix_input_mex_format : str # the path of the input 10x MEX matrix folder
@@ -6648,11 +6648,17 @@ def MTX_Convert_10x_MEX_to_10x_HDF5_Format(
     # write data
     arr = df_mtx.read_count.values
     flag_dtype_is_integer = np.issubdtype(arr.dtype, np.integer)  # check integer dtype
-    ''' round the values in the matrix to convert float to integer '''
-    if flag_round_float and not flag_dtype_is_integer : # if dtype is float, and 'flag_round_float' flag is set to True, round the values
-        arr = np.rint( arr ).astype( int ) # convert to integer type (round to the nearest integer)
-        arr[ arr == 0 ] = 1 # convert entries with 0 values counts to 1, so that the minimum value in the matrix is 1
-        flag_dtype_is_integer = True # update the flag 
+    """ round the values in the matrix to convert float to integer """
+    if (
+        flag_round_float and not flag_dtype_is_integer
+    ):  # if dtype is float, and 'flag_round_float' flag is set to True, round the values
+        arr = np.rint(arr).astype(
+            int
+        )  # convert to integer type (round to the nearest integer)
+        arr[
+            arr == 0
+        ] = 1  # convert entries with 0 values counts to 1, so that the minimum value in the matrix is 1
+        flag_dtype_is_integer = True  # update the flag
     mtx.create_dataset("data", (len(arr),), "i8" if flag_dtype_is_integer else "f", arr)
 
     # write indices
