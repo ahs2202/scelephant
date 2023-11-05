@@ -637,11 +637,11 @@ def Multiprocessing_Batch_Generator_and_Workers(
     gen_batch,
     process_batch,
     post_process_batch=None,
-    int_num_threads : int =15,
-    int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop : float = 0.2,
-    flag_wait_for_a_response_from_worker_after_sending_termination_signal : bool = True, # wait until all worker exists before resuming works in the main process
+    int_num_threads: int = 15,
+    int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop: float = 0.2,
+    flag_wait_for_a_response_from_worker_after_sending_termination_signal: bool = True,  # wait until all worker exists before resuming works in the main process
 ):
-    """# 2023-10-06 01:52:29 
+    """# 2023-10-06 01:52:29
     'Multiprocessing_Batch_Generator_and_Workers' : multiprocessing using batch generator and workers.
     all worker process will be started using the default ('fork' in UNIX) method.
     perform batch-based multiprocessing using the three components, (1) gen_batch, (2) process_batch, (3) post_process_batch. (3) will be run in the main process, while (1) and (2) will be offloaded to worker processes.
@@ -661,11 +661,11 @@ def Multiprocessing_Batch_Generator_and_Workers(
         l_pipe_receiver_output,
         pipe_sender_output_to_main_process,
     ):
-        """# 2023-10-06 01:52:24 
+        """# 2023-10-06 01:52:24
         define a worker for generating batch and distributing batches across the workers, receives results across the workers, and send result back to the main process
         """
         # hard coded setting
-        int_max_num_batches_in_a_queue_for_each_worker = 2 # 2 batches distributed to each process should be optimal, while preventing pipe buffer overloading.
+        int_max_num_batches_in_a_queue_for_each_worker = 2  # 2 batches distributed to each process should be optimal, while preventing pipe buffer overloading.
 
         q_batch = collections.deque()  # initialize queue of batchs
         int_num_batch_processing_workers = len(l_pipe_sender_input)
@@ -675,7 +675,12 @@ def Multiprocessing_Batch_Generator_and_Workers(
         )  # retrieve the number of batches currently being processed in each worker. if this number becomes 0, assumes the worker is available
         while True:
             """retrieve batch (if available)"""
-            if not flag_batch_generation_completed and len( q_batch ) < int_num_batch_processing_workers * int_max_num_batches_in_a_queue_for_each_worker : # if batch generation has not been completed, or the number of batches that have been generated are not large, continue to generate batches.
+            if (
+                not flag_batch_generation_completed
+                and len(q_batch)
+                < int_num_batch_processing_workers
+                * int_max_num_batches_in_a_queue_for_each_worker
+            ):  # if batch generation has not been completed, or the number of batches that have been generated are not large, continue to generate batches.
                 try:
                     batch = next(gen_batch)  # retrieve the next barcode
                     q_batch.appendleft(batch)  # append batch
@@ -683,7 +688,11 @@ def Multiprocessing_Batch_Generator_and_Workers(
                     flag_batch_generation_completed = True
             else:
                 # if batch generation has been completed, all batches have been distributed, and processed, exit the loop
-                if flag_batch_generation_completed and len(q_batch) == 0 and arr_num_batch_being_processed.sum() == 0:
+                if (
+                    flag_batch_generation_completed
+                    and len(q_batch) == 0
+                    and arr_num_batch_being_processed.sum() == 0
+                ):
                     break
                 # sleep for a while
                 time.sleep(
@@ -768,11 +777,11 @@ def Multiprocessing_Batch_Generator_and_Workers(
             post_process_batch(
                 res
             )  # process the result returned by the 'process_batch' function in the 'MAIN PROCESS', serializing potentially not thread/process-safe operations in the main thread.
-    
+
     # if 'flag_wait_for_a_response_from_worker_after_sending_termination_signal' is True, wait until a response is received from the worker
-    if flag_wait_for_a_response_from_worker_after_sending_termination_signal :
-        for s, r in l_pipes_output : # pipe receiving responses from batch workers
-            r.recv( )
+    if flag_wait_for_a_response_from_worker_after_sending_termination_signal:
+        for s, r in l_pipes_output:  # pipe receiving responses from batch workers
+            r.recv()
 
 
 def Multiprocessing(
