@@ -1,13 +1,13 @@
 # SC-Elephant (Single-Cell Extremely Large Data Analysis Platform)
-SC-Elephant is a python package for the analysis of extremely large single-cell data in a highly memory-efficient manner, with the support for simultaneous editing (collaborative analysis). 
-
-
-
 ![scelephant-logo](doc/img/scelephant_logo.png)
 
 
 
-<tt>SC-Elephant.py</tt> generates a <b><tt>RamData</tt></b> object for the analysis of a single-cell data matrix. The resulting <tt>RamData</tt> object, once uploaded to the GitHub Page (or any web location with <i>CORS</i> enabled), can be analyzed by <tt>SC-Elephant.py</tt> or <tt>.js</tt>. 
+`SC-Elephant` utilizes `RamData`, a novel single-cell data storage format, to support a wide range of single-cell bioinformatics applications in a highly scalable manner, while providing a convenient interface to export any subset of the single-cell data in `SCANPY`'s `AnnData` format, enabling efficient downstream analysis the cells of interest. The analysis result can then be made available to other researchers by updating the original `RamData`, which can be stored in cloud storage like `AWS` (or any AWS-like object storage).
+
+
+
+`SC-Elephant` and `RamData` enable real-time sharing of extremely large single-cell data using a browser-based analysis platform as it is being modified on the cloud by multiple other researchers, convenient integration of a local single-cell dataset with multiple large remote datasets (`RamData` objects uploaded by other researchers), and remote (private) collaboration on an extremely large-scale single-cell genomics dataset. 
 
 
 
@@ -23,5 +23,6 @@ The two RamDataAxis objects, <b>'Barcode'</b> and <b>'Feature'</b> objects, use 
 
 
 
+For a demonstration of the use of `RamData` object on a web browser, please visit http://scelephant.org/
 
 
