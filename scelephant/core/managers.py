@@ -1,6 +1,7 @@
 """
 classes and functions for sharing data across multiple forked processes
 """
+import time
 from multiprocessing.managers import BaseManager
 import numpy as np
 import os
@@ -13,6 +14,7 @@ import aiofiles
 import aiofiles.os
 from aioshutil import rmtree as a_rmtree
 import aiohttp
+import json
 import nest_asyncio
 nest_asyncio.apply( )
 
@@ -147,7 +149,8 @@ async def fetch_http_file_async(session, url : str, mode : str = 'rt' ) -> str :
     """
     async with session.get( url ) as response:
         if response.status != 200:
-            response.raise_for_status( )
+            return None # if the file does not exist, return None instead
+            # response.raise_for_status( )
         output = await response.read( )
         if mode != 'rb' : # if not reading binary output, decode the output
             output = output.decode( )
@@ -210,7 +213,7 @@ async def read_s3_files_async( l_path_file : List[ str ], dict_kwargs_s3 : dict 
     s3 = s3fs.S3FileSystem( asynchronous = True, ** dict_kwargs_s3 )
     session = await s3.set_session( refresh = True )
     loop = get_or_create_eventloop( )
-    l_content = loop.run_until_complete( asyncio.gather( * list( s3._cat_file( path_file ) for path_file in l_path_file ) ) ) # read the contents
+    l_content = loop.run_until_complete( asyncio.gather( * list( s3._cat_file( path_file ) for path_file in l_path_file ), return_exceptions = True ) ) # read the contents
     await session.close( )
     return l_content
 
@@ -273,6 +276,19 @@ class FileSystemOperator:
         ''' # 2023-11-07 00:02:04  '''
         return os.path.exists( path_src )
     
+    def local_read_file( self, path_src : str, mode : str = 'rt', ** kwargs ) :
+        """ # 2023-11-07 17:58:49  """
+        try :
+            with open(path_src, mode=mode) as f:
+                return f.read( )
+        except FileNotFoundError :
+            return None # if the file does not exist, return None
+
+    def local_write_file( self, path_src : str, mode : str, content, ** kwargs ) :
+        """ # 2023-11-07 17:58:49  """
+        with open(path_src, mode=mode) as f:
+            f.write( content )
+        
     def local_rm( self, path_src : str, flag_recursive : bool = True, ** kwargs ) :
         ''' # 2023-11-07 00:02:04  '''
         if flag_recursive and os.path.isdir(
@@ -282,9 +298,9 @@ class FileSystemOperator:
         else:
             os.remove(path_src)
             
-    def local_glob( self, path_src : str, ** kwargs ) :
+    def local_glob( self, path_src : str, flag_recursive: bool = False, ** kwargs ) :
         ''' # 2023-11-07 00:02:04  '''
-        return glob.glob(path_src)
+        return glob.glob(path_src, recursive = flag_recursive )
         
     def local_mv( self, path_src : str, path_dest : str, ** kwargs ) :
         ''' # 2023-11-07 00:02:04  '''
@@ -303,18 +319,48 @@ class FileSystemOperator:
         ''' # 2023-11-07 00:02:04  '''
         return os.path.isdir(path_src)
     
+    def local_listdir( self, path_src : str, ** kwargs ) :
+        ''' # 2023-11-07 00:02:04  '''
+        return os.listdir( path_src )
+    
     def http_exists( self, path_src : str, ** kwargs ) :
         return http_response_code(path_src) == 200 # check whether http file (not tested for directory) exists
+    
+    def http_read_file( self, path_src : str, mode : str = 'rt', ** kwargs ) :
+        """ # 2023-11-07 17:58:49  """
+        import requests  # download from url
+        with requests.get(path_src, stream=True) as r:
+            if r.status_code != 200 : # if an error has occured, return None
+                return None
+            content = r.raw.read( )
+        if mode != 'rb' : # decode output if mode is not 'rb'
+            content = content.decode( )
+        return content
 
     def s3_exists(self, path_src : str, **kwargs):
         """# 2023-01-08 23:05:40 """
         return self._s3.exists(path_src, **kwargs)
+    
+    def s3_read_file( self, path_src : str, mode : str = 'rt', ** kwargs ) :
+        """ # 2023-11-07 17:58:49  """
+        try :
+            content = self._s3.cat(path_src)
+            if mode != 'rb' : # decode output if mode is not 'rb'
+                content = content.decode( )
+            return content
+        except FileNotFoundError :
+            return None # return None if file is not found
 
+    def s3_write_file( self, path_src : str, mode : str, content, ** kwargs ) :
+        """ # 2023-11-07 17:58:49  """
+        with self._s3.open( path_src, mode ) as f :
+            f.write( content )
+        
     def s3_rm(self, path_src : str, flag_recursive: bool = True, **kwargs):
         """# 2023-01-08 23:05:40 """
         return self._s3.rm(path_src, recursive=flag_recursive, **kwargs)  # delete files
     
-    def s3_glob(self, path_src : str, flag_recursive: bool = True, **kwargs):
+    def s3_glob(self, path_src : str, flag_recursive: bool = False, **kwargs):
         """# 2023-01-08 23:05:40 """
         return list(
             "s3://" + e for e in self._s3.glob(path_src, **kwargs)
@@ -327,14 +373,12 @@ class FileSystemOperator:
             kwargs["exist_ok"] = True
         return self._s3.makedirs(path_src, **kwargs)
 
-    def s3_mv(self, path_src : str, path_dest : str, flag_recursive: bool = True, **kwargs):
+    def s3_mv(self, path_src : str, path_dest : str, flag_recursive: bool = True, flag_overwrite : bool = False, **kwargs):
         """# 2023-01-08 23:05:40 """
-        if not self._s3.exists(
-            path_dest, **kwargs
-        ):  # avoid overwriting of the existing file
+        if flag_overwrite or ( not self._s3.exists( path_dest, **kwargs ) ) :  # avoid overwriting of the existing file
             return self._s3.mv(path_src, path_dest, recursive=flag_recursive, **kwargs)
         else:
-            return "destionation file already exists, exiting"
+            raise FileExistsError( "destionation file already exists" )
 
     def s3_cp(self, path_src : str, path_dest : str, flag_recursive: bool = True, **kwargs):
         """# 2023-01-08 23:05:40 """
@@ -348,6 +392,113 @@ class FileSystemOperator:
     def s3_isdir(self, path_src : str, **kwargs):
         """# 2023-01-08 23:05:40 """
         return self._s3.isdir(path_src)
+    
+    def s3_listdir(self, path_src : str, **kwargs):
+        """# 2023-01-08 23:05:40 """
+        return self._s3.ls(path_src)
+    
+    def exists( self, path_src : str, ** kwargs ) :
+        ''' # 2023-11-07 16:56:47  '''
+        if is_s3_url( path_src ) :
+            res = self.s3_exists( path_src, **kwargs )
+        elif is_http_url( path_src ) :
+            res = self.http_exists( path_src, ** kwargs )
+        else :
+            res = self.local_exists( path_src, ** kwargs )
+        return res
+    
+    def read_file( self, path_src : str, mode : str = 'rt', ** kwargs ) :
+        ''' # 2023-11-07 16:56:47  '''
+        if is_s3_url( path_src ) :
+            res = self.s3_read_file( path_src, mode, **kwargs )
+        elif is_http_url( path_src ) :
+            res = self.http_read_file( path_src, mode, ** kwargs )
+        else :
+            res = self.local_read_file( path_src, mode, ** kwargs )
+        return res
+    
+    def write_file( self, path_src : str, mode : str = 'wt', content = '', ** kwargs ) :
+        ''' # 2023-11-07 16:56:47  '''
+        if is_s3_url( path_src ) :
+            res = self.s3_write_file( path_src, mode, content, **kwargs )
+        elif is_http_url( path_src ) :
+            raise NotImplementedError( 'http write_file not implemented' )
+        else :
+            res = self.local_write_file( path_src, mode, content, ** kwargs )
+            
+    def read_json_file( self, path_src : str ) :
+        ''' # 2023-11-07 16:56:47  '''
+        return json.loads( self.read_file( path_src, 'rt' ) ) # return the parsed json file
+    
+    def write_json_file( self, path_src : str, dict_json : dict, ) :
+        ''' # 2023-11-07 16:56:47  '''
+        self.write_file( path_src, 'wt', json.dumps( dict_json ) ) # write the encoded json file
+            
+    def mkdir( self, path_src : str, ** kwargs ) :
+        """ # 2023-11-07 18:24:34 """
+        if is_s3_url( path_src ) :
+            res = self.s3_mkdir( path_src, **kwargs )
+        elif is_http_url( path_src ) :
+            raise NotImplementedError( 'http remove not implemented' )
+        else :
+            res = self.local_mkdir( path_src, ** kwargs )
+    
+    def rm( self, path_src : str, flag_recursive : bool = True, ** kwargs ) :
+        ''' # 2023-11-07 16:56:47  '''
+        if is_s3_url( path_src ) :
+            res = self.s3_rm( path_src, flag_recursive, **kwargs )
+        elif is_http_url( path_src ) :
+            raise NotImplementedError( 'http remove not implemented' )
+        else :
+            res = self.local_rm( path_src, flag_recursive, ** kwargs )
+            
+    def glob( self, path_src : str, flag_recursive : bool = False, ** kwargs ) :
+        ''' # 2023-11-07 16:56:47  '''
+        if is_s3_url( path_src ) :
+            res = self.s3_glob( path_src, flag_recursive = flag_recursive, **kwargs )
+        elif is_http_url( path_src ) :
+            raise NotImplementedError( 'http glob not implemented' )
+        else :
+            res = self.local_glob( path_src, flag_recursive = flag_recursive, ** kwargs )
+        return res
+        
+    def mv( self, path_src : str, path_dest : str, ** kwargs ) :
+        ''' # 2023-11-07 16:56:47  '''
+        if is_s3_url( path_src ) and is_s3_url( path_dest ) : # both files should be on s3
+            res = self.s3_mv( path_src, path_dest, **kwargs )
+        elif is_http_url( path_src ) :
+            raise NotImplementedError( 'http mv not implemented' )
+        else :
+            res = self.s3_mv( path_src, path_dest, ** kwargs )
+        
+    def cp( self, path_src : str, path_dest : str, flag_recursive : bool = True, ** kwargs ) :
+        ''' # 2023-11-07 16:56:47  '''
+        if is_s3_url( path_src ) or is_s3_url( path_dest ) : # at least one file is on s3
+            res = self.s3_cp( path_src, path_dest, flag_recursive, **kwargs )
+        elif is_http_url( path_src ) :
+            raise NotImplementedError( 'http cp not implemented' )
+        else :
+            res = self.local_cp( path_src, path_dest, flag_recursive, ** kwargs )
+            
+    def isdir( self, path_src : str, ** kwargs ) :
+        ''' # 2023-11-07 16:56:47  '''
+        if is_s3_url( path_src ) :
+            res = self.s3_isdir( path_src, **kwargs )
+        elif is_http_url( path_src ) :
+            raise NotImplementedError( 'http isdir not implemented' )
+        else :
+            res = self.local_isdir( path_src, ** kwargs )
+        return res
+    
+    def listdir( self, path_src : str, ** kwargs ) :
+        ''' # 2023-11-07 16:56:47  '''
+        if is_s3_url( path_src ) :
+            res = self.s3_listdir( path_src, **kwargs )
+        elif is_http_url( path_src ) :
+            raise NotImplementedError( 'http listdir not implemented' )
+        else :
+            res = self.local_listdir( path_src, ** kwargs )
+        return res
     
     def get_zarr_metadata(self, path_src : str, **kwargs):
         """# 2023-01-08 23:05:40 ❤️ test
@@ -373,7 +524,9 @@ class FileSystemOperator:
         read local files asynchronously
         """
         loop = get_or_create_eventloop()
-        return loop.run_until_complete( asyncio.gather( * list( read_local_file_async(path_file, mode) for path_file in l_path_file ) ) )
+        result = loop.run_until_complete( asyncio.gather( * list( read_local_file_async(path_file, mode) for path_file in l_path_file ), return_exceptions = True ) )
+        result = list( ( None if isinstance( res, FileNotFoundError ) else res ) for res in result ) # if 'FileNotFoundError' is returned, convert it to None
+        return result
     
     def local_write_files_async(self, dict_path_file_to_content : dict, mode : str = 'wt') :
         """ # 2023-09-24 19:42:55 
@@ -406,8 +559,9 @@ class FileSystemOperator:
         """ # 2023-09-24 23:13:15 
         """
         result = asyncio.run( read_s3_files_async( l_path_file, self._dict_kwargs_s3 ) )
+        result = list( ( None if isinstance( res, FileNotFoundError ) else res ) for res in result ) # if 'FileNotFoundError' is returned, convert it to None
         if mode != 'rb' : # if not reading binary input files, decode the output files
-            result = list( res.decode( ) for res in result )
+            result = list( res if res is None else res.decode( ) for res in result )
         return result
 
     def s3_put_files_async( self, l_path_file_local : List[ str ], l_path_file_remote : List[ str ] ) :
@@ -528,6 +682,14 @@ class FileSystemOperator:
             for res, idx in zip( l_res_current_rsc, l_idx_current_rsc ) :
                 l_res[ idx ] = res
         return l_res
+    
+    def read_json_files( self, l_path_file : List[ str ] ) -> List[ dict ] :
+        ''' # 2023-11-07 21:42:26 '''
+        return list( content if content is None else json.loads( content ) for content in self.read_files( l_path_file, 'rt' ) ) # return the parsed json files
+    
+    def write_json_files( self, dict_path_file_to_dict_json : dict ) -> None :
+        ''' # 2023-11-07 21:42:33  '''
+        self.write_files( dict( ( path_file, json.dumps( dict_path_file_to_dict_json[ path_file ] ) ) for path_file in dict_path_file_to_dict_json ), 'wt' ) # write the encoded json file
     
 class ZarrObject:
     """# 2023-09-24 17:50:46 
@@ -869,7 +1031,7 @@ class SpinLockFileHolder:
         self.float_second_to_wait_before_checking_availability_of_a_spin_lock = float_second_to_wait_before_checking_availability_of_a_spin_lock
 
         # initialize a set for saving the list of lock objects current SpinLockFileHolder has acquired in order to ignore additional attempts to acquire the lock that has been already acquired
-        self._set_path_folder_lock = set( )
+        self._set_path_file_lock = set( )
 
     @property
     def str_uuid_lock(self):
@@ -881,98 +1043,84 @@ class SpinLockFileHolder:
     @property
     def currently_held_locks(self):
         """# 2022-12-11 16:56:33
-        return a copy of a set containing path_folder_lock of all the lock objects current SpinLockFileHolder has acquired.
+        return a copy of a set containing path_file_lock of all the lock objects current SpinLockFileHolder has acquired.
         """
-        return set(self._set_path_folder_lock)
+        return set(self._set_path_file_lock)
 
-    def process_path_folder_lock(self, path_folder_lock):
-        """# 2022-12-11 22:40:37
-        process the given 'process_path_folder_lock'
-        """
-        # add '/' at the end of the 'path_folder_lock'
-        if path_folder_lock[-1] != "/":
-            path_folder_lock += "/"
-        return path_folder_lock
-
-    def check_lock(self, path_folder_lock: str):
+    def check_lock(self, path_file_lock: str):
         """# 2022-12-10 21:32:38
         check whether the lock currently exists, based on the file system where the current lock object resides.
 
-        path_folder_lock : str # an absolute (full-length) path to the lock (an absolute path to the zarr object, representing a spin lock)
+        path_file_lock : str # an absolute (full-length) path to the lock (an absolute path to the zarr object, representing a spin lock)
         """
-        # process 'path_folder_lock'
-        path_folder_lock = self.process_path_folder_lock(path_folder_lock)
+        # if lock has been already acquired, return True
+        if path_file_lock in self.currently_held_locks :
+            return True
         # return the flag indicating whether the lock exists
-        return self.fs.filesystem_operations("exists", f"{path_folder_lock}.zattrs")
+        return self._fso.exists( path_file_lock )
 
-    def wait_lock(self, path_folder_lock: str):
+    def wait_lock(self, path_file_lock: str):
         """# 2022-12-10 21:32:38
         wait for the lock, based on the file system where the current lock object resides.
 
-        path_folder_lock : str # an absolute (full-length) path to the lock (an absolute path to the zarr object, representing a spin lock)
+        path_file_lock : str # an absolute (full-length) path to the lock (an absolute path to the zarr object, representing a spin lock)
         """
         if self.verbose:
             logger.info(
-                f"the current SpinLockFileHolder ({self.str_uuid_lock}) is trying to wait for the lock '{path_folder_lock}', with currently_held_locks '{self.currently_held_locks}'"
+                f"the current SpinLockFileHolder ({self.str_uuid_lock}) is trying to wait for the lock '{path_file_lock}', with currently_held_locks '{self.currently_held_locks}'"
             )
-        # process 'path_folder_lock'
-        path_folder_lock = self.process_path_folder_lock(path_folder_lock)
 
-        # if a lock for 'path_folder_lock' has been already acquired, does not wait for the lock
-        if path_folder_lock in self.currently_held_locks:
+        # if a lock for 'path_file_lock' has been already acquired, does not wait for the lock
+        if path_file_lock in self.currently_held_locks:
             return
 
         # if lock is available and 'flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock' is True, raise a RuntimeError
         if (
-            self.check_lock(path_folder_lock)
+            self.check_lock(path_file_lock)
             and self.flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock
         ):
-            raise RuntimeError(f"a lock is present at ({path_folder_lock}), exiting")
+            raise RuntimeError(f"a lock is present at ({path_file_lock}), exiting")
         # implement a spin lock using the sleep function
-        while self.check_lock(path_folder_lock):  # until a lock is released
+        while self.check_lock(path_file_lock):  # until a lock is released
             time.sleep(
                 self.float_second_to_wait_before_checking_availability_of_a_spin_lock
             )  # wait for 'float_second_to_wait_before_checking_availability_of_a_spin_lock' second
 
-    def acquire_lock(self, path_folder_lock: str):
-        """# 2022-12-29 03:12:52
+    def acquire_lock(self, path_file_lock: str):
+        """# 2023-11-07 17:45:05  
         acquire the lock, based on the file system where the current lock object resides.
 
         === arguments ===
-        path_folder_lock : str # an absolute (full-length) path to the lock (an absolute path to the zarr object, representing a spin lock)
+        path_file_lock : str # an absolute (full-length) path to the lock (an absolute path to the zarr object, representing a spin lock)
 
         === returns ===
         return True if a lock has been acquired (a lock object was created).
         """
         if self.verbose:
             logger.info(
-                f"the current SpinLockFileHolder ({self.str_uuid_lock}) is trying to acquire the lock '{path_folder_lock}', with currently_held_locks '{self.currently_held_locks}'"
+                f"the current SpinLockFileHolder ({self.str_uuid_lock}) is trying to acquire the lock '{path_file_lock}', with currently_held_locks '{self.currently_held_locks}'"
             )
-        # process 'path_folder_lock'
-        path_folder_lock = self.process_path_folder_lock(path_folder_lock)
         if (
-            path_folder_lock not in self.currently_held_locks
+            path_file_lock not in self.currently_held_locks
         ):  # if the lock object has not been previously acquired by the current object
             # create the lock zarr object
             while True:
                 # attempts to acquire a lock
-                res = self.zms.set_metadata(
-                    path_folder_lock,
-                    "dict_metadata",
-                    {"str_uuid_lock": self.str_uuid_lock, "time": int(time.time())},
-                    "w-",
-                )  # if the lock object already exists, acquiring lock would fail
-                # if a lock appear to be acquired (a positive response that a zarr object has been create), check again that the written lock belongs to the current object
-                # when two processes attempts to acquire the same lock object within a time window of 1 ms, two processes will write the same lock object, but one will be overwritten by another.
-                # therefore, the content of the lock should be checked again in order to ensure then the lock has been actually acquired.
-                if res is not None:
-                    # wait 'sufficient' time to ensure the acquired lock became visible to all other processes that have attempted to acquire the same lock when the lock has not been acquired by any other objects. (waiting the file-system judge's decision)
+                # check whether the lock exists
+                flag_lock_exists = self.check_lock( path_file_lock )
+                
+                if not flag_lock_exists : # if the lock object already exists, acquiring lock would fail
+                    # attempts to acquire the lock
+                    self._fso.write_json_file( path_file_lock, {"str_uuid_lock": self.str_uuid_lock, "time": int(time.time())} )
+
+                    # wait 'sufficient' time to ensure the acquired lock became visible to all other processes that have attempted to acquire the same lock when the lock has not been acquired by any other objects. (waiting the outcome)
+                    # check again that the written lock belongs to the current object
+                    # when two processes attempts to acquire the same lock object within a time window of 1 ms, two processes will write the same lock object, but one will be overwritten by another.
+                    # therefore, the content of the lock should be checked again in order to ensure then the lock has been actually acquired.
                     time.sleep(
-                        self.float_second_to_wait_before_checking_availability_of_a_spin_lock
-                    )  # wait for 'float_second_to_wait_before_checking_availability_of_a_spin_lock' second
-                    lock_metadata = self.zms.get_metadata(
-                        path_folder_lock, "dict_metadata"
-                    )  # read the content of the written lock
+                        self.float_second_to_wait_before_checking_availability_of_a_spin_lock * ( 1 + np.random.random( ) )
+                    )  # wait for a random interval of time, roughly 1.5 * 'float_second_to_wait_before_checking_availability_of_a_spin_lock' second
+                    lock_metadata = self._fso.read_json_file( path_file_lock )  # read the content of the written lock
                     if (
                         lock_metadata is not None
                         and "str_uuid_lock" in lock_metadata
@@ -986,65 +1134,60 @@ class SpinLockFileHolder:
                     self.flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock
                 ):
                     raise RuntimeError(
-                        f"a lock is present at ({path_folder_lock}), exiting"
+                        f"a lock is present at ({path_file_lock}), exiting"
                     )
+                    return False
                 # implement a spin lock using the sleep function
                 time.sleep(
                     self.float_second_to_wait_before_checking_availability_of_a_spin_lock
                 )  # wait for 'float_second_to_wait_before_checking_availability_of_a_spin_lock' second
 
-            # record the 'path_folder_lock' of the acquired lock object
-            self._set_path_folder_lock.add(path_folder_lock)
+            # record the 'path_file_lock' of the acquired lock object
+            self._set_path_file_lock.add(path_file_lock)
             if self.verbose:
                 logger.info(
-                    f"the current SpinLockFileHolder ({self.str_uuid_lock}) acquired the lock '{path_folder_lock}', with currently_held_locks '{self.currently_held_locks}'"
+                    f"the current SpinLockFileHolder ({self.str_uuid_lock}) acquired the lock '{path_file_lock}', with currently_held_locks '{self.currently_held_locks}'"
                 )
             return True  # return True if a lock has been acquired
         else:
             return False  # return False if a lock has been already acquired prior to this function call
 
-    def release_lock(self, path_folder_lock: str):
-        """# 2022-12-10 21:32:38
+    def release_lock(self, path_file_lock: str):
+        """# 2023-11-07 22:35:52 
         release the lock, based on the file system where the current lock object resides
 
-        path_folder_lock : str # an absolute (full-length) path to the lock (an absolute path to the zarr object, representing a spin lock)
+        path_file_lock : str # an absolute (full-length) path to the lock (an absolute path to the zarr object, representing a spin lock)
         """
         if self.verbose:
             logger.info(
-                f"the current SpinLockFileHolder ({self.str_uuid_lock}) is trying to release_lock the lock '{path_folder_lock}', with currently_held_locks '{self.currently_held_locks}'"
+                f"the current SpinLockFileHolder ({self.str_uuid_lock}) is trying to release_lock the lock '{path_file_lock}', with currently_held_locks '{self.currently_held_locks}'"
             )
-        # process 'path_folder_lock'
-        path_folder_lock = self.process_path_folder_lock(path_folder_lock)
         if (
-            path_folder_lock in self.currently_held_locks
+            path_file_lock in self.currently_held_locks
         ):  # if the lock object has been previously acquired by the current object
-            lock_metadata = self.zms.get_metadata(
-                path_folder_lock, "dict_metadata", "r"
-            )  # retrieve the lock metadata
+            lock_metadata = self._fso.read_json_file( path_file_lock )  # retrieve the lock metadata
             if lock_metadata is not None and "str_uuid_lock" in lock_metadata:
                 if (
                     lock_metadata["str_uuid_lock"] == self.str_uuid_lock
                 ):  # if the lock has been acquired by the current object
-                    self.fs.filesystem_operations(
-                        "rm", path_folder_lock
-                    )  # release the lock
+                    self._fso.rm( path_file_lock )  # release the lock
                     if self.verbose:
                         logger.info(
-                            f"the current SpinLockFileHolder ({self.str_uuid_lock}) released the lock '{path_folder_lock}'"
+                            f"the current SpinLockFileHolder ({self.str_uuid_lock}) released the lock '{path_file_lock}'"
                         )
                 else:
                     logger.error(
-                        f"the current SpinLockFileHolder ({self.str_uuid_lock}) have acquired the lock {path_folder_lock} but it appears the lock belongs to another SpinLockFileHolder ({lock_metadata[ 'str_uuid_lock' ]})."
+                        f"the current SpinLockFileHolder ({self.str_uuid_lock}) have acquired the lock {path_file_lock} but it appears the lock belongs to another SpinLockFileHolder ({lock_metadata[ 'str_uuid_lock' ]})."
                     )
-                    # raise KeyError( f"the current SpinLockFileHolder ({self.str_uuid_lock}) have acquired the lock {path_folder_lock} but it appears the lock belongs to another SpinLockFileHolder ({lock_metadata[ 'str_uuid_lock' ]})." )
+                    # raise KeyError( f"the current SpinLockFileHolder ({self.str_uuid_lock}) have acquired the lock {path_file_lock} but it appears the lock belongs to another SpinLockFileHolder ({lock_metadata[ 'str_uuid_lock' ]})." )
             else:
                 logger.error(
-                    f"the current SpinLockFileHolder ({self.str_uuid_lock}) have acquired the lock {path_folder_lock} but the lock object does not exist."
+                    f"the current SpinLockFileHolder ({self.str_uuid_lock}) have acquired the lock {path_file_lock} but the lock object does not exist."
                 )
-                # raise FileNotFoundError( f"the current SpinLockFileHolder ({self.str_uuid_lock}) have acquired the lock {path_folder_lock} but the lock object does not exist." )
-            self._set_path_folder_lock.remove(
-                path_folder_lock
-            )  # remove the released lock's 'path_folder_lock' from the list of the acquired lock objects
+                # raise FileNotFoundError( f"the current SpinLockFileHolder ({self.str_uuid_lock}) have acquired the lock {path_file_lock} but the lock object does not exist." )
+            self._set_path_file_lock.remove(
+                path_file_lock
+            )  # remove the released lock's 'path_file_lock' from the list of the acquired lock objects
     
 # configure the manager  
 class ManagerFileSystem(BaseManager):
