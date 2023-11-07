@@ -176,11 +176,11 @@ async def fetch_http_file_async(session, url: str, mode: str = "rt") -> str:
     """
     async with session.get(url) as response:
         if response.status != 200:
-            return None # if the file does not exist, return None instead
+            return None  # if the file does not exist, return None instead
             # response.raise_for_status( )
-        output = await response.read( )
-        if mode != 'rb' : # if not reading binary output, decode the output
-            output = output.decode( )
+        output = await response.read()
+        if mode != "rb":  # if not reading binary output, decode the output
+            output = output.decode()
         return output
 
 
@@ -267,12 +267,18 @@ async def rm_s3_files_async(
     await session.close()
     return l_content
 
-async def read_s3_files_async( l_path_file : List[ str ], dict_kwargs_s3 : dict = dict( ) ):
-    s3 = s3fs.S3FileSystem( asynchronous = True, ** dict_kwargs_s3 )
-    session = await s3.set_session( refresh = True )
-    loop = get_or_create_eventloop( )
-    l_content = loop.run_until_complete( asyncio.gather( * list( s3._cat_file( path_file ) for path_file in l_path_file ), return_exceptions = True ) ) # read the contents
-    await session.close( )
+
+async def read_s3_files_async(l_path_file: List[str], dict_kwargs_s3: dict = dict()):
+    s3 = s3fs.S3FileSystem(asynchronous=True, **dict_kwargs_s3)
+    session = await s3.set_session(refresh=True)
+    loop = get_or_create_eventloop()
+    l_content = loop.run_until_complete(
+        asyncio.gather(
+            *list(s3._cat_file(path_file) for path_file in l_path_file),
+            return_exceptions=True,
+        )
+    )  # read the contents
+    await session.close()
     return l_content
 
 
@@ -344,43 +350,43 @@ class FileSystemOperator:
     def path_folder_temp(self):
         """# 2023-11-06 23:51:42"""
         return self._path_folder_temp
-    
-    def terminate( self ) :
-        ''' # 2023-11-06 23:51:36 remove the temporary files and exit '''
-        self.local_rm( self.path_folder_temp )
-        
-    def local_exists( self, path_src : str, ** kwargs ) :
-        ''' # 2023-11-07 00:02:04  '''
-        return os.path.exists( path_src )
-    
-    def local_read_file( self, path_src : str, mode : str = 'rt', ** kwargs ) :
-        """ # 2023-11-07 17:58:49  """
-        try :
-            with open(path_src, mode=mode) as f:
-                return f.read( )
-        except FileNotFoundError :
-            return None # if the file does not exist, return None
 
-    def local_write_file( self, path_src : str, mode : str, content, ** kwargs ) :
-        """ # 2023-11-07 17:58:49  """
+    def terminate(self):
+        """# 2023-11-06 23:51:36 remove the temporary files and exit"""
+        self.local_rm(self.path_folder_temp)
+
+    def local_exists(self, path_src: str, **kwargs):
+        """# 2023-11-07 00:02:04"""
+        return os.path.exists(path_src)
+
+    def local_read_file(self, path_src: str, mode: str = "rt", **kwargs):
+        """# 2023-11-07 17:58:49"""
+        try:
+            with open(path_src, mode=mode) as f:
+                return f.read()
+        except FileNotFoundError:
+            return None  # if the file does not exist, return None
+
+    def local_write_file(self, path_src: str, mode: str, content, **kwargs):
+        """# 2023-11-07 17:58:49"""
         with open(path_src, mode=mode) as f:
-            f.write( content )
-        
-    def local_rm( self, path_src : str, flag_recursive : bool = True, ** kwargs ) :
-        ''' # 2023-11-07 00:02:04  '''
+            f.write(content)
+
+    def local_rm(self, path_src: str, flag_recursive: bool = True, **kwargs):
+        """# 2023-11-07 00:02:04"""
         if flag_recursive and os.path.isdir(
             path_src
         ):  # when the recursive option is active
             shutil.rmtree(path_src)
         else:
             os.remove(path_src)
-            
-    def local_glob( self, path_src : str, flag_recursive: bool = False, ** kwargs ) :
-        ''' # 2023-11-07 00:02:04  '''
-        return glob.glob(path_src, recursive = flag_recursive )
-        
-    def local_mv( self, path_src : str, path_dest : str, ** kwargs ) :
-        ''' # 2023-11-07 00:02:04  '''
+
+    def local_glob(self, path_src: str, flag_recursive: bool = False, **kwargs):
+        """# 2023-11-07 00:02:04"""
+        return glob.glob(path_src, recursive=flag_recursive)
+
+    def local_mv(self, path_src: str, path_dest: str, **kwargs):
+        """# 2023-11-07 00:02:04"""
         shutil.move(path_src, path_dest)
 
     def local_cp(
@@ -397,23 +403,26 @@ class FileSystemOperator:
     def local_isdir(self, path_src: str, **kwargs):
         """# 2023-11-07 00:02:04"""
         return os.path.isdir(path_src)
-    
-    def local_listdir( self, path_src : str, ** kwargs ) :
-        ''' # 2023-11-07 00:02:04  '''
-        return os.listdir( path_src )
-    
-    def http_exists( self, path_src : str, ** kwargs ) :
-        return http_response_code(path_src) == 200 # check whether http file (not tested for directory) exists
-    
-    def http_read_file( self, path_src : str, mode : str = 'rt', ** kwargs ) :
-        """ # 2023-11-07 17:58:49  """
+
+    def local_listdir(self, path_src: str, **kwargs):
+        """# 2023-11-07 00:02:04"""
+        return os.listdir(path_src)
+
+    def http_exists(self, path_src: str, **kwargs):
+        return (
+            http_response_code(path_src) == 200
+        )  # check whether http file (not tested for directory) exists
+
+    def http_read_file(self, path_src: str, mode: str = "rt", **kwargs):
+        """# 2023-11-07 17:58:49"""
         import requests  # download from url
+
         with requests.get(path_src, stream=True) as r:
-            if r.status_code != 200 : # if an error has occured, return None
+            if r.status_code != 200:  # if an error has occured, return None
                 return None
-            content = r.raw.read( )
-        if mode != 'rb' : # decode output if mode is not 'rb'
-            content = content.decode( )
+            content = r.raw.read()
+        if mode != "rb":  # decode output if mode is not 'rb'
+            content = content.decode()
         return content
 
     def http_exists(self, path_src: str, **kwargs):
@@ -424,28 +433,28 @@ class FileSystemOperator:
     def s3_exists(self, path_src: str, **kwargs):
         """# 2023-01-08 23:05:40"""
         return self._s3.exists(path_src, **kwargs)
-    
-    def s3_read_file( self, path_src : str, mode : str = 'rt', ** kwargs ) :
-        """ # 2023-11-07 17:58:49  """
-        try :
-            content = self._s3.cat(path_src)
-            if mode != 'rb' : # decode output if mode is not 'rb'
-                content = content.decode( )
-            return content
-        except FileNotFoundError :
-            return None # return None if file is not found
 
-    def s3_write_file( self, path_src : str, mode : str, content, ** kwargs ) :
-        """ # 2023-11-07 17:58:49  """
-        with self._s3.open( path_src, mode ) as f :
-            f.write( content )
-        
-    def s3_rm(self, path_src : str, flag_recursive: bool = True, **kwargs):
-        """# 2023-01-08 23:05:40 """
+    def s3_read_file(self, path_src: str, mode: str = "rt", **kwargs):
+        """# 2023-11-07 17:58:49"""
+        try:
+            content = self._s3.cat(path_src)
+            if mode != "rb":  # decode output if mode is not 'rb'
+                content = content.decode()
+            return content
+        except FileNotFoundError:
+            return None  # return None if file is not found
+
+    def s3_write_file(self, path_src: str, mode: str, content, **kwargs):
+        """# 2023-11-07 17:58:49"""
+        with self._s3.open(path_src, mode) as f:
+            f.write(content)
+
+    def s3_rm(self, path_src: str, flag_recursive: bool = True, **kwargs):
+        """# 2023-01-08 23:05:40"""
         return self._s3.rm(path_src, recursive=flag_recursive, **kwargs)  # delete files
-    
-    def s3_glob(self, path_src : str, flag_recursive: bool = False, **kwargs):
-        """# 2023-01-08 23:05:40 """
+
+    def s3_glob(self, path_src: str, flag_recursive: bool = False, **kwargs):
+        """# 2023-01-08 23:05:40"""
         return list(
             "s3://" + e for e in self._s3.glob(path_src, **kwargs)
         )  # 's3://' prefix should be added
@@ -457,12 +466,21 @@ class FileSystemOperator:
             kwargs["exist_ok"] = True
         return self._s3.makedirs(path_src, **kwargs)
 
-    def s3_mv(self, path_src : str, path_dest : str, flag_recursive: bool = True, flag_overwrite : bool = False, **kwargs):
-        """# 2023-01-08 23:05:40 """
-        if flag_overwrite or ( not self._s3.exists( path_dest, **kwargs ) ) :  # avoid overwriting of the existing file
+    def s3_mv(
+        self,
+        path_src: str,
+        path_dest: str,
+        flag_recursive: bool = True,
+        flag_overwrite: bool = False,
+        **kwargs,
+    ):
+        """# 2023-01-08 23:05:40"""
+        if flag_overwrite or (
+            not self._s3.exists(path_dest, **kwargs)
+        ):  # avoid overwriting of the existing file
             return self._s3.mv(path_src, path_dest, recursive=flag_recursive, **kwargs)
         else:
-            raise FileExistsError( "destionation file already exists" )
+            raise FileExistsError("destionation file already exists")
 
     def s3_cp(
         self, path_src: str, path_dest: str, flag_recursive: bool = True, **kwargs
@@ -480,121 +498,128 @@ class FileSystemOperator:
     def s3_isdir(self, path_src: str, **kwargs):
         """# 2023-01-08 23:05:40"""
         return self._s3.isdir(path_src)
-    
-    def s3_listdir(self, path_src : str, **kwargs):
-        """# 2023-01-08 23:05:40 """
+
+    def s3_listdir(self, path_src: str, **kwargs):
+        """# 2023-01-08 23:05:40"""
         return self._s3.ls(path_src)
-    
-    def exists( self, path_src : str, ** kwargs ) :
-        ''' # 2023-11-07 16:56:47  '''
-        if is_s3_url( path_src ) :
-            res = self.s3_exists( path_src, **kwargs )
-        elif is_http_url( path_src ) :
-            res = self.http_exists( path_src, ** kwargs )
-        else :
-            res = self.local_exists( path_src, ** kwargs )
+
+    def exists(self, path_src: str, **kwargs):
+        """# 2023-11-07 16:56:47"""
+        if is_s3_url(path_src):
+            res = self.s3_exists(path_src, **kwargs)
+        elif is_http_url(path_src):
+            res = self.http_exists(path_src, **kwargs)
+        else:
+            res = self.local_exists(path_src, **kwargs)
         return res
-    
-    def read_file( self, path_src : str, mode : str = 'rt', ** kwargs ) :
-        ''' # 2023-11-07 16:56:47  '''
-        if is_s3_url( path_src ) :
-            res = self.s3_read_file( path_src, mode, **kwargs )
-        elif is_http_url( path_src ) :
-            res = self.http_read_file( path_src, mode, ** kwargs )
-        else :
-            res = self.local_read_file( path_src, mode, ** kwargs )
+
+    def read_file(self, path_src: str, mode: str = "rt", **kwargs):
+        """# 2023-11-07 16:56:47"""
+        if is_s3_url(path_src):
+            res = self.s3_read_file(path_src, mode, **kwargs)
+        elif is_http_url(path_src):
+            res = self.http_read_file(path_src, mode, **kwargs)
+        else:
+            res = self.local_read_file(path_src, mode, **kwargs)
         return res
-    
-    def write_file( self, path_src : str, mode : str = 'wt', content = '', ** kwargs ) :
-        ''' # 2023-11-07 16:56:47  '''
-        if is_s3_url( path_src ) :
-            res = self.s3_write_file( path_src, mode, content, **kwargs )
-        elif is_http_url( path_src ) :
-            raise NotImplementedError( 'http write_file not implemented' )
-        else :
-            res = self.local_write_file( path_src, mode, content, ** kwargs )
-            
-    def read_json_file( self, path_src : str ) :
-        ''' # 2023-11-07 16:56:47  '''
-        return json.loads( self.read_file( path_src, 'rt' ) ) # return the parsed json file
-    
-    def write_json_file( self, path_src : str, dict_json : dict, ) :
-        ''' # 2023-11-07 16:56:47  '''
-        self.write_file( path_src, 'wt', json.dumps( dict_json ) ) # write the encoded json file
-            
-    def mkdir( self, path_src : str, ** kwargs ) :
-        """ # 2023-11-07 18:24:34 """
-        if is_s3_url( path_src ) :
-            res = self.s3_mkdir( path_src, **kwargs )
-        elif is_http_url( path_src ) :
-            raise NotImplementedError( 'http remove not implemented' )
-        else :
-            res = self.local_mkdir( path_src, ** kwargs )
-    
-    def rm( self, path_src : str, flag_recursive : bool = True, ** kwargs ) :
-        ''' # 2023-11-07 16:56:47  '''
-        if is_s3_url( path_src ) :
-            res = self.s3_rm( path_src, flag_recursive, **kwargs )
-        elif is_http_url( path_src ) :
-            raise NotImplementedError( 'http remove not implemented' )
-        else :
-            res = self.local_rm( path_src, flag_recursive, ** kwargs )
-            
-    def glob( self, path_src : str, flag_recursive : bool = False, ** kwargs ) :
-        ''' # 2023-11-07 16:56:47  '''
-        if is_s3_url( path_src ) :
-            res = self.s3_glob( path_src, flag_recursive = flag_recursive, **kwargs )
-        elif is_http_url( path_src ) :
-            raise NotImplementedError( 'http glob not implemented' )
-        else :
-            res = self.local_glob( path_src, flag_recursive = flag_recursive, ** kwargs )
+
+    def write_file(self, path_src: str, mode: str = "wt", content="", **kwargs):
+        """# 2023-11-07 16:56:47"""
+        if is_s3_url(path_src):
+            res = self.s3_write_file(path_src, mode, content, **kwargs)
+        elif is_http_url(path_src):
+            raise NotImplementedError("http write_file not implemented")
+        else:
+            res = self.local_write_file(path_src, mode, content, **kwargs)
+
+    def read_json_file(self, path_src: str):
+        """# 2023-11-07 16:56:47"""
+        return json.loads(self.read_file(path_src, "rt"))  # return the parsed json file
+
+    def write_json_file(
+        self,
+        path_src: str,
+        dict_json: dict,
+    ):
+        """# 2023-11-07 16:56:47"""
+        self.write_file(
+            path_src, "wt", json.dumps(dict_json)
+        )  # write the encoded json file
+
+    def mkdir(self, path_src: str, **kwargs):
+        """# 2023-11-07 18:24:34"""
+        if is_s3_url(path_src):
+            res = self.s3_mkdir(path_src, **kwargs)
+        elif is_http_url(path_src):
+            raise NotImplementedError("http remove not implemented")
+        else:
+            res = self.local_mkdir(path_src, **kwargs)
+
+    def rm(self, path_src: str, flag_recursive: bool = True, **kwargs):
+        """# 2023-11-07 16:56:47"""
+        if is_s3_url(path_src):
+            res = self.s3_rm(path_src, flag_recursive, **kwargs)
+        elif is_http_url(path_src):
+            raise NotImplementedError("http remove not implemented")
+        else:
+            res = self.local_rm(path_src, flag_recursive, **kwargs)
+
+    def glob(self, path_src: str, flag_recursive: bool = False, **kwargs):
+        """# 2023-11-07 16:56:47"""
+        if is_s3_url(path_src):
+            res = self.s3_glob(path_src, flag_recursive=flag_recursive, **kwargs)
+        elif is_http_url(path_src):
+            raise NotImplementedError("http glob not implemented")
+        else:
+            res = self.local_glob(path_src, flag_recursive=flag_recursive, **kwargs)
         return res
-        
-    def mv( self, path_src : str, path_dest : str, ** kwargs ) :
-        ''' # 2023-11-07 16:56:47  '''
-        if is_s3_url( path_src ) and is_s3_url( path_dest ) : # both files should be on s3
-            res = self.s3_mv( path_src, path_dest, **kwargs )
-        elif is_http_url( path_src ) :
-            raise NotImplementedError( 'http mv not implemented' )
-        else :
-            res = self.s3_mv( path_src, path_dest, ** kwargs )
-        
-    def cp( self, path_src : str, path_dest : str, flag_recursive : bool = True, ** kwargs ) :
-        ''' # 2023-11-07 16:56:47  '''
-        if is_s3_url( path_src ) or is_s3_url( path_dest ) : # at least one file is on s3
-            res = self.s3_cp( path_src, path_dest, flag_recursive, **kwargs )
-        elif is_http_url( path_src ) :
-            raise NotImplementedError( 'http cp not implemented' )
-        else :
-            res = self.local_cp( path_src, path_dest, flag_recursive, ** kwargs )
-            
-    def isdir( self, path_src : str, ** kwargs ) :
-        ''' # 2023-11-07 16:56:47  '''
-        if is_s3_url( path_src ) :
-            res = self.s3_isdir( path_src, **kwargs )
-        elif is_http_url( path_src ) :
-            raise NotImplementedError( 'http isdir not implemented' )
-        else :
-            res = self.local_isdir( path_src, ** kwargs )
+
+    def mv(self, path_src: str, path_dest: str, **kwargs):
+        """# 2023-11-07 16:56:47"""
+        if is_s3_url(path_src) and is_s3_url(path_dest):  # both files should be on s3
+            res = self.s3_mv(path_src, path_dest, **kwargs)
+        elif is_http_url(path_src):
+            raise NotImplementedError("http mv not implemented")
+        else:
+            res = self.s3_mv(path_src, path_dest, **kwargs)
+
+    def cp(self, path_src: str, path_dest: str, flag_recursive: bool = True, **kwargs):
+        """# 2023-11-07 16:56:47"""
+        if is_s3_url(path_src) or is_s3_url(path_dest):  # at least one file is on s3
+            res = self.s3_cp(path_src, path_dest, flag_recursive, **kwargs)
+        elif is_http_url(path_src):
+            raise NotImplementedError("http cp not implemented")
+        else:
+            res = self.local_cp(path_src, path_dest, flag_recursive, **kwargs)
+
+    def isdir(self, path_src: str, **kwargs):
+        """# 2023-11-07 16:56:47"""
+        if is_s3_url(path_src):
+            res = self.s3_isdir(path_src, **kwargs)
+        elif is_http_url(path_src):
+            raise NotImplementedError("http isdir not implemented")
+        else:
+            res = self.local_isdir(path_src, **kwargs)
         return res
-    
-    def listdir( self, path_src : str, ** kwargs ) :
-        ''' # 2023-11-07 16:56:47  '''
-        if is_s3_url( path_src ) :
-            res = self.s3_listdir( path_src, **kwargs )
-        elif is_http_url( path_src ) :
-            raise NotImplementedError( 'http listdir not implemented' )
-        else :
-            res = self.local_listdir( path_src, ** kwargs )
+
+    def listdir(self, path_src: str, **kwargs):
+        """# 2023-11-07 16:56:47"""
+        if is_s3_url(path_src):
+            res = self.s3_listdir(path_src, **kwargs)
+        elif is_http_url(path_src):
+            raise NotImplementedError("http listdir not implemented")
+        else:
+            res = self.local_listdir(path_src, **kwargs)
         return res
-    
-    def get_zarr_metadata(self, path_src : str, **kwargs):
-        """# 2023-01-08 23:05:40 ❤️ test
-        """
-        return dict( zarr.open( path_src ).attrs )
-    
-    def local_rm_files_async(self, l_path_file: List[ str ], flag_recursive : bool = True) -> None:
-        """ # 2023-09-24 19:42:55 
+
+    def get_zarr_metadata(self, path_src: str, **kwargs):
+        """# 2023-01-08 23:05:40 ❤️ test"""
+        return dict(zarr.open(path_src).attrs)
+
+    def local_rm_files_async(
+        self, l_path_file: List[str], flag_recursive: bool = True
+    ) -> None:
+        """# 2023-09-24 19:42:55
         read local files asynchronously
         """
         loop = get_or_create_eventloop()
@@ -625,12 +650,23 @@ class FileSystemOperator:
         read local files asynchronously
         """
         loop = get_or_create_eventloop()
-        result = loop.run_until_complete( asyncio.gather( * list( read_local_file_async(path_file, mode) for path_file in l_path_file ), return_exceptions = True ) )
-        result = list( ( None if isinstance( res, FileNotFoundError ) else res ) for res in result ) # if 'FileNotFoundError' is returned, convert it to None
+        result = loop.run_until_complete(
+            asyncio.gather(
+                *list(
+                    read_local_file_async(path_file, mode) for path_file in l_path_file
+                ),
+                return_exceptions=True,
+            )
+        )
+        result = list(
+            (None if isinstance(res, FileNotFoundError) else res) for res in result
+        )  # if 'FileNotFoundError' is returned, convert it to None
         return result
-    
-    def local_write_files_async(self, dict_path_file_to_content : dict, mode : str = 'wt') :
-        """ # 2023-09-24 19:42:55 
+
+    def local_write_files_async(
+        self, dict_path_file_to_content: dict, mode: str = "wt"
+    ):
+        """# 2023-09-24 19:42:55
         write local files asynchronously
         """
         loop = get_or_create_eventloop()
@@ -665,14 +701,15 @@ class FileSystemOperator:
         """# 2023-09-24 23:13:15"""
         result = asyncio.run(exists_s3_files_async(l_path_file, self._dict_kwargs_s3))
         return result
-    
-    def s3_read_files_async( self, l_path_file : List[ str ], mode : str = 'rt' ) :
-        """ # 2023-09-24 23:13:15 
-        """
-        result = asyncio.run( read_s3_files_async( l_path_file, self._dict_kwargs_s3 ) )
-        result = list( ( None if isinstance( res, FileNotFoundError ) else res ) for res in result ) # if 'FileNotFoundError' is returned, convert it to None
-        if mode != 'rb' : # if not reading binary input files, decode the output files
-            result = list( res if res is None else res.decode( ) for res in result )
+
+    def s3_read_files_async(self, l_path_file: List[str], mode: str = "rt"):
+        """# 2023-09-24 23:13:15"""
+        result = asyncio.run(read_s3_files_async(l_path_file, self._dict_kwargs_s3))
+        result = list(
+            (None if isinstance(res, FileNotFoundError) else res) for res in result
+        )  # if 'FileNotFoundError' is returned, convert it to None
+        if mode != "rb":  # if not reading binary input files, decode the output files
+            result = list(res if res is None else res.decode() for res in result)
         return result
 
     def s3_put_files_async(
@@ -849,15 +886,25 @@ class FileSystemOperator:
             for res, idx in zip(l_res_current_rsc, l_idx_current_rsc):
                 l_res[idx] = res
         return l_res
-    
-    def read_json_files( self, l_path_file : List[ str ] ) -> List[ dict ] :
-        ''' # 2023-11-07 21:42:26 '''
-        return list( content if content is None else json.loads( content ) for content in self.read_files( l_path_file, 'rt' ) ) # return the parsed json files
-    
-    def write_json_files( self, dict_path_file_to_dict_json : dict ) -> None :
-        ''' # 2023-11-07 21:42:33  '''
-        self.write_files( dict( ( path_file, json.dumps( dict_path_file_to_dict_json[ path_file ] ) ) for path_file in dict_path_file_to_dict_json ), 'wt' ) # write the encoded json file
-    
+
+    def read_json_files(self, l_path_file: List[str]) -> List[dict]:
+        """# 2023-11-07 21:42:26"""
+        return list(
+            content if content is None else json.loads(content)
+            for content in self.read_files(l_path_file, "rt")
+        )  # return the parsed json files
+
+    def write_json_files(self, dict_path_file_to_dict_json: dict) -> None:
+        """# 2023-11-07 21:42:33"""
+        self.write_files(
+            dict(
+                (path_file, json.dumps(dict_path_file_to_dict_json[path_file]))
+                for path_file in dict_path_file_to_dict_json
+            ),
+            "wt",
+        )  # write the encoded json file
+
+
 class ZarrObject:
     """# 2023-09-24 17:50:46
     A class for hosting Zarr object in a spawned, managed process for accessing remote objects in forked processes
@@ -1233,7 +1280,7 @@ class SpinLockFileHolder:
         )
 
         # initialize a set for saving the list of lock objects current SpinLockFileHolder has acquired in order to ignore additional attempts to acquire the lock that has been already acquired
-        self._set_path_file_lock = set( )
+        self._set_path_file_lock = set()
 
     @property
     def str_uuid_lock(self):
@@ -1256,10 +1303,10 @@ class SpinLockFileHolder:
         path_file_lock : str # an absolute (full-length) path to the lock (an absolute path to the zarr object, representing a spin lock)
         """
         # if lock has been already acquired, return True
-        if path_file_lock in self.currently_held_locks :
+        if path_file_lock in self.currently_held_locks:
             return True
         # return the flag indicating whether the lock exists
-        return self._fso.exists( path_file_lock )
+        return self._fso.exists(path_file_lock)
 
     def wait_lock(self, path_file_lock: str):
         """# 2022-12-10 21:32:38
@@ -1289,7 +1336,7 @@ class SpinLockFileHolder:
             )  # wait for 'float_second_to_wait_before_checking_availability_of_a_spin_lock' second
 
     def acquire_lock(self, path_file_lock: str):
-        """# 2023-11-07 17:45:05  
+        """# 2023-11-07 17:45:05
         acquire the lock, based on the file system where the current lock object resides.
 
         === arguments ===
@@ -1309,20 +1356,28 @@ class SpinLockFileHolder:
             while True:
                 # attempts to acquire a lock
                 # check whether the lock exists
-                flag_lock_exists = self.check_lock( path_file_lock )
-                
-                if not flag_lock_exists : # if the lock object already exists, acquiring lock would fail
+                flag_lock_exists = self.check_lock(path_file_lock)
+
+                if (
+                    not flag_lock_exists
+                ):  # if the lock object already exists, acquiring lock would fail
                     # attempts to acquire the lock
-                    self._fso.write_json_file( path_file_lock, {"str_uuid_lock": self.str_uuid_lock, "time": int(time.time())} )
+                    self._fso.write_json_file(
+                        path_file_lock,
+                        {"str_uuid_lock": self.str_uuid_lock, "time": int(time.time())},
+                    )
 
                     # wait 'sufficient' time to ensure the acquired lock became visible to all other processes that have attempted to acquire the same lock when the lock has not been acquired by any other objects. (waiting the outcome)
                     # check again that the written lock belongs to the current object
                     # when two processes attempts to acquire the same lock object within a time window of 1 ms, two processes will write the same lock object, but one will be overwritten by another.
                     # therefore, the content of the lock should be checked again in order to ensure then the lock has been actually acquired.
                     time.sleep(
-                        self.float_second_to_wait_before_checking_availability_of_a_spin_lock * ( 1 + np.random.random( ) )
+                        self.float_second_to_wait_before_checking_availability_of_a_spin_lock
+                        * (1 + np.random.random())
                     )  # wait for a random interval of time, roughly 1.5 * 'float_second_to_wait_before_checking_availability_of_a_spin_lock' second
-                    lock_metadata = self._fso.read_json_file( path_file_lock )  # read the content of the written lock
+                    lock_metadata = self._fso.read_json_file(
+                        path_file_lock
+                    )  # read the content of the written lock
                     if (
                         lock_metadata is not None
                         and "str_uuid_lock" in lock_metadata
@@ -1355,7 +1410,7 @@ class SpinLockFileHolder:
             return False  # return False if a lock has been already acquired prior to this function call
 
     def release_lock(self, path_file_lock: str):
-        """# 2023-11-07 22:35:52 
+        """# 2023-11-07 22:35:52
         release the lock, based on the file system where the current lock object resides
 
         path_file_lock : str # an absolute (full-length) path to the lock (an absolute path to the zarr object, representing a spin lock)
@@ -1367,12 +1422,14 @@ class SpinLockFileHolder:
         if (
             path_file_lock in self.currently_held_locks
         ):  # if the lock object has been previously acquired by the current object
-            lock_metadata = self._fso.read_json_file( path_file_lock )  # retrieve the lock metadata
+            lock_metadata = self._fso.read_json_file(
+                path_file_lock
+            )  # retrieve the lock metadata
             if lock_metadata is not None and "str_uuid_lock" in lock_metadata:
                 if (
                     lock_metadata["str_uuid_lock"] == self.str_uuid_lock
                 ):  # if the lock has been acquired by the current object
-                    self._fso.rm( path_file_lock )  # release the lock
+                    self._fso.rm(path_file_lock)  # release the lock
                     if self.verbose:
                         logger.info(
                             f"the current SpinLockFileHolder ({self.str_uuid_lock}) released the lock '{path_file_lock}'"
@@ -1390,8 +1447,10 @@ class SpinLockFileHolder:
             self._set_path_file_lock.remove(
                 path_file_lock
             )  # remove the released lock's 'path_file_lock' from the list of the acquired lock objects
-    
-# configure the manager  
+
+
+# configure the manager
+
 
 class ManagerFileSystem(BaseManager):
     pass
