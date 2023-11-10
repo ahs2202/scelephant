@@ -904,6 +904,7 @@ class FileSystemOperator:
             "wt",
         )  # write the encoded json file
 
+
 class ZarrObject:
     """# 2023-09-24 17:50:46
     A class for hosting Zarr object in a spawned, managed process for accessing remote objects in forked processes
@@ -1241,9 +1242,10 @@ class ZarrObject:
         public wrapper of '__setitem__'
         """
         return self.__setitem__(args, values)
-    
+
+
 class ZarrObjects:
-    """# 2023-11-08 21:23:37 
+    """# 2023-11-08 21:23:37
     A class for hosting Zarr objects in a spawned, managed process for accessing remote objects in forked processes
     API functions calls mimic those of a zarr object for almost seamless replacement of a zarr object.
 
@@ -1255,24 +1257,26 @@ class ZarrObjects:
     int_type_zarr_object : int = 0, # 0 for guessing whether to open group or array, 1 for array, and 2 for group
     """
 
-    def get_object_properties( self ):
+    def get_object_properties(self):
         """# 2023-09-24 17:39:41
         a function for retrieving object properties
         """
         return self._dict_path_folder_zarr_to_properties
-    
+
     def _sync_object_properties(self):
         """# 2023-09-24 17:39:41
         synchronize object properties so that the properties of the proxy object are the same as those of the current object.
         """
-        self._dict_path_folder_zarr_to_properties = self._proxy_object.get_object_properties()
+        self._dict_path_folder_zarr_to_properties = (
+            self._proxy_object.get_object_properties()
+        )
 
     def open_array(self, *args, **kwargs):
         """#2023-11-06 22:47:29
         open zarr array
         """
         self.open(*args, **kwargs, int_type_zarr_object=1)
-        
+
     def open_group(self, *args, **kwargs):
         """#2023-11-06 22:47:29
         open zarr group
@@ -1289,10 +1293,10 @@ class ZarrObjects:
         fill_value=0,
         path_process_synchronizer: Union[str, None] = None,
         reload: bool = False,
-        int_type_zarr_object : int = 0, # 0 for guessing whether to open group or array, 1 for array, and 2 for group
+        int_type_zarr_object: int = 0,  # 0 for guessing whether to open group or array, 1 for array, and 2 for group
     ):
-        """# 2023-11-08 21:23:43 
-        open a new zarr object 
+        """# 2023-11-08 21:23:43
+        open a new zarr object
 
         reload : bool = False # if True, reload the zarr object even if the 'path_folder' and 'mode' are identical to the currently opened Zarr object. (useful when folder has been updated using the external methods.)
         int_type_zarr_object : int = 0, # 0 for guessing whether to open group or array, 1 for array, and 2 for group
@@ -1302,7 +1306,7 @@ class ZarrObjects:
             if (
                 not reload
                 and path_folder_zarr in self.set_path_folder
-                and self.properties[ path_folder_zarr ][ 'mode' ] == mode
+                and self.properties[path_folder_zarr]["mode"] == mode
             ):
                 return
 
@@ -1322,31 +1326,43 @@ class ZarrObjects:
                         fill_value=fill_value,
                     )
             else:  # use existing zarr object
-                if int_type_zarr_object == 1 : # open array
+                if int_type_zarr_object == 1:  # open array
                     za = zarr.open_array(path_folder_zarr, mode)
-                elif int_type_zarr_object == 2 : # open group
+                elif int_type_zarr_object == 2:  # open group
                     za = zarr.open_group(path_folder_zarr, mode)
-                else : # guess
+                else:  # guess
                     za = zarr.open(path_folder_zarr, mode)
-            self._dict_path_folder_zarr_to_zarr_object[ path_folder_zarr ] = za  # set the zarr object as an attribute
+            self._dict_path_folder_zarr_to_zarr_object[
+                path_folder_zarr
+            ] = za  # set the zarr object as an attribute
             # retrieve attributes of a zarr array
             if hasattr(za, "shape"):  # if zarr object is an array
-                self._dict_path_folder_zarr_to_properties[ path_folder_zarr ] = {
-                    'shape' : self._dict_path_folder_zarr_to_zarr_object[ path_folder_zarr ].shape,
-                    'chunks' : self._dict_path_folder_zarr_to_zarr_object[ path_folder_zarr ].chunks,
-                    'dtype' : self._dict_path_folder_zarr_to_zarr_object[ path_folder_zarr ].dtype,
-                    'fill_value' : self._dict_path_folder_zarr_to_zarr_object[ path_folder_zarr ].fill_value,
+                self._dict_path_folder_zarr_to_properties[path_folder_zarr] = {
+                    "shape": self._dict_path_folder_zarr_to_zarr_object[
+                        path_folder_zarr
+                    ].shape,
+                    "chunks": self._dict_path_folder_zarr_to_zarr_object[
+                        path_folder_zarr
+                    ].chunks,
+                    "dtype": self._dict_path_folder_zarr_to_zarr_object[
+                        path_folder_zarr
+                    ].dtype,
+                    "fill_value": self._dict_path_folder_zarr_to_zarr_object[
+                        path_folder_zarr
+                    ].fill_value,
                 }
             else:  # if zarr object is a group
-                self._dict_path_folder_zarr_to_properties[ path_folder_zarr ] = {
-                    'shape' : None,
-                    'chunks' : None,
-                    'dtype' : None,
-                    'fill_value' : None,
+                self._dict_path_folder_zarr_to_properties[path_folder_zarr] = {
+                    "shape": None,
+                    "chunks": None,
+                    "dtype": None,
+                    "fill_value": None,
                 }
             # update the attributes
-            self._dict_path_folder_zarr_to_properties[ path_folder_zarr ][ 'mode' ] = mode
-            self._dict_path_folder_zarr_to_properties[ path_folder_zarr ][ 'path_process_synchronizer' ] = path_process_synchronizer
+            self._dict_path_folder_zarr_to_properties[path_folder_zarr]["mode"] = mode
+            self._dict_path_folder_zarr_to_properties[path_folder_zarr][
+                "path_process_synchronizer"
+            ] = path_process_synchronizer
         else:
             # open zarr object in the proxy object
             self._proxy_object.open(
@@ -1377,14 +1393,14 @@ class ZarrObjects:
         """# 2023-09-24 14:50:36"""
         # set attributes
         self._proxy_object = proxy_object
-        self._dict_path_folder_zarr_to_properties = dict( ) # initialize
+        self._dict_path_folder_zarr_to_properties = dict()  # initialize
         self._delete_counter = 0
 
-        if (
-            self._proxy_object is None
-        ): # if the proxy object has not been given
-            self._dict_path_folder_zarr_to_zarr_object = dict( )
-            if path_folder_zarr is not None : # if valid 'path_folder_zarr' has been given, open the zarr object
+        if self._proxy_object is None:  # if the proxy object has not been given
+            self._dict_path_folder_zarr_to_zarr_object = dict()
+            if (
+                path_folder_zarr is not None
+            ):  # if valid 'path_folder_zarr' has been given, open the zarr object
                 self.open(
                     path_folder_zarr=path_folder_zarr,
                     mode=mode,
@@ -1399,26 +1415,30 @@ class ZarrObjects:
         else:
             self._sync_object_properties()  # synchronize object properties using the proxy object
 
-    def release_object( self, path_folder_zarr : str ) :
-        ''' # 2023-11-08 18:59:42 
+    def release_object(self, path_folder_zarr: str):
+        """# 2023-11-08 18:59:42
         release the given object
-        '''
-        if path_folder_zarr not in self._dict_path_folder_zarr_to_properties : # if invalid object path has been given, return 
+        """
+        if (
+            path_folder_zarr not in self._dict_path_folder_zarr_to_properties
+        ):  # if invalid object path has been given, return
             return
-        
-        self._dict_path_folder_zarr_to_properties.pop( path_folder_zarr )
-        if self._proxy_object is None :
-            self._dict_path_folder_zarr_to_zarr_object.pop( path_folder_zarr )
-        self._delete_counter += 1 # increase the counter
-        
-        if self._delete_counter >= 10_000 : # if the 'delete_counter' exceed the limit, recreate the dictionaries to avoid memory-leakage
+
+        self._dict_path_folder_zarr_to_properties.pop(path_folder_zarr)
+        if self._proxy_object is None:
+            self._dict_path_folder_zarr_to_zarr_object.pop(path_folder_zarr)
+        self._delete_counter += 1  # increase the counter
+
+        if (
+            self._delete_counter >= 10_000
+        ):  # if the 'delete_counter' exceed the limit, recreate the dictionaries to avoid memory-leakage
             d = self._dict_path_folder_zarr_to_properties
-            self._dict_path_folder_zarr_to_properties = dict( ( e, d[ e ] ) for e in d )
-            if self._proxy_object is None :
+            self._dict_path_folder_zarr_to_properties = dict((e, d[e]) for e in d)
+            if self._proxy_object is None:
                 d = self._dict_path_folder_zarr_to_zarr_object
-                self._dict_path_folder_zarr_to_zarr_object = dict( ( e, d[ e ] ) for e in d )
-            self._delete_counter = 0 # reset the counter
-            
+                self._dict_path_folder_zarr_to_zarr_object = dict((e, d[e]) for e in d)
+            self._delete_counter = 0  # reset the counter
+
     @property
     def is_proxy_object(self):
         """# 2023-09-24 18:01:20
@@ -1430,29 +1450,38 @@ class ZarrObjects:
     def properties(self):
         """# 2023-04-19 17:33:21"""
         return self._dict_path_folder_zarr_to_properties
-    
+
     @property
     def set_path_folder(self):
         """# 2023-04-19 17:33:21"""
-        return set( self._dict_path_folder_zarr_to_properties )
+        return set(self._dict_path_folder_zarr_to_properties)
 
     def __repr__(self):
         """# 2023-04-20 01:06:16"""
         return f"<ZarrObjects containing {self.set_path_folder}>"
 
-    def get_attrs(self, path_folder_zarr : str, *keys):
+    def get_attrs(self, path_folder_zarr: str, *keys):
         """# 2023-04-19 15:00:04
         get an attribute of the currently opened zarr object using the list of key values
         """
         if self._proxy_object is not None:
             return self._proxy_object.get_attrs(path_folder_zarr, *keys)
         else:
-            set_keys = set(self._dict_path_folder_zarr_to_zarr_object[ path_folder_zarr ].attrs)  # retrieve a list of keys
+            set_keys = set(
+                self._dict_path_folder_zarr_to_zarr_object[path_folder_zarr].attrs
+            )  # retrieve a list of keys
             return dict(
-                (key, self._dict_path_folder_zarr_to_zarr_object[ path_folder_zarr ].attrs[key]) for key in keys if key in set_keys
+                (
+                    key,
+                    self._dict_path_folder_zarr_to_zarr_object[path_folder_zarr].attrs[
+                        key
+                    ],
+                )
+                for key in keys
+                if key in set_keys
             )  # return a subset of metadata using the list of key values given as 'args'
 
-    def get_attr(self, path_folder_zarr : str, key):
+    def get_attr(self, path_folder_zarr: str, key):
         """# 2023-04-20 01:08:59
         a wrapper of 'get_attrs' for a single key value
         """
@@ -1466,16 +1495,18 @@ class ZarrObjects:
                 )  # raise a key error if the key does not exist
             return dict_attrs[key]
 
-    def set_attrs(self, path_folder_zarr : str, **kwargs):
+    def set_attrs(self, path_folder_zarr: str, **kwargs):
         """# 2023-04-19 15:00:00
         update the attributes of the currently opened zarr object using the keyworded arguments
         """
         if self._proxy_object is not None:
-            return self._proxy_object.set_attrs( path_folder_zarr, **kwargs )
+            return self._proxy_object.set_attrs(path_folder_zarr, **kwargs)
         else:
             # update the metadata
             for key in kwargs:
-                self._dict_path_folder_zarr_to_zarr_object[ path_folder_zarr ].attrs[key] = kwargs[key]
+                self._dict_path_folder_zarr_to_zarr_object[path_folder_zarr].attrs[
+                    key
+                ] = kwargs[key]
 
     def get_coordinate_selection(self, *args, **kwargs):
         """# 2022-12-05 22:55:58
@@ -1485,9 +1516,11 @@ class ZarrObjects:
             return self._proxy_object.get_coordinate_selection(*args, **kwargs)
         else:
             # parse 'path_folder_zarr'
-            path_folder_zarr = args[ 0 ]
-            args = args[ 1 : ]
-            return self._dict_path_folder_zarr_to_zarr_object[ path_folder_zarr ].get_coordinate_selection(*args, **kwargs)
+            path_folder_zarr = args[0]
+            args = args[1:]
+            return self._dict_path_folder_zarr_to_zarr_object[
+                path_folder_zarr
+            ].get_coordinate_selection(*args, **kwargs)
 
     def get_basic_selection(self, *args, **kwargs):
         """# 2022-12-05 22:55:58
@@ -1497,9 +1530,11 @@ class ZarrObjects:
             return self._proxy_object.get_basic_selection(*args, **kwargs)
         else:
             # parse 'path_folder_zarr'
-            path_folder_zarr = args[ 0 ]
-            args = args[ 1 : ]
-            return self._dict_path_folder_zarr_to_zarr_object[ path_folder_zarr ].get_basic_selection(*args, **kwargs)
+            path_folder_zarr = args[0]
+            args = args[1:]
+            return self._dict_path_folder_zarr_to_zarr_object[
+                path_folder_zarr
+            ].get_basic_selection(*args, **kwargs)
 
     def get_orthogonal_selection(self, *args, **kwargs):
         """# 2022-12-05 22:55:58
@@ -1509,9 +1544,11 @@ class ZarrObjects:
             return self._proxy_object.get_orthogonal_selection(*args, **kwargs)
         else:
             # parse 'path_folder_zarr'
-            path_folder_zarr = args[ 0 ]
-            args = args[ 1 : ]
-            return self._dict_path_folder_zarr_to_zarr_object[ path_folder_zarr ].get_orthogonal_selection(*args, **kwargs)
+            path_folder_zarr = args[0]
+            args = args[1:]
+            return self._dict_path_folder_zarr_to_zarr_object[
+                path_folder_zarr
+            ].get_orthogonal_selection(*args, **kwargs)
 
     def get_mask_selection(self, *args, **kwargs):
         """# 2022-12-05 22:55:58
@@ -1521,9 +1558,11 @@ class ZarrObjects:
             return self._proxy_object.get_mask_selection(*args, **kwargs)
         else:
             # parse 'path_folder_zarr'
-            path_folder_zarr = args[ 0 ]
-            args = args[ 1 : ]
-            return self._dict_path_folder_zarr_to_zarr_object[ path_folder_zarr ].get_mask_selection(*args, **kwargs)
+            path_folder_zarr = args[0]
+            args = args[1:]
+            return self._dict_path_folder_zarr_to_zarr_object[
+                path_folder_zarr
+            ].get_mask_selection(*args, **kwargs)
 
     def set_coordinate_selection(self, *args, **kwargs):
         """# 2022-12-05 22:55:58
@@ -1533,9 +1572,11 @@ class ZarrObjects:
             return self._proxy_object.set_coordinate_selection(*args, **kwargs)
         else:
             # parse 'path_folder_zarr'
-            path_folder_zarr = args[ 0 ]
-            args = args[ 1 : ]
-            return self._dict_path_folder_zarr_to_zarr_object[ path_folder_zarr ].set_coordinate_selection(*args, **kwargs)
+            path_folder_zarr = args[0]
+            args = args[1:]
+            return self._dict_path_folder_zarr_to_zarr_object[
+                path_folder_zarr
+            ].set_coordinate_selection(*args, **kwargs)
 
     def set_basic_selection(self, *args, **kwargs):
         """# 2022-12-05 22:55:58
@@ -1545,9 +1586,11 @@ class ZarrObjects:
             return self._proxy_object.set_basic_selection(*args, **kwargs)
         else:
             # parse 'path_folder_zarr'
-            path_folder_zarr = args[ 0 ]
-            args = args[ 1 : ]
-            return self._dict_path_folder_zarr_to_zarr_object[ path_folder_zarr ].set_basic_selection(*args, **kwargs)
+            path_folder_zarr = args[0]
+            args = args[1:]
+            return self._dict_path_folder_zarr_to_zarr_object[
+                path_folder_zarr
+            ].set_basic_selection(*args, **kwargs)
 
     def set_orthogonal_selection(self, *args, **kwargs):
         """# 2022-12-05 22:55:58
@@ -1557,9 +1600,11 @@ class ZarrObjects:
             return self._proxy_object.set_orthogonal_selection(*args, **kwargs)
         else:
             # parse 'path_folder_zarr'
-            path_folder_zarr = args[ 0 ]
-            args = args[ 1 : ]
-            return self._dict_path_folder_zarr_to_zarr_object[ path_folder_zarr ].set_orthogonal_selection(*args, **kwargs)
+            path_folder_zarr = args[0]
+            args = args[1:]
+            return self._dict_path_folder_zarr_to_zarr_object[
+                path_folder_zarr
+            ].set_orthogonal_selection(*args, **kwargs)
 
     def set_mask_selection(self, *args, **kwargs):
         """# 2022-12-05 22:55:58
@@ -1569,9 +1614,11 @@ class ZarrObjects:
             return self._proxy_object.set_mask_selection(*args, **kwargs)
         else:
             # parse 'path_folder_zarr'
-            path_folder_zarr = args[ 0 ]
-            args = args[ 1 : ]
-            return self._dict_path_folder_zarr_to_zarr_object[ path_folder_zarr ].set_mask_selection(*args, **kwargs)
+            path_folder_zarr = args[0]
+            args = args[1:]
+            return self._dict_path_folder_zarr_to_zarr_object[
+                path_folder_zarr
+            ].set_mask_selection(*args, **kwargs)
 
     def resize(self, *args, **kwargs):
         """# 2022-12-05 22:55:58
@@ -1581,9 +1628,11 @@ class ZarrObjects:
             return self._proxy_object.resize(*args, **kwargs)
         else:
             # parse 'path_folder_zarr'
-            path_folder_zarr = args[ 0 ]
-            args = args[ 1 : ]
-            return self._dict_path_folder_zarr_to_zarr_object[ path_folder_zarr ].resize(*args, **kwargs)
+            path_folder_zarr = args[0]
+            args = args[1:]
+            return self._dict_path_folder_zarr_to_zarr_object[path_folder_zarr].resize(
+                *args, **kwargs
+            )
 
     def __getitem__(self, args):
         """# 2022-12-05 22:55:58
@@ -1593,9 +1642,11 @@ class ZarrObjects:
             return self._proxy_object.getitem(args)
         else:
             # parse 'path_folder_zarr'
-            path_folder_zarr = args[ 0 ]
-            args = args[ 1 : ]
-            return self._dict_path_folder_zarr_to_zarr_object[ path_folder_zarr ].__getitem__(args)
+            path_folder_zarr = args[0]
+            args = args[1:]
+            return self._dict_path_folder_zarr_to_zarr_object[
+                path_folder_zarr
+            ].__getitem__(args)
 
     def __setitem__(self, args, values):
         """# 2022-12-05 22:55:58
@@ -1605,9 +1656,11 @@ class ZarrObjects:
             return self._proxy_object.setitem(args, values)
         else:
             # parse 'path_folder_zarr'
-            path_folder_zarr = args[ 0 ]
-            args = args[ 1 : ]
-            return self._dict_path_folder_zarr_to_zarr_object[ path_folder_zarr ].__setitem__(args, values)
+            path_folder_zarr = args[0]
+            args = args[1:]
+            return self._dict_path_folder_zarr_to_zarr_object[
+                path_folder_zarr
+            ].__setitem__(args, values)
 
     def getitem(self, args):
         """# 2023-09-24 18:08:07
@@ -1620,6 +1673,7 @@ class ZarrObjects:
         public wrapper of '__setitem__'
         """
         return self.__setitem__(args, values)
+
 
 class SpinLockFileHolder:
     """# 2023-11-06 23:04:15
@@ -1832,6 +1886,7 @@ class SpinLockFileHolder:
 class ManagerFileSystem(BaseManager):
     pass
 
+
 ManagerFileSystem.register("FileSystemOperator", FileSystemOperator)
 ManagerFileSystem.register("ZarrObjects", ZarrObjects)
 
@@ -1855,7 +1910,7 @@ class FileSystemOperatorPool:
         managed_filesystemoperator = getattr(manager, "FileSystemOperator")(
             dict_kwargs_s3
         )
-        managed_zarrobjects = getattr(manager, "ZarrObjects")( )
+        managed_zarrobjects = getattr(manager, "ZarrObjects")()
         return {
             "manager": manager,
             "managed_filesystemoperator": managed_filesystemoperator,
@@ -1880,7 +1935,7 @@ class FileSystemOperatorPool:
             )
         else:  # perform all operations in the current process
             self._fs = FileSystemOperator(dict_kwargs_s3)
-            self._zs = ZarrObjects( )
+            self._zs = ZarrObjects()
 
     def get_operator(self):
         """# 2023-09-24 17:08:07
@@ -1893,20 +1948,20 @@ class FileSystemOperatorPool:
             if self.flag_spawn
             else self._fs
         )
-    
+
     def get_zarr_objects(self):
         """# 2023-09-24 17:08:07
         get a filesystemoperator, randomly selected from the pool
         """
         return (
             ZarrObjects(
-                proxy_object = self._l_mfs[np.random.randint(self._int_num_processes)][
+                proxy_object=self._l_mfs[np.random.randint(self._int_num_processes)][
                     "managed_zarrobjects"
                 ]
             )
             if self.flag_spawn
             else self._zs
-        ) # return the wrapped zarr object
+        )  # return the wrapped zarr object
 
     def create_spinlockfileholder(
         self,
