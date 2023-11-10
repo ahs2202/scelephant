@@ -18,6 +18,7 @@ from . import managers
 ||||||||||||||||||||||||||||||||
 """
 
+# from scelephant import managers
 # from scelephant.core import *
 # from biobookshelf import BA
 # from biobookshelf import STR
