@@ -122,12 +122,14 @@ def get_or_create_eventloop():
             asyncio.set_event_loop(loop)
             return asyncio.get_event_loop()
 
+
 async def read_local_file_async(file_name, mode):
     """# 2023-09-24 19:50:02
     read file using 'aiofiles'
     """
     async with aiofiles.open(file_name, mode=mode) as f:
         return await f.read()
+
 
 async def write_local_file_async(file_name, mode, content):
     """# 2023-09-24 19:50:22
@@ -136,19 +138,22 @@ async def write_local_file_async(file_name, mode, content):
     async with aiofiles.open(file_name, mode=mode) as f:
         return await f.write(content)
 
+
 async def listdir_local_file_async(path_folder) -> List[str]:
-    """# 2023-11-12 01:46:17 
+    """# 2023-11-12 01:46:17
     list directory file using 'aiofiles'
     """
-    if path_folder[ -1 ] != '/' : # add '/' to the end of the path
-        path_folder += '/'
-    return list( path_folder + e for e in ( await aiofiles.os.listdir(path_folder) ) )
+    if path_folder[-1] != "/":  # add '/' to the end of the path
+        path_folder += "/"
+    return list(path_folder + e for e in (await aiofiles.os.listdir(path_folder)))
+
 
 async def rename_local_file_async(file_name_src, file_name_dst) -> None:
     """# 2023-09-24 19:50:02
     rename file using 'aiofiles'
     """
     return await aiofiles.os.rename(file_name, file_name_dst)
+
 
 async def remove_local_file_async(path_file, flag_recursive: bool = True) -> None:
     """# 2023-09-24 19:50:02
@@ -160,19 +165,28 @@ async def remove_local_file_async(path_file, flag_recursive: bool = True) -> Non
         else aiofiles.os.remove(path_file)
     )  # use aioshutil.rmtree if flag_recursive is True and deleting a folder
 
-async def copy_local_file_async(path_file_src : str, path_file_dst : str, flag_recursive: bool = False) -> None:
+
+async def copy_local_file_async(
+    path_file_src: str, path_file_dst: str, flag_recursive: bool = False
+) -> None:
     """# 2023-09-24 19:50:02
     copy file or a tree using 'aioshutil' copyfile or copytree functions
-    
+
     flag_recursive: bool = True
     """
-    return await ( aioshutil.copytree(path_file_src, path_file_dst) if flag_recursive else aioshutil.copyfile(path_file_src, path_file_dst) )
+    return await (
+        aioshutil.copytree(path_file_src, path_file_dst)
+        if flag_recursive
+        else aioshutil.copyfile(path_file_src, path_file_dst)
+    )
+
 
 async def check_local_file_async(file_name) -> bool:
     """# 2023-09-24 19:50:22
     check file using 'aiofiles'
     """
     return await aiofiles.os.path.exists(file_name)
+
 
 async def fetch_http_file_async(session, url: str, mode: str = "rt") -> str:
     """# 2023-09-24 19:50:22
@@ -187,12 +201,14 @@ async def fetch_http_file_async(session, url: str, mode: str = "rt") -> str:
             output = output.decode()
         return output
 
+
 async def check_http_file_async(session, url: str) -> bool:
     """# 2023-09-24 19:50:22
     check a http file using 'aiohttp'
     """
     async with session.get(url) as response:
         return response.status == 200
+
 
 async def fetch_http_files_async(l_path_file: List[str], mode: str = "rt") -> List[str]:
     """# 2023-09-24 19:50:22
@@ -209,6 +225,7 @@ async def fetch_http_files_async(l_path_file: List[str], mode: str = "rt") -> Li
             )
         )  # read the contents
     return l_content
+
 
 async def check_http_files_async(l_path_file: List[str]) -> List[bool]:
     """# 2023-09-24 19:50:22
@@ -250,15 +267,30 @@ async def exists_s3_files_async(l_path_file: List[str], dict_kwargs_s3: dict = d
     await session.close()
     return l_content
 
-async def copy_s3_files_async(l_path_file_src: List[str], l_path_file_dst: List[str], flag_recursive: bool = False, dict_kwargs_s3: dict = dict()):
+
+async def copy_s3_files_async(
+    l_path_file_src: List[str],
+    l_path_file_dst: List[str],
+    flag_recursive: bool = False,
+    dict_kwargs_s3: dict = dict(),
+):
     s3 = s3fs.S3FileSystem(asynchronous=True, **dict_kwargs_s3)
     session = await s3.set_session(refresh=True)
     loop = get_or_create_eventloop()
     l_content = loop.run_until_complete(
-        asyncio.gather(*list(s3._copy(path_file_src, path_file_dst, flag_recursive = flag_recursive) for path_file_src, path_file_dst in zip( l_path_file_src, l_path_file_dst )), return_exceptions=True,)
+        asyncio.gather(
+            *list(
+                s3._copy(path_file_src, path_file_dst, flag_recursive=flag_recursive)
+                for path_file_src, path_file_dst in zip(
+                    l_path_file_src, l_path_file_dst
+                )
+            ),
+            return_exceptions=True,
+        )
     )  # read the contents
     await session.close()
     return l_content
+
 
 async def rm_s3_files_async(
     l_path_file: List[str], flag_recursive: bool = True, dict_kwargs_s3: dict = dict()
@@ -314,6 +346,7 @@ async def put_s3_files_async(
     )  # copy the files
     await session.close()
     return l_content
+
 
 async def get_s3_files_async(
     l_path_file_remote: List[str],
@@ -440,9 +473,9 @@ class FileSystemOperator:
 
     def local_listdir(self, path_src: str, **kwargs):
         """# 2023-11-07 00:02:04"""
-        if path_src[ -1 ] != '/' : # add '/' to the end of the path
-            path_src += '/'
-        return list( path_src + e for e in os.listdir(path_src) )
+        if path_src[-1] != "/":  # add '/' to the end of the path
+            path_src += "/"
+        return list(path_src + e for e in os.listdir(path_src))
 
     def http_exists(self, path_src: str, **kwargs):
         return (
@@ -537,8 +570,8 @@ class FileSystemOperator:
 
     def s3_listdir(self, path_src: str, **kwargs):
         """# 2023-01-08 23:05:40"""
-        str_prefix = 's3://' # 's3://' prefix should be added to the output
-        return list( str_prefix + e for e in self._s3.ls(path_src) ) 
+        str_prefix = "s3://"  # 's3://' prefix should be added to the output
+        return list(str_prefix + e for e in self._s3.ls(path_src))
 
     def exists(self, path_src: str, **kwargs):
         """# 2023-11-07 16:56:47"""
@@ -560,7 +593,7 @@ class FileSystemOperator:
             res = self.local_read_file(path_src, mode, **kwargs)
         return res
 
-    def write_file(self, path_src : str, mode : str = "wt", content="", **kwargs):
+    def write_file(self, path_src: str, mode: str = "wt", content="", **kwargs):
         """# 2023-11-07 16:56:47"""
         if is_s3_url(path_src):
             res = self.s3_write_file(path_src, mode, content, **kwargs)
@@ -611,57 +644,56 @@ class FileSystemOperator:
             res = self.local_glob(path_src, flag_recursive=flag_recursive, **kwargs)
         return res
 
-    def _classify_path( self, path_src : str ) :
-        ''' # 2023-11-11 14:56:20
+    def _classify_path(self, path_src: str):
+        """# 2023-11-11 14:56:20
         0 = local
         1 = http
         2 = s3
-        '''
-        if is_s3_url(path_src) :
+        """
+        if is_s3_url(path_src):
             return 2
-        if is_http_url(path_src) :
-            return 1 
+        if is_http_url(path_src):
+            return 1
         return 0
-    
+
     def mv(self, path_src: str, path_dest: str, **kwargs):
         """# 2023-11-07 16:56:47
         특별한 경우 제외하고 read/write/rm으로 해결하기
         """
         # classify paths
-        t_src_dest = (self._classify_path( path_src ), self._classify_path( path_dest ))
-        if t_src_dest == ( 2, 2 ) :  # both paths should be on s3
+        t_src_dest = (self._classify_path(path_src), self._classify_path(path_dest))
+        if t_src_dest == (2, 2):  # both paths should be on s3
             res = self.s3_mv(path_src, path_dest, **kwargs)
-        elif t_src_dest == ( 1, 2 ) :
+        elif t_src_dest == (1, 2):
             raise NotImplementedError("not implemented")
-        elif t_src_dest == ( 0, 2 ) :
+        elif t_src_dest == (0, 2):
             raise NotImplementedError("not implemented")
-        elif t_src_dest == ( 2, 1 ) :
+        elif t_src_dest == (2, 1):
             raise NotImplementedError("not implemented")
-        elif t_src_dest == ( 1, 1 ) :
+        elif t_src_dest == (1, 1):
             raise NotImplementedError("not implemented")
-        elif t_src_dest == ( 0, 1 ) :
+        elif t_src_dest == (0, 1):
             raise NotImplementedError("not implemented")
-        elif t_src_dest == ( 2, 0 ) :
+        elif t_src_dest == (2, 0):
             raise NotImplementedError("not implemented")
-        elif t_src_dest == ( 1, 0 ) :
+        elif t_src_dest == (1, 0):
             raise NotImplementedError("not implemented")
-        elif t_src_dest == ( 0, 0 ) : # local to local
+        elif t_src_dest == (0, 0):  # local to local
             res = self.local_mv(path_src, path_dest, **kwargs)
 
     def cp(self, path_src: str, path_dest: str, flag_recursive: bool = True, **kwargs):
-        """# 2023-11-07 16:56:47
-        """
+        """# 2023-11-07 16:56:47"""
         # classify paths
-        t_src_dest = (self._classify_path( path_src ), self._classify_path( path_dest ))
-        if t_src_dest in { ( 2, 2 ), ( 0, 2 ), ( 2, 0 ) } :  # at least one path is on s3
+        t_src_dest = (self._classify_path(path_src), self._classify_path(path_dest))
+        if t_src_dest in {(2, 2), (0, 2), (2, 0)}:  # at least one path is on s3
             res = self.s3_cp(path_src, path_dest, flag_recursive, **kwargs)
-        elif t_src_dest in { ( 1, 2 ), ( 1, 0 ) } : # http read
-            if flag_recursive :
+        elif t_src_dest in {(1, 2), (1, 0)}:  # http read
+            if flag_recursive:
                 raise NotImplementedError("http recursive read not implemented")
-            self.write_file( path_src, "wb", content = self.read_file( path_src, 'rb' ) )
-        elif t_src_dest in { ( 2, 1 ), ( 1, 1 ), ( 0, 1 ) } : # http write
+            self.write_file(path_src, "wb", content=self.read_file(path_src, "rb"))
+        elif t_src_dest in {(2, 1), (1, 1), (0, 1)}:  # http write
             raise NotImplementedError("http write not implemented")
-        elif t_src_dest == ( 0, 0 ) : # local to local
+        elif t_src_dest == (0, 0):  # local to local
             res = self.local_cp(path_src, path_dest, flag_recursive, **kwargs)
 
     def isdir(self, path_src: str, **kwargs):
@@ -676,14 +708,14 @@ class FileSystemOperator:
 
     def listdir(self, path_src: str, **kwargs):
         """# 2023-11-07 16:56:47"""
-        try :
+        try:
             if is_s3_url(path_src):
                 res = self.s3_listdir(path_src, **kwargs)
             elif is_http_url(path_src):
                 raise NotImplementedError("http listdir not implemented")
             else:
                 res = self.local_listdir(path_src, **kwargs)
-        except FileNotFoundError : # handles 'FileNotFoundError'
+        except FileNotFoundError:  # handles 'FileNotFoundError'
             res = None
         return res
 
@@ -737,10 +769,13 @@ class FileSystemOperator:
             (None if isinstance(res, FileNotFoundError) else res) for res in result
         )  # if 'FileNotFoundError' is returned, convert it to None
         return result
-    
+
     def local_copy_files_async(
-        self, l_path_file_src: List[str], l_path_file_dst: List[str], flag_recursive: bool = False
-    ) :
+        self,
+        l_path_file_src: List[str],
+        l_path_file_dst: List[str],
+        flag_recursive: bool = False,
+    ):
         """# 2023-09-24 19:42:55
         copy local files asynchronously
         """
@@ -748,7 +783,12 @@ class FileSystemOperator:
         result = loop.run_until_complete(
             asyncio.gather(
                 *list(
-                    copy_local_file_async(path_file_src, path_file_dst, flag_recursive = flag_recursive) for path_file_src, path_file_dst in zip( l_path_file_src, l_path_file_dst )
+                    copy_local_file_async(
+                        path_file_src, path_file_dst, flag_recursive=flag_recursive
+                    )
+                    for path_file_src, path_file_dst in zip(
+                        l_path_file_src, l_path_file_dst
+                    )
                 ),
                 return_exceptions=True,
             )
@@ -765,7 +805,7 @@ class FileSystemOperator:
         write local files asynchronously
         """
         loop = get_or_create_eventloop()
-        l_path_file = list( dict_path_file_to_content ) # retrieve list of files
+        l_path_file = list(dict_path_file_to_content)  # retrieve list of files
         l_res = loop.run_until_complete(
             asyncio.gather(
                 *list(
@@ -776,7 +816,7 @@ class FileSystemOperator:
                 )
             )
         )
-        return dict( ( path_file, res ) for path_file, res in zip( l_path_file, l_res ) )
+        return dict((path_file, res) for path_file, res in zip(l_path_file, l_res))
 
     def http_read_files_async(
         self, l_path_file: List[str], mode: str = "rt"
@@ -819,7 +859,7 @@ class FileSystemOperator:
             )
         )
         return result
-    
+
     def s3_put_files_async(
         self, l_path_file_local: List[str], l_path_file_remote: List[str]
     ):
@@ -830,9 +870,12 @@ class FileSystemOperator:
             )
         )
         return result
-    
+
     def s3_copy_files_async(
-        self, l_path_file_src: List[str], l_path_file_dst: List[str], flag_recursive : bool = False
+        self,
+        l_path_file_src: List[str],
+        l_path_file_dst: List[str],
+        flag_recursive: bool = False,
     ):
         """# 2023-09-24 23:15:06"""
         result = asyncio.run(
@@ -875,9 +918,11 @@ class FileSystemOperator:
             l_path_file_local=l_path_file_local, l_path_file_remote=l_path_file_remote
         )
         """ delete temporary files """
-        self.local_rm_files_async( l_path_file_local, flag_recursive = False )
-        
-        return dict( ( path_file, res ) for path_file, res in zip( l_path_file_remote, l_res ) )
+        self.local_rm_files_async(l_path_file_local, flag_recursive=False)
+
+        return dict(
+            (path_file, res) for path_file, res in zip(l_path_file_remote, l_res)
+        )
 
     def write_files(self, dict_path_file_to_content: dict, mode: str = "wt") -> None:
         """# 2023-11-07 13:21:59
@@ -904,19 +949,25 @@ class FileSystemOperator:
                 ] = dict_path_file_to_content[path_file]
 
         """ write files for each type of resource """
-        dict_res = dict( )
+        dict_res = dict()
         # http not yet implemented
-        dict_res.update( self.local_write_files_async(
-            dict_path_file_to_content=dict_type_rsc_to_dict_path_file_to_content[
-                "local"
-            ],
-            mode=mode,
-        ) )
-        dict_res.update( self.s3_write_files_async(
-            dict_path_file_to_content=dict_type_rsc_to_dict_path_file_to_content["s3"],
-            mode=mode,
-        ) )
-        return dict_res # return results
+        dict_res.update(
+            self.local_write_files_async(
+                dict_path_file_to_content=dict_type_rsc_to_dict_path_file_to_content[
+                    "local"
+                ],
+                mode=mode,
+            )
+        )
+        dict_res.update(
+            self.s3_write_files_async(
+                dict_path_file_to_content=dict_type_rsc_to_dict_path_file_to_content[
+                    "s3"
+                ],
+                mode=mode,
+            )
+        )
+        return dict_res  # return results
 
     def _classify_l_path_file(self, l_path_file: List[str]) -> List[List[int]]:
         """# 2023-11-07 14:09:43
@@ -1008,10 +1059,12 @@ class FileSystemOperator:
             for res, idx in zip(l_res_current_rsc, l_idx_current_rsc):
                 l_res[idx] = res
         return l_res
-    
-    def _classify_l_path_file_src_and_l_path_file_dst(self, l_path_file_src : List[str], l_path_file_dst : List[str]) -> List[List[List[ str ]]]:
+
+    def _classify_l_path_file_src_and_l_path_file_dst(
+        self, l_path_file_src: List[str], l_path_file_dst: List[str]
+    ) -> List[List[List[str]]]:
         """# 2023-11-07 14:09:43
-        classify l_path_file_src and l_path_file_dst, and return two lists, l_l_path_file_src and l_l_path_file_dst, each list contain 9 lists corresponds to 
+        classify l_path_file_src and l_path_file_dst, and return two lists, l_l_path_file_src and l_l_path_file_dst, each list contain 9 lists corresponds to
         ( 0, 0 )
         ( 0, 1 )
         ( 0, 2 )
@@ -1022,45 +1075,76 @@ class FileSystemOperator:
         ( 2, 1 )
         ( 2, 2 )
         where
-        ( path_src, path_dst ) 
+        ( path_src, path_dst )
         and
         0 = local
         1 = http
         2 = s3
         """
-        l_l_path_file_src = list( [ ] for _ in range( 9 ) )
-        l_l_path_file_dst = list( [ ] for _ in range( 9 ) )
-        for path_file_src, path_file_dst in zip( l_path_file_src, l_path_file_dst ) :
-            l_l_path_file_src[ 3 * self._classify_path( path_file_src ) + self._classify_path( path_file_dst ) ].append( path_file_src )
-            l_l_path_file_dst[ 3 * self._classify_path( path_file_src ) + self._classify_path( path_file_dst ) ].append( path_file_dst )
+        l_l_path_file_src = list([] for _ in range(9))
+        l_l_path_file_dst = list([] for _ in range(9))
+        for path_file_src, path_file_dst in zip(l_path_file_src, l_path_file_dst):
+            l_l_path_file_src[
+                3 * self._classify_path(path_file_src)
+                + self._classify_path(path_file_dst)
+            ].append(path_file_src)
+            l_l_path_file_dst[
+                3 * self._classify_path(path_file_src)
+                + self._classify_path(path_file_dst)
+            ].append(path_file_dst)
         return l_l_path_file_src, l_l_path_file_dst
-    
-    def copy_files( self, l_path_file_src : List[str], l_path_file_dst : List[str] ) -> None :
-        ''' # 2023-11-12 01:23:02 
+
+    def copy_files(
+        self, l_path_file_src: List[str], l_path_file_dst: List[str]
+    ) -> None:
+        """# 2023-11-12 01:23:02
         only support files, not folders
         handles mixed inputs (s3 -> local, local -> s3, http -> local, etc.)
-        '''
-        l_l_path_file_src, l_l_path_file_dst = self._classify_l_path_file_src_and_l_path_file_dst( l_path_file_src, l_path_file_dst ) # classify paths
-        ''' local > local '''
-        if len( l_l_path_file_src[ 0 ] ) > 0 :
-            self.local_copy_files_async( l_l_path_file_src[ 0 ], l_l_path_file_dst[ 0 ], flag_recursive = False )
-        ''' s3 > s3 '''
-        if len( l_l_path_file_src[ 8 ] ) > 0 :
-            self.s3_copy_files_async( l_l_path_file_src[ 8 ], l_l_path_file_dst[ 8 ], flag_recursive = False )
-        ''' local > s3 '''
-        if len( l_l_path_file_src[ 2 ] ) > 0 :
-            self.s3_put_files_async( l_l_path_file_src[ 2 ], l_l_path_file_dst[ 2 ] )
-        ''' s3 > local '''
-        if len( l_l_path_file_src[ 6 ] ) > 0 :
-            self.s3_get_files_async( l_l_path_file_src[ 6 ], l_l_path_file_dst[ 6 ] )
-        ''' all others '''
-        l_path_file_src_default, l_path_file_dst_default = [ ], [ ] # collect list of file paths
-        for i in [3, 5] : # [ 1, 4, 7 ] (write to http currently not supported)
-            l_path_file_src_default.extend( l_l_path_file_src[ i ] )
-            l_path_file_dst_default.extend( l_l_path_file_dst[ i ] )
-        if len( l_path_file_src_default ) > 0 :
-            l_content = self.read_files( l_path_file_src_default, 'rb' ) # read files (using binary input)
-            self.write_files( dict( ( path_file_dst, content ) for content, path_file_dst in zip( l_content, l_path_file_dst_default ) if content is not None ), mode = "wb" ) # write files (using binary output)
+        """
+        (
+            l_l_path_file_src,
+            l_l_path_file_dst,
+        ) = self._classify_l_path_file_src_and_l_path_file_dst(
+            l_path_file_src, l_path_file_dst
+        )  # classify paths
+        """ local > local """
+        if len(l_l_path_file_src[0]) > 0:
+            self.local_copy_files_async(
+                l_l_path_file_src[0], l_l_path_file_dst[0], flag_recursive=False
+            )
+        """ s3 > s3 """
+        if len(l_l_path_file_src[8]) > 0:
+            self.s3_copy_files_async(
+                l_l_path_file_src[8], l_l_path_file_dst[8], flag_recursive=False
+            )
+        """ local > s3 """
+        if len(l_l_path_file_src[2]) > 0:
+            self.s3_put_files_async(l_l_path_file_src[2], l_l_path_file_dst[2])
+        """ s3 > local """
+        if len(l_l_path_file_src[6]) > 0:
+            self.s3_get_files_async(l_l_path_file_src[6], l_l_path_file_dst[6])
+        """ all others """
+        l_path_file_src_default, l_path_file_dst_default = (
+            [],
+            [],
+        )  # collect list of file paths
+        for i in [3, 5]:  # [ 1, 4, 7 ] (write to http currently not supported)
+            l_path_file_src_default.extend(l_l_path_file_src[i])
+            l_path_file_dst_default.extend(l_l_path_file_dst[i])
+        if len(l_path_file_src_default) > 0:
+            l_content = self.read_files(
+                l_path_file_src_default, "rb"
+            )  # read files (using binary input)
+            self.write_files(
+                dict(
+                    (path_file_dst, content)
+                    for content, path_file_dst in zip(
+                        l_content, l_path_file_dst_default
+                    )
+                    if content is not None
+                ),
+                mode="wb",
+            )  # write files (using binary output)
 
     def read_json_files(self, l_path_file: List[str]) -> List[dict]:
         """# 2023-11-07 21:42:26"""
@@ -1078,33 +1162,42 @@ class FileSystemOperator:
             ),
             "wt",
         )  # write the encoded json file
-        
-    def zarr_exists( self, path_folder_zarr : str ) -> bool :
-        """ # 2023-11-11 14:39:30 
+
+    def zarr_exists(self, path_folder_zarr: str) -> bool:
+        """# 2023-11-11 14:39:30
         check a zarr object (either group or array) exists
         """
-        for content in self.read_files([
-            f"{path_folder_zarr}.zgroup",
-            f"{path_folder_zarr}.zarray",
-        ], "rt") : # retrieve file contents
-            if content is not None : # if a valid content exists, return True
+        for content in self.read_files(
+            [
+                f"{path_folder_zarr}.zgroup",
+                f"{path_folder_zarr}.zarray",
+            ],
+            "rt",
+        ):  # retrieve file contents
+            if content is not None:  # if a valid content exists, return True
                 return True
-        return False # if no valid content exists, return False
-    
+        return False  # if no valid content exists, return False
+
     def zarr_copy(
-        self, path_folder_zarr_source, path_folder_zarr_sink,
+        self,
+        path_folder_zarr_source,
+        path_folder_zarr_sink,
     ):
-        """# 2023-11-11 14:44:57 
+        """# 2023-11-11 14:44:57
         copy a soruce zarr object to a sink zarr object
         (copy associated attributes, too.)
 
         'path_folder_zarr_source' : source zarr object path
         'path_folder_zarr_sink' : sink zarr object path
         """
-        self.mkdir( path_folder_zarr_sink, exist_ok = True ) # create the output folder
-        l_path_file_src = self.listdir( path_folder_zarr_source )
-        l_path_file_dst = list( path_folder_zarr_sink + path_file.rsplit( '/', 1 )[ 1 ] for path_file in l_path_file_src )
-        self.copy_files( l_path_file_src, l_path_file_dst )
+        self.mkdir(path_folder_zarr_sink, exist_ok=True)  # create the output folder
+        l_path_file_src = self.listdir(path_folder_zarr_source)
+        l_path_file_dst = list(
+            path_folder_zarr_sink + path_file.rsplit("/", 1)[1]
+            for path_file in l_path_file_src
+        )
+        self.copy_files(l_path_file_src, l_path_file_dst)
+
 
 class ZarrObject:
     """# 2023-09-24 17:50:46
@@ -1835,8 +1928,10 @@ class ZarrObjects:
             path_folder_zarr = args[0]
             args = args[1:]
             za = self._dict_path_folder_zarr_to_zarr_object[path_folder_zarr]
-            za.resize( *args, **kwargs )
-            self._dict_path_folder_zarr_to_properties[path_folder_zarr][ 'shape' ] = za.shape # update shape
+            za.resize(*args, **kwargs)
+            self._dict_path_folder_zarr_to_properties[path_folder_zarr][
+                "shape"
+            ] = za.shape  # update shape
 
     def __getitem__(self, args):
         """# 2022-12-05 22:55:58
