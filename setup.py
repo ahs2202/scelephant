@@ -27,6 +27,7 @@ setup(
         # essentials
         "aiofiles>=23.2.1",
         "nest_asyncio>=1.5.6",
+        "aioshutil>=1.3",
         "zarr>=2.16.0",
         "fsspec>=2023.6.0",
         "s3fs>=2023.6.0",
