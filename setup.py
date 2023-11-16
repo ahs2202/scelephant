@@ -12,22 +12,20 @@ with open(os.path.join(HERE, "README.md")) as fid:
 
 setup(
     name="scelephant",
-    version="0.1.2",
+    version="0.2.1",
     author="Hyunsu An",
     author_email="ahs2202@gm.gist.ac.kr",
-    description="SC-elephant (Single-Cell Extremely Large Data Analysis Platform)",
+    description="SC-Elephant (Single-Cell Extremely Large Data Analysis Platform)",
     long_description=README,
     long_description_content_type="text/markdown",
     url="https://github.com/ahs2202/scelephant",
     license="GPLv3",
     packages=find_packages(),
-    python_requires=">=3.8, <4",
+    python_requires=">=3.8",
     include_package_data=True,
     install_requires=[
         # essentials
-        "aiofiles>=23.2.1",
-        "nest_asyncio>=1.5.6",
-        "aioshutil>=1.3",
+        "managed-file-system-operator>=0.0.1",
         "zarr>=2.16.0",
         "fsspec>=2023.6.0",
         "s3fs>=2023.6.0",

@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# the date of last modification
 from scelephant.core import *
 
 import warnings

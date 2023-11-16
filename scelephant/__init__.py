@@ -3,7 +3,7 @@ from .__main__ import *
 from scelephant.core import *
 
 # Version of cressp package
-__version__ = "0.1.0"
+__version__ = "0.2.1"
 
 # import modules
 
