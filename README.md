@@ -1,4 +1,6 @@
 # SC-Elephant (Single-Cell Extremely Large Data Analysis Platform)
+[![PyPI version](https://badge.fury.io/py/scelephant.svg)](https://badge.fury.io/py/scelephant)
+
 ![scelephant-logo](doc/img/scelephant_logo.png)
 
 
@@ -24,5 +26,4 @@ The two RamDataAxis objects, <b>'Barcode'</b> and <b>'Feature'</b> objects, use 
 
 
 For a demonstration of the use of `RamData` object on a web browser, please visit http://scelephant.org/
-
 
