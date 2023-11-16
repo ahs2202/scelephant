@@ -1,9 +1,8 @@
+![scelephant-logo](https://raw.githubusercontent.com/ahs2202/scelephant/master/doc/img/scelephant_logo.png)
+
 # SC-Elephant (Single-Cell Extremely Large Data Analysis Platform)
+
 [![PyPI version](https://badge.fury.io/py/scelephant.svg)](https://badge.fury.io/py/scelephant)
-
-![scelephant-logo](doc/img/scelephant_logo.png)
-
-
 
 `SC-Elephant` utilizes `RamData`, a novel single-cell data storage format, to support a wide range of single-cell bioinformatics applications in a highly scalable manner, while providing a convenient interface to export any subset of the single-cell data in `SCANPY`'s `AnnData` format, enabling efficient downstream analysis the cells of interest. The analysis result can then be made available to other researchers by updating the original `RamData`, which can be stored in cloud storage like `AWS` (or any AWS-like object storage).
 
@@ -17,7 +16,7 @@ A <tt>RamData</tt> object is composed of two <b><tt>RamDataAxis</tt></b> (<b>Axi
 
 
 
-![scelephant-logo](doc/img/scelephant.js.structure.png)
+![scelephant-logo](https://raw.githubusercontent.com/ahs2202/scelephant/master/doc/img/scelephant.js.structure.png)
 
 
 
@@ -27,3 +26,4 @@ The two RamDataAxis objects, <b>'Barcode'</b> and <b>'Feature'</b> objects, use 
 
 For a demonstration of the use of `RamData` object on a web browser, please visit http://scelephant.org/
 
+![scelephant-js-example](https://raw.githubusercontent.com/ahs2202/scelephant/master/doc/img/scelephant_js_example.png)
