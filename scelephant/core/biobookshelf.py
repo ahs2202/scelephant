@@ -23,6 +23,7 @@ from multiprocessing import (
 import multiprocessing
 import multiprocessing as mp
 import collections
+from copy import copy, deepcopy
 
 
 def Wide(int_percent_html_code_cell_width=95):
