@@ -67,7 +67,7 @@ from tqdm import tqdm as progress_bar  # for progress bar
 # set logging format
 logging.basicConfig(
     format="%(asctime)s [%(name)s] <%(levelname)s> (%(funcName)s) - %(message)s",
-    level=logging.CRITICAL,
+    level = logging.CRITICAL,
 )
 logger = logging.getLogger("SC-Elephant")
 logger.setLevel(logging.INFO)
@@ -78,9 +78,9 @@ logger.setLevel(logging.INFO)
 
 
 # define version
-_version_ = "0.2.1"
+_version_ = "0.2.2"
 _scelephant_version_ = _version_
-_last_modified_time_ = "2023-11-16 22:54:23"
+_last_modified_time_ = "2023-11-18 01:27:54"
 
 str_release_note = [
     """
@@ -377,7 +377,6 @@ str_release_note = [
     """
 ]
 
-
 # for creating RamData from AnnData
 def create_ramtx_from_mtx(
     path_folder_mtx_10x_input: str,
@@ -401,9 +400,7 @@ def create_ramtx_from_mtx(
     chunks_dense: tuple = (2000, 1000),
     int_num_bytes_in_a_chunk_in_a_chunk_metadata: int = 320000,
     flag_combine_duplicate_records: bool = False,
-    file_system_operator_pool: Union[
-        None, managers.FileSystemOperatorPool
-    ] = None,  # the managers.FileSystemOperatorPool object to utilized for multiprocessing on remote objects.
+    file_system_operator_pool : Union[None, managers.FileSystemOperatorPool] = None, # the managers.FileSystemOperatorPool object to utilized for multiprocessing on remote objects.
     verbose: bool = False,
     flag_debugging: bool = False,
 ):
@@ -441,20 +438,14 @@ def create_ramtx_from_mtx(
     int_num_bytes_in_a_chunk_in_a_chunk_metadata : int = 320000, # the number of bytes in a chunk for metadata ZarrDataFrame objects
 
     """
-    fop = (
-        managers.FileSystemOperatorPool(3)
-        if not isinstance(file_system_operator_pool, managers.FileSystemOperatorPool)
-        else file_system_operator_pool
-    )
-    fo = fop.get_operator()
-    slh = fop.create_spinlockfileholder()
-    zs = fop.get_zarr_objects()
-
+    fop = managers.FileSystemOperatorPool( 3 ) if not isinstance( file_system_operator_pool, managers.FileSystemOperatorPool ) else file_system_operator_pool
+    fo = fop.get_operator( )
+    slh = fop.create_spinlockfileholder( )
+    zs = fop.get_zarr_objects( )
+    
     # check flag
     path_file_flag_completion = f"{path_folder_output}ramtx.completed.flag"
-    if fo.exists(
-        path_file_flag_completion
-    ):  # exit if a flag indicating the pipeline was completed previously.
+    if fo.exists( path_file_flag_completion ):  # exit if a flag indicating the pipeline was completed previously.
         return
 
     """ prepare """
@@ -475,9 +466,9 @@ def create_ramtx_from_mtx(
         path_folder_mtx_10x_input
     )  # retrieve metadata of mtx
     # create an output directory
-    fo.mkdir(path_folder_output, exist_ok=True)
+    fo.mkdir( path_folder_output, exist_ok=True)
     path_folder_temp = f"{path_folder_output}temp_{bk.UUID( )}/"
-    fo.mkdir(path_folder_temp, exist_ok=True)
+    fo.mkdir( path_folder_temp, exist_ok=True)
 
     """
     construct RAMTx (Zarr) matrix
@@ -498,7 +489,7 @@ def create_ramtx_from_mtx(
         )  # retrieve a flag whether to sort ramtx by id_feature or id_barcode.
         # open persistent zarr arrays to store matrix and matrix index
         path_za_mtx = f"{path_folder_output}matrix.zarr"
-        zs.open(
+        zs.open( 
             path_za_mtx,
             mode="w",
             shape=(int_num_records, 2),
@@ -549,7 +540,7 @@ def create_ramtx_from_mtx(
             flag_retrieve_categorical_data_as_integers=True,
             flag_enforce_name_col_with_only_valid_characters=False,
             flag_load_data_after_adding_new_column=False,
-            file_system_operator_pool=fop,
+            file_system_operator_pool = fop,
         )  # use the same chunk size for all feature/barcode objects
 
         # retrieve the chunk size for storing strings
@@ -582,17 +573,12 @@ def create_ramtx_from_mtx(
 
         # create a folder to save a chunked string representations
         path_folder_str_chunks = f"{path_folder_output}{name_axis}.str.chunks/"
-        fo.mkdir(path_folder_str_chunks, exist_ok=True)
+        fo.mkdir( path_folder_str_chunks, exist_ok=True)
         dict_metadata = {
             "int_num_entries": int_num_entries,
             "int_num_of_entries_in_a_chunk": int_num_of_entries_in_a_chunk_metadata,
         }  # write essential metadata for str.chunks
-        fo.write_json_files(
-            {
-                f"{path_folder_str_chunks}.zattrs": {"dict_metadata": dict_metadata},
-                f"{path_folder_str_chunks}.zgroup": {"zarr_format": 2},
-            }
-        )  # write the metadata
+        fo.write_json_files( { f"{path_folder_str_chunks}.zattrs" : { "dict_metadata" : dict_metadata }, f"{path_folder_str_chunks}.zgroup" : { "zarr_format": 2 } } ) # write the metadata
 
         # iterate over chunk by chunk
         for index_chunk, df in enumerate(
@@ -610,7 +596,7 @@ def create_ramtx_from_mtx(
                 (index_chunk + 1) * int_num_of_entries_in_a_chunk_metadata,
             )
             values_str = values[:, :2]  # retrieve string representations
-            zs[path_za, sl_chunk] = values_str  # set str.zarr
+            zs[ path_za, sl_chunk ] = values_str  # set str.zarr
             # set str.chunks
             for index_col, arr_val in enumerate(values_str.T):
                 with open(
@@ -640,17 +626,12 @@ def create_ramtx_from_mtx(
     }
     if mode.lower() != "dense":
         dict_metadata["flag_ramtx_sorted_by_id_feature"] = flag_mtx_sorted_by_id_feature
-
-    fo.mkdir(path_folder_output, exist_ok=True)
-    fo.write_json_files(
-        {
-            f"{path_folder_output}.zattrs": {"dict_metadata": dict_metadata},
-            f"{path_folder_output}.zgroup": {"zarr_format": 2},
-        }
-    )  # write the metadata
+        
+    fo.mkdir( path_folder_output, exist_ok = True )
+    fo.write_json_files( { f"{path_folder_output}.zattrs" : { "dict_metadata" : dict_metadata }, f"{path_folder_output}.zgroup" : { "zarr_format": 2 } } ) # write the metadata
 
     # delete temp folder
-    fo.rm(path_folder_temp)
+    fo.rm( path_folder_temp)
 
     """ write a flag indicating the export has been completed """
     with open(path_file_flag_completion, "w") as file:
@@ -679,9 +660,7 @@ def create_ramdata_from_mtx(
     int_num_bytes_in_a_chunk_in_a_chunk_metadata: int = 320000,
     flag_combine_duplicate_records: bool = False,
     flag_multiprocessing: bool = True,
-    file_system_operator_pool: Union[
-        None, managers.FileSystemOperatorPool
-    ] = None,  # the managers.FileSystemOperatorPool object to utilized for multiprocessing on remote objects.
+    file_system_operator_pool : Union[None, managers.FileSystemOperatorPool] = None, # the managers.FileSystemOperatorPool object to utilized for multiprocessing on remote objects.
     verbose: bool = False,
     flag_debugging: bool = False,
 ):
@@ -726,21 +705,15 @@ def create_ramdata_from_mtx(
     'name_layer' : a name of the ramdata layer to create (default: raw)
     """
     """ handle arguments """
-    fop = (
-        managers.FileSystemOperatorPool(3)
-        if not isinstance(file_system_operator_pool, managers.FileSystemOperatorPool)
-        else file_system_operator_pool
-    )
-    fo = fop.get_operator()
-    slh = fop.create_spinlockfileholder()
-    zs = fop.get_zarr_objects()
-
-    """ get absolute paths (spawned process does not share current working directory) """
-    if not managers.is_remote_url(
-        path_folder_ramdata_output
-    ):  # if the output path is a local directory, get an absolute path
-        path_folder_ramdata_output = os.path.abspath(path_folder_ramdata_output) + "/"
-
+    fop = managers.FileSystemOperatorPool( 3 ) if not isinstance( file_system_operator_pool, managers.FileSystemOperatorPool ) else file_system_operator_pool
+    fo = fop.get_operator( )
+    slh = fop.create_spinlockfileholder( )
+    zs = fop.get_zarr_objects( )
+    
+    ''' get absolute paths (spawned process does not share current working directory) '''
+    if not managers.is_remote_url( path_folder_ramdata_output ) : # if the output path is a local directory, get an absolute path
+        path_folder_ramdata_output = os.path.abspath( path_folder_ramdata_output ) + '/'
+    
     set_valid_modes = {
         "dense",
         "sparse_for_querying_barcodes",
@@ -774,7 +747,7 @@ def create_ramdata_from_mtx(
         "flag_combine_duplicate_records": flag_combine_duplicate_records,
         "verbose": verbose,
         "flag_debugging": flag_debugging,
-        "file_system_operator_pool": fop,
+        "file_system_operator_pool" : fop,
     }
 
     # compose processes
@@ -819,7 +792,7 @@ def create_ramdata_from_mtx(
     ) = MTX_10X_Retrieve_number_of_rows_columns_and_records(
         path_folder_mtx_10x_input
     )  # retrieve metadata of the input 10X mtx
-    fo.mkdir(path_folder_ramdata_output, exist_ok=True)
+    fo.mkdir( path_folder_ramdata_output, exist_ok = True )
     dict_metadata = {
         "path_folder_mtx_10x_input": path_folder_mtx_10x_input,
         "str_completed_time": bk.TIME_GET_timestamp(True),
@@ -829,16 +802,11 @@ def create_ramdata_from_mtx(
         "identifier": bk.UUID(),
         "models": dict(),
         "version": _version_,
-    }
-    fo.write_json_files(
-        {
-            f"{path_folder_ramdata_output}.zattrs": {"dict_metadata": dict_metadata},
-            f"{path_folder_ramdata_output}.zgroup": {"zarr_format": 2},
-        }
-    )  # write the metadata
-
+    } 
+    fo.write_json_files( { f"{path_folder_ramdata_output}.zattrs" : { "dict_metadata" : dict_metadata }, f"{path_folder_ramdata_output}.zgroup" : { "zarr_format": 2 } } ) # write the metadata
+    
     # write layer metadata
-    fo.mkdir(path_folder_ramdata_layer, exist_ok=True)
+    fo.mkdir( path_folder_ramdata_layer, exist_ok = True )
     dict_metadata = {
         "set_modes": list(set_modes)
         + (
@@ -848,12 +816,7 @@ def create_ramdata_from_mtx(
         ),  # dense ramtx can be operated for querying either barcodes/features
         "version": _version_,
     }
-    fo.write_json_files(
-        {
-            f"{path_folder_ramdata_layer}.zattrs": {"dict_metadata": dict_metadata},
-            f"{path_folder_ramdata_layer}.zgroup": {"zarr_format": 2},
-        }
-    )  # write the metadata
+    fo.write_json_files( { f"{path_folder_ramdata_layer}.zattrs" : { "dict_metadata" : dict_metadata }, f"{path_folder_ramdata_layer}.zgroup" : { "zarr_format": 2 } } ) # write the metadata
 
 
 def create_ramtx_from_adata(
@@ -880,13 +843,11 @@ def create_ramtx_from_adata(
     },
     l_name_col_str_repr_bc: list = ["index"],
     l_name_col_str_repr_ft: list = ["index", "index"],
-    file_system_operator_pool: Union[
-        None, managers.FileSystemOperatorPool
-    ] = None,  # the managers.FileSystemOperatorPool object to utilized for multiprocessing on remote objects.
+    file_system_operator_pool : Union[None, managers.FileSystemOperatorPool] = None, # the managers.FileSystemOperatorPool object to utilized for multiprocessing on remote objects.
     verbose: bool = False,
     flag_debugging: bool = False,
 ):
-    """# 2023-11-15 17:47:57
+    """# 2023-11-15 17:47:57 
     Write a given AnnData object as a RAMtx object
 
     Arguments:
@@ -918,20 +879,14 @@ def create_ramtx_from_adata(
     l_name_col_str_repr_bc : list = [ 'index' ] # the list of name of columns for string representations of the barcode axis. 'index' for using index values for string representations.
     l_name_col_str_repr_ft : list = [ 'index', 'index' ] # the list of name of columns for string representations of the feature axis. 'index' for using index values for string representations.
     """
-    fop = (
-        managers.FileSystemOperatorPool(3)
-        if not isinstance(file_system_operator_pool, managers.FileSystemOperatorPool)
-        else file_system_operator_pool
-    )
-    fo = fop.get_operator()
-    slh = fop.create_spinlockfileholder()
-    zs = fop.get_zarr_objects()
-
+    fop = managers.FileSystemOperatorPool( 3 ) if not isinstance( file_system_operator_pool, managers.FileSystemOperatorPool ) else file_system_operator_pool
+    fo = fop.get_operator( )
+    slh = fop.create_spinlockfileholder( )
+    zs = fop.get_zarr_objects( )
+    
     # check flag
     path_file_flag_completion = f"{path_folder_output}ramtx.completed.flag"
-    if fo.exists(
-        path_file_flag_completion
-    ):  # exit if a flag indicating the pipeline was completed previously.
+    if fo.exists(path_file_flag_completion):  # exit if a flag indicating the pipeline was completed previously.
         return
 
     """ prepare """
@@ -944,9 +899,9 @@ def create_ramtx_from_adata(
         adata.X.count_nonzero(),
     )  # retrieve metadata of mtx
     # create an output directory
-    fo.mkdir(path_folder_output, exist_ok=True)
+    fo.mkdir( path_folder_output, exist_ok=True)
     path_folder_temp = f"{path_folder_output}temp_{bk.UUID( )}/"
-    fo.mkdir(path_folder_temp, exist_ok=True)
+    fo.mkdir( path_folder_temp, exist_ok=True)
 
     """
     construct RAMTx (Zarr) matrix
@@ -993,16 +948,14 @@ def create_ramtx_from_adata(
             """# 2022-12-12 15:15:40
             write a dense mtx
             """
-            zs = fop.get_zarr_objects()
-            zs.open(path_za_mtx, "a")
+            zs = fop.get_zarr_objects( )
+            zs.open( path_za_mtx, 'a' )
             while True:
                 ins = pipe_receiver.recv()
                 if ins is None:
                     break
                 arr_int_bc, arr_int_ft, arr_value = ins  # parse the input
-                zs.set_coordinate_selection(
-                    path_za_mtx, (arr_int_bc, arr_int_ft), arr_value
-                )
+                zs.set_coordinate_selection( path_za_mtx, (arr_int_bc, arr_int_ft), arr_value)
                 pipe_sender.send(len(arr_value))  # report the number of records written
             pipe_sender.send(None)  # report that all works have been completed
 
@@ -1111,9 +1064,9 @@ def create_ramtx_from_adata(
             """# 2022-12-12 15:15:40
             write a dense mtx
             """
-            zs = fop.get_zarr_objects()
-            zs.open(path_za_mtx, "a")
-            zs.open(path_za_mtx_index, "a")
+            zs = fop.get_zarr_objects( )
+            zs.open( path_za_mtx, 'a' )
+            zs.open( path_za_mtx_index, 'a' )
             while True:
                 ins = pipe_receiver.recv()
                 if ins is None:
@@ -1161,7 +1114,7 @@ def create_ramtx_from_adata(
                 )
                 arr_index += st  # add the offset from the start of the sparse matrix to the index coordinates
                 zs.set_orthogonal_selection(
-                    path_za_mtx,
+                    path_za_mtx, 
                     slice(st, en),
                     np.vstack(
                         (arr_int_entry_of_the_axis_not_for_querying, arr_value)
@@ -1169,8 +1122,7 @@ def create_ramtx_from_adata(
                 )
                 zs.set_orthogonal_selection(
                     path_za_mtx_index,
-                    sorted(set(arr_int_entry_of_the_axis_for_querying)),
-                    arr_index,
+                    sorted(set(arr_int_entry_of_the_axis_for_querying)), arr_index
                 )
 
                 pipe_sender.send(
@@ -1242,7 +1194,7 @@ def create_ramtx_from_adata(
             f"{path_folder_output}{name_axis}.num_and_cat.zdf",
             int_num_rows=int_num_entries,
             int_num_bytes_in_a_chunk=int_num_bytes_in_a_chunk_in_a_chunk_metadata,
-            file_system_operator_pool=fop,
+            file_system_operator_pool = fop,
             **dict_kw_zdf,
         )  # use the same chunk size for feature/barcode objects
 
@@ -1293,24 +1245,19 @@ def create_ramtx_from_adata(
 
         # create a folder to save a chunked string representations
         path_folder_str_chunks = f"{path_folder_output}{name_axis}.str.chunks/"
-        fo.mkdir(path_folder_str_chunks, exist_ok=True)
+        fo.mkdir( path_folder_str_chunks, exist_ok=True)
         dict_metadata = {
             "int_num_entries": int_num_entries,
             "int_num_of_entries_in_a_chunk": int_num_of_entries_in_a_chunk_metadata,
         }  # write essential metadata for str.chunks
-        fo.write_json_files(
-            {
-                f"{path_folder_str_chunks}.zattrs": {"dict_metadata": dict_metadata},
-                f"{path_folder_str_chunks}.zgroup": {"zarr_format": 2},
-            }
-        )  # write the metadata
+        fo.write_json_files( { f"{path_folder_str_chunks}.zattrs" : { "dict_metadata" : dict_metadata }, f"{path_folder_str_chunks}.zgroup" : { "zarr_format": 2 } } ) # write the metadata
 
         # add multi-dimensional data to the metadata
         for name_key in m:
             zdf[name_key] = m[name_key]
 
         # save string representations
-        zs[path_za, :] = arr_str  # set str.zarr
+        zs[ path_za, : ] = arr_str  # set str.zarr
         # save str.chunks
         index_chunk = 0
         while index_chunk * int_num_of_entries_in_a_chunk_metadata < int_num_entries:
@@ -1342,16 +1289,11 @@ def create_ramtx_from_adata(
     }
     if mode.lower() != "dense":
         dict_metadata["flag_ramtx_sorted_by_id_feature"] = flag_mtx_sorted_by_id_feature
-    fo.mkdir(path_folder_output, exist_ok=True)
-    fo.write_json_files(
-        {
-            f"{path_folder_output}.zattrs": {"dict_metadata": dict_metadata},
-            f"{path_folder_output}.zgroup": {"zarr_format": 2},
-        }
-    )  # write the metadata
+    fo.mkdir( path_folder_output, exist_ok = True )
+    fo.write_json_files( { f"{path_folder_output}.zattrs" : { "dict_metadata" : dict_metadata }, f"{path_folder_output}.zgroup" : { "zarr_format": 2 } } ) # write the metadata
 
     # delete temp folder
-    fo.rm(path_folder_temp)
+    fo.rm( path_folder_temp)
 
     """ write a flag indicating the export has been completed """
     with open(path_file_flag_completion, "w") as file:
@@ -1383,9 +1325,7 @@ def create_ramdata_from_adata(
     l_name_col_str_repr_bc: list = ["index"],
     l_name_col_str_repr_ft: list = ["index", "index"],
     flag_multiprocessing: bool = True,
-    file_system_operator_pool: Union[
-        None, managers.FileSystemOperatorPool
-    ] = None,  # the managers.FileSystemOperatorPool object to utilized for multiprocessing on remote objects.
+    file_system_operator_pool : Union[None, managers.FileSystemOperatorPool] = None, # the managers.FileSystemOperatorPool object to utilized for multiprocessing on remote objects.
     verbose: bool = False,
     flag_debugging: bool = False,
 ):
@@ -1428,15 +1368,11 @@ def create_ramdata_from_adata(
     flag_multiprocessing : bool = True # if True, create RAMtx objects in parallel
     """
     """ handle arguments """
-    fop = (
-        managers.FileSystemOperatorPool(3)
-        if not isinstance(file_system_operator_pool, managers.FileSystemOperatorPool)
-        else file_system_operator_pool
-    )
-    fo = fop.get_operator()
-    slh = fop.create_spinlockfileholder()
-    zs = fop.get_zarr_objects()
-
+    fop = managers.FileSystemOperatorPool( 3 ) if not isinstance( file_system_operator_pool, managers.FileSystemOperatorPool ) else file_system_operator_pool
+    fo = fop.get_operator( )
+    slh = fop.create_spinlockfileholder( )
+    zs = fop.get_zarr_objects( )
+    
     set_valid_modes = {
         "dense",
         "sparse_for_querying_barcodes",
@@ -1469,7 +1405,7 @@ def create_ramdata_from_adata(
         "l_name_col_str_repr_ft": l_name_col_str_repr_ft,
         "verbose": verbose,
         "flag_debugging": flag_debugging,
-        "file_system_operator_pool": fop,
+        "file_system_operator_pool" : fop,
     }
 
     if flag_multiprocessing:  # build multiple RAMtx objects simultaneously
@@ -1515,7 +1451,7 @@ def create_ramdata_from_adata(
         len(adata.obs),
         adata.X.count_nonzero(),
     )  # retrieve metadata of mtx
-    fo.mkdir(path_folder_ramdata_output, exist_ok=True)
+    fo.mkdir( path_folder_ramdata_output, exist_ok = True )
     dict_metadata = {
         "path_folder_mtx_10x_input": None,
         "str_completed_time": bk.TIME_GET_timestamp(True),
@@ -1526,15 +1462,10 @@ def create_ramdata_from_adata(
         "models": dict(),
         "version": _version_,
     }
-    fo.write_json_files(
-        {
-            f"{path_folder_ramdata_output}.zattrs": {"dict_metadata": dict_metadata},
-            f"{path_folder_ramdata_output}.zgroup": {"zarr_format": 2},
-        }
-    )  # write the metadata
-
+    fo.write_json_files( { f"{path_folder_ramdata_output}.zattrs" : { "dict_metadata" : dict_metadata }, f"{path_folder_ramdata_output}.zgroup" : { "zarr_format": 2 } } ) # write the metadata
+    
     # write layer metadata
-    fo.mkdir(path_folder_ramdata_layer, exist_ok=True)
+    fo.mkdir( path_folder_ramdata_layer, exist_ok = True )
     dict_metadata = {
         "set_modes": list(set_modes)
         + (
@@ -1544,13 +1475,8 @@ def create_ramdata_from_adata(
         ),  # dense ramtx can be operated for querying either barcodes/features
         "version": _version_,
     }
-    fo.write_json_files(
-        {
-            f"{path_folder_ramdata_layer}.zattrs": {"dict_metadata": dict_metadata},
-            f"{path_folder_ramdata_layer}.zgroup": {"zarr_format": 2},
-        }
-    )  # write the metadata
-
+    fo.write_json_files( { f"{path_folder_ramdata_layer}.zattrs" : { "dict_metadata" : dict_metadata }, f"{path_folder_ramdata_layer}.zgroup" : { "zarr_format": 2 } } ) # write the metadata
+    
     logger.info(
         f"Exporting of a RamData object at '{path_folder_ramdata_output}' was completed"
     )
@@ -1560,7 +1486,7 @@ def create_ramdata_from_adata(
 
 
 class ZarrDataFrame:
-    """# 2023-11-15 16:04:57
+    """# 2023-11-15 16:04:57 
     storage-based persistant DataFrame backed by Zarr persistent arrays.
     each column can be separately loaded, updated, and unloaded.
     a filter can be set, which allows updating and reading ZarrDataFrame as if it only contains the rows indicated by the given filter.
@@ -1694,18 +1620,14 @@ class ZarrDataFrame:
         float_second_to_wait_before_checking_availability_of_a_spin_lock: float = 0.1,
         int_num_bytes_in_a_chunk: int = 320000,
         spinlockfileholder: Union[None, bool, managers.SpinLockFileHolder] = None,
-        file_system_operator_pool: Union[
-            None, managers.FileSystemOperatorPool
-        ] = None,  # the managers.FileSystemOperatorPool object to utilized for multiprocessing on remote objects.
-        dict_metadata: Union[
-            None, dict
-        ] = None,  # dict_metadata of ZarrDataFrame. if None is given, it will be loaded from the storage
+        file_system_operator_pool : Union[None, managers.FileSystemOperatorPool] = None, # the managers.FileSystemOperatorPool object to utilized for multiprocessing on remote objects.
+        dict_metadata : Union[ None, dict ] = None, # dict_metadata of ZarrDataFrame. if None is given, it will be loaded from the storage
         flag_spawn: Union[None, bool] = None,
         int_num_cpus: int = 10,
         zdf_template=None,
-        flag_mask: bool = False,
+        flag_mask: bool = False,    
     ):
-        """# 2023-11-14 23:04:50"""
+        """# 2023-11-14 23:04:50  """
         # set attributes from arguments
         if zdf_template is not None:
             # set attributes that can be changed anytime during the lifetime of the object
@@ -1834,14 +1756,10 @@ class ZarrDataFrame:
             )
 
         # load file system operators
-        self._fop = (
-            file_system_operator_pool
-            if isinstance(file_system_operator_pool, managers.FileSystemOperatorPool)
-            else managers.FileSystemOperatorPool(3)
-        )
-        self._fo = self._fop.get_operator()
-        self._zs = self._fop.get_zarr_objects()
-
+        self._fop = file_system_operator_pool if isinstance( file_system_operator_pool, managers.FileSystemOperatorPool ) else managers.FileSystemOperatorPool( 3 )
+        self._fo = self._fop.get_operator( )
+        self._zs = self._fop.get_zarr_objects( )
+        
         # load a zarr spin lock server depending on the settings
         # %% LOCKING %%
         if isinstance(spinlockfileholder, managers.SpinLockFileHolder):
@@ -1849,7 +1767,7 @@ class ZarrDataFrame:
         elif (
             spinlockfileholder
         ):  # if 'spinlockfileholder' is True, start a new zarr spin lock server (without spawning a new process)
-            self._lh = self._fop.create_spinlockfileholder()
+            self._lh = self._fop.create_spinlockfileholder( )
         else:  # if 'spinlockfileholder' is False or None, does not use a synchronization feature
             self._lh = None
 
@@ -1876,10 +1794,8 @@ class ZarrDataFrame:
                     self._l_n_rows_unfiltered
                 )  # assumes given zdf has valid number of rows
 
-        if isinstance(
-            dict_metadata, dict
-        ):  # use the 'dict_metadata' given through the argument if available.
-            self._dict_metadata = dict_metadata
+        if isinstance( dict_metadata, dict ) : # use the 'dict_metadata' given through the argument if available.
+            self._dict_metadata = dict_metadata 
             """ %% TEMP for back-ward compatibility %% """
             if "int_num_bytes_in_a_chunk" not in self._dict_metadata:
                 # update metadata that were create before 2023-01-18 20:06:29
@@ -1895,13 +1811,13 @@ class ZarrDataFrame:
                         (col, None) for col in self._dict_metadata["columns"]
                     )
                     self.set_metadata(self._dict_metadata)  # save metadata
-        else:
+        else :
             # open or initialize zdf and retrieve associated metadata
             if not self._fo.zarr_exists(
                 self.path_folder
             ):  # if the object does not exist, initialize a ZarrDataFrame
                 # create the output folder
-                self._fo.mkdir(self.path_folder, exist_ok=True)
+                self._fo.mkdir( self.path_folder, exist_ok=True)
 
                 # set metadata
                 self._dict_metadata = {
@@ -1916,18 +1832,9 @@ class ZarrDataFrame:
                 # if 'int_num_rows' has been given, add it to the metadata
                 if int_num_rows is not None:
                     self._dict_metadata["int_num_rows"] = int_num_rows
-                self._fo.write_json_files(
-                    {
-                        f"{self.path_folder}.zattrs": {
-                            "dict_metadata": self._dict_metadata
-                        },
-                        f"{self.path_folder}.zgroup": {"zarr_format": 2},
-                    }
-                )  # write the metadata # initialize the zarr object
+                self._fo.write_json_files( { f"{self.path_folder}.zattrs" : { "dict_metadata" : self._dict_metadata }, f"{self.path_folder}.zgroup" : { "zarr_format": 2 } } ) # write the metadata # initialize the zarr object
             else:
-                self._dict_metadata = (
-                    self.get_metadata()
-                )  # retrieve the metadata from the storage
+                self._dict_metadata = self.get_metadata() # retrieve the metadata from the storage
 
         # apply filter once the zdf is properly initialized
         self.filter = ba_filter
@@ -1986,11 +1893,11 @@ class ZarrDataFrame:
             - 5,  # the maximum number of bytes for a folder name in Linux (255) # additional number of bytes (5) required for certain operations of the ZarrDataFrame object
         )
 
-    def change_operator(self):
-        """# 2023-11-15 16:04:36"""
-        self._fo = self._fop.get_operator()
-        self._zs = self._fop.get_zarr_objects()
-
+    def change_operator( self ) :
+        ''' # 2023-11-15 16:04:36  '''
+        self._fo = self._fop.get_operator( )
+        self._zs = self._fop.get_zarr_objects( )
+    
     @property
     def path_folder(self):
         """# 2023-04-12 17:19:28"""
@@ -2427,7 +2334,7 @@ class ZarrDataFrame:
     @property
     def metadata(self):
         """# 2022-07-21 02:38:31"""
-        return self.get_metadata()
+        return self.get_metadata() if self.use_locking else self._dict_metadata
 
     def get_metadata(self):
         """# 2022-12-13 02:00:26
@@ -2440,16 +2347,14 @@ class ZarrDataFrame:
                 f"{self._path_folder_zdf}.zattrs.lock"
             )  # wait until a lock is released
             self._dict_metadata = self._fo.read_json_file(
-                self._path_folder_zdf + ".zattrs"
-            )[
-                "dict_metadata"
-            ]  # retrieve metadata from the storage, and update the metadata stored in the object
+                self._path_folder_zdf + '.zattrs'
+            )[ "dict_metadata" ]  # retrieve metadata from the storage, and update the metadata stored in the object
         elif not hasattr(
             self, "_dict_metadata"
         ):  # when locking is not used but the metadata has not been loaded, read the metadata without using the locking algorithm
-            self._dict_metadata = self._fo.read_json_file(self.path_folder + ".zattrs")[
-                "dict_metadata"
-            ]  # retrieve 'dict_metadata' from the storage
+            self._dict_metadata = self._fo.read_json_file(
+                self.path_folder + '.zattrs'
+            )[ "dict_metadata" ] # retrieve 'dict_metadata' from the storage
         return self._dict_metadata  # return the metadata
 
     def set_metadata(self, dict_metadata: dict):
@@ -2466,16 +2371,14 @@ class ZarrDataFrame:
                 f"{self._path_folder_zdf}.zattrs.lock"
             )  # acquire a lock
             self._fo.write_json_file(
-                self._path_folder_zdf + ".zattrs",
-                {"dict_metadata": self._dict_metadata},
+                self._path_folder_zdf + '.zattrs', { "dict_metadata" : self._dict_metadata }
             )  # write metadata to the storage
             self._lh.release_lock(
                 f"{self._path_folder_zdf}.zattrs.lock"
             )  # release the lock
         else:  # if locking is not used, set metadata
             self._fo.write_json_file(
-                self._path_folder_zdf + ".zattrs",
-                {"dict_metadata": self._dict_metadata},
+                self._path_folder_zdf + '.zattrs', { "dict_metadata" : self._dict_metadata }
             )  # write metadata to the storage
 
     def update_metadata(
@@ -2543,8 +2446,7 @@ class ZarrDataFrame:
                 dict_rename_name_col,
             )  # update 'self._dict_metadata' with 'dict_metadata_to_be_updated'
             self._fo.write_json_file(
-                self._path_folder_zdf + ".zattrs",
-                {"dict_metadata": self._dict_metadata},
+                self._path_folder_zdf + '.zattrs', { "dict_metadata" : self._dict_metadata }
             )  # write metadata to the storage
         else:  # when locking has been enabled
             self._lh.acquire_lock(
@@ -2552,10 +2454,8 @@ class ZarrDataFrame:
             )  # acquire a lock
 
             self._dict_metadata = self._fo.read_json_file(
-                self._path_folder_zdf + ".zattrs",
-            )[
-                "dict_metadata"
-            ]  # read metadata from the storage and update the metadata
+                self._path_folder_zdf + '.zattrs', 
+            )[ "dict_metadata" ]  # read metadata from the storage and update the metadata
             self._dict_metadata = __update_dict_metadata(
                 self._dict_metadata,
                 dict_metadata_to_be_updated,
@@ -2563,8 +2463,7 @@ class ZarrDataFrame:
                 dict_rename_name_col,
             )  # update 'self._dict_metadata' with 'dict_metadata_to_be_updated'
             self._fo.write_json_file(
-                self._path_folder_zdf + ".zattrs",
-                {"dict_metadata": self._dict_metadata},
+                self._path_folder_zdf + '.zattrs', { "dict_metadata" : self._dict_metadata }
             )  # write metadata to the storage
 
             self._lh.release_lock(
@@ -2588,17 +2487,15 @@ class ZarrDataFrame:
                 return self._mask.get_column_metadata(name_col=name_col)
 
             # %% FILE LOCKING %%
-            if self._lh is not None:  # if locking is used, wait until lock is released
+            if (
+                self._lh is not None
+            ):  # if locking is used, wait until lock is released
                 self._lh.wait_lock(
                     f"{self._path_folder_zdf}{name_folder}.lock"
                 )  # wait until a lock is released
 
             # read metadata
-            dict_col_metadata = self._fo.read_json_file(
-                f"{self._path_folder_zdf}{name_folder}/.zattrs"
-            )[
-                "dict_col_metadata"
-            ]  # retrieve metadata of the current column
+            dict_col_metadata = self._fo.read_json_file( f"{self._path_folder_zdf}{name_folder}/.zattrs" )[ "dict_col_metadata" ] # retrieve metadata of the current column
 
             return dict_col_metadata
 
@@ -2609,16 +2506,10 @@ class ZarrDataFrame:
         if (
             name_col in self.columns_excluding_components
         ):  # if the column is located in the current object
-            name_folder = self._get_folder_name_from_column_name(
-                name_col
-            )  # retrieve the name of the folder
+            name_folder = self._get_folder_name_from_column_name( name_col )  # retrieve the name of the folder
             # if mask is available return the metadata from the mask
-            if (
-                self._mask is not None and name_col in self._mask
-            ):  # if the column is available in the mask
-                return self._mask.set_column_metadata(
-                    name_col=name_col, dict_col_metadata=dict_col_metadata
-                )
+            if ( self._mask is not None and name_col in self._mask ):  # if the column is available in the mask
+                return self._mask.set_column_metadata( name_col=name_col, dict_col_metadata=dict_col_metadata )
 
             # %% FILE LOCKING %%
             if self.use_locking:  # if locking is used, acquire the lock
@@ -2629,9 +2520,12 @@ class ZarrDataFrame:
             try:
                 # read column metadata
                 _folder = f"{self._path_folder_zdf}{name_folder}/"
-                self._zs.open(_folder, mode="a")  # open the Zarr object
+                self._zs.open(
+                    _folder, mode="a"
+                )  # open the Zarr object
                 self._zs.set_attrs(
-                    _folder, dict_col_metadata=dict_col_metadata
+                    _folder,
+                    dict_col_metadata=dict_col_metadata
                 )  # set metadata of the current column
 
                 if "dict_metadata_description" in dict_col_metadata:
@@ -2686,9 +2580,9 @@ class ZarrDataFrame:
 
             try:
                 # read metadata
-                path_za = f"{self._path_folder_zdf}{name_folder}/"  # read data from the Zarr object
-                dict_attrs = self._fo.read_json_file(path_za + ".zattrs")
-                dict_col_metadata = dict_attrs["dict_col_metadata"]  # get attributes
+                path_za = f"{self._path_folder_zdf}{name_folder}/" # read data from the Zarr object
+                dict_attrs = self._fo.read_json_file( path_za + '.zattrs' )
+                dict_col_metadata = dict_attrs[ "dict_col_metadata" ] # get attributes
 
                 # update 'dict_col_metadata_description'
                 if (
@@ -2724,9 +2618,9 @@ class ZarrDataFrame:
                 dict_col_metadata.update(
                     dict_col_metadata_to_be_updated
                 )  # update 'dict_col_metadata'
-                dict_attrs["dict_col_metadata"] = dict_col_metadata
+                dict_attrs[ "dict_col_metadata" ] = dict_col_metadata
                 self._fo.write_json_file(
-                    path_za + ".zattrs",
+                    path_za + '.zattrs',
                     dict_attrs,
                 )  # save the column metadata
             finally:
@@ -2859,7 +2753,7 @@ class ZarrDataFrame:
         name_col_availability: Union[None, str] = None,
         flag_retrieve_from_all_interleaved_components: bool = False,
     ) -> None:
-        """# 2023-11-14 20:30:22
+        """# 2023-11-14 20:30:22 
         perform lazy-loading of a given column using the column containing availability values.
         it will automatically detect the source objects based on the current setting.
 
@@ -2894,7 +2788,9 @@ class ZarrDataFrame:
 
         if name_col_sink is None and path_column_sink is None:
             if self.verbose:
-                logger.info(f"the sink column cannot be identified, exiting")
+                logger.info(
+                    f"the sink column cannot be identified, exiting"
+                )
             return
         # check whether the sink column is being lazy-loaded
         path_column_sink = (
@@ -2902,11 +2798,9 @@ class ZarrDataFrame:
             if path_column_sink is None
             else path_column_sink
         )
-        """ check if sink column exists with the appropriate metadata  """
-        if self._fo.exists(
-            path_column_sink + ".zattrs"
-        ):  # look for metadata of the sink column
-            dict_attrs = self._fo.read_json_file(path_column_sink + ".zattrs")
+        ''' check if sink column exists with the appropriate metadata  '''
+        if self._fo.exists(path_column_sink + '.zattrs'): # look for metadata of the sink column
+            dict_attrs = self._fo.read_json_file( path_column_sink + '.zattrs' )
             if (
                 "flag_is_being_lazy_loaded" not in dict_attrs
             ):  # if the column has not been marked with a flag indicating lazy-loading has been started, exit
@@ -2975,7 +2869,9 @@ class ZarrDataFrame:
                 )
         if name_col_availability is None:
             if self.verbose:
-                logger.info(f"'name_col_availability' has not been given")
+                logger.info(
+                    f"'name_col_availability' has not been given"
+                )
             return
 
         # initialize sink column
@@ -3062,21 +2958,20 @@ class ZarrDataFrame:
                     )  # open source zarr object
                     # open sink zarr object
                     if not self._fo.zarr_exists(path_column_sink):
-                        prop_za_source = self._zs.properties[path_column_source]
+                        prop_za_source = self._zs.properties[ path_column_source ]
                         self._zs.open(
                             path_column_sink,
                             mode="a",
-                            shape=prop_za_source["shape"],
-                            chunks=prop_za_source["chunks"],
-                            fill_value=prop_za_source["fill_value"],
+                            shape=prop_za_source[ 'shape' ],
+                            chunks=prop_za_source[ 'chunks' ],
+                            fill_value=prop_za_source[ 'fill_value' ],
                             dtype=str
-                            if isinstance(
-                                prop_za_source["dtype"], np.dtypes.ObjectDType
-                            )
-                            else prop_za_source["dtype"],
+                            if isinstance( prop_za_source[ 'dtype' ], np.dtypes.ObjectDType )
+                            else prop_za_source[ 'dtype' ],
                         )
                         self._zs.set_attrs(
-                            path_column_sink, flag_is_being_lazy_loaded=True
+                            path_column_sink,
+                            flag_is_being_lazy_loaded=True
                         )  # update metadata of the sink column
                     else:
                         self._zs.open(path_column_sink, mode="a")
@@ -3086,16 +2981,15 @@ class ZarrDataFrame:
                         self._zs.set_orthogonal_selection(
                             path_column_sink,
                             sl_all,
-                            self._zs.get_orthogonal_selection(
-                                path_column_source, sl_all
-                            ),
+                            self._zs.get_orthogonal_selection( path_column_source, sl_all),
                         )  # update sink column values from values using the source ZarrDataFrame
                     else:
                         self._zs.set_orthogonal_selection(
                             path_column_sink,
                             l_int_entry_that_needs_fetching,
                             self._zs.get_orthogonal_selection(
-                                path_column_source, l_int_entry_that_needs_fetching
+                                path_column_source,
+                                l_int_entry_that_needs_fetching
                             ),
                         )  # update sink column values from values using the source ZarrDataFrame
                 elif self.is_combined:
@@ -3144,30 +3038,29 @@ class ZarrDataFrame:
                             ):  # if all data will be loaded in a single access, do not mark the column as being lazy loaded
                                 self._zs.open(path_column_sink, mode="a")
                                 self._zs.set_attrs(
-                                    path_column_sink, flag_is_being_lazy_loaded=True
+                                    path_column_sink, 
+                                    flag_is_being_lazy_loaded=True
                                 )  # update metadata of the sink column
                         else:  # external mode
                             self._zs.open(
                                 path_column_source, mode="r"
                             )  # open source zarr object
-                            prop_za_source = self._zs.properties[path_column_source]
+                            prop_za_source = self._zs.properties[ path_column_source ]
                             if not self._fo.zarr_exists(path_column_sink):
                                 dtype = (
                                     str
-                                    if isinstance(
-                                        prop_za_source["dtype"], np.dtypes.ObjectDType
-                                    )
-                                    else prop_za_source["dtype"]
+                                    if isinstance( prop_za_source[ 'dtype' ], np.dtypes.ObjectDType )
+                                    else prop_za_source[ 'dtype' ]
                                 )  # retrieve dtype
                                 chunks_not_primary_axis = list(
-                                    prop_za_source["chunks"][1:]
+                                    prop_za_source[ 'chunks' ][1:]
                                 )  # retrieve 'chunks_not_primary_axis'
                                 self._zs.open(
                                     path_column_sink,
                                     mode="a",
                                     shape=tuple(
                                         [self._n_rows_unfiltered]
-                                        + list(prop_za_source["shape"][1:])
+                                        + list(prop_za_source[ 'shape' ][1:])
                                     ),
                                     chunks=tuple(
                                         [
@@ -3178,11 +3071,12 @@ class ZarrDataFrame:
                                         ]
                                         + chunks_not_primary_axis
                                     ),
-                                    fill_value=prop_za_source["fill_value"],
+                                    fill_value=prop_za_source[ 'fill_value' ],
                                     dtype=dtype,
                                 )
                                 self._zs.set_attrs(
-                                    path_column_sink, flag_is_being_lazy_loaded=True
+                                    path_column_sink,
+                                    flag_is_being_lazy_loaded=True
                                 )  # update metadata of the sink column
                             else:
                                 self._zs.open(
@@ -3205,7 +3099,7 @@ class ZarrDataFrame:
                                 ]  # update sink column values from values using the source ZarrDataFrame
                             else:
                                 self._zs.set_orthogonal_selection(
-                                    path_column_sink,
+                                    path_column_sink, 
                                     slice(
                                         dict_index_mapping_from_combined_to_component.int_offset,
                                         dict_index_mapping_from_combined_to_component.int_offset
@@ -3261,7 +3155,8 @@ class ZarrDataFrame:
                                         path_column_sink,
                                         l_int_entry_combined,
                                         self._zs.get_orthogonal_selection(
-                                            path_column_source, l_int_entry_component
+                                            path_column_source,
+                                            l_int_entry_component
                                         ),
                                     )  # update sink column values from values using the source ZarrDataFrame
                             del l_int_entry_combined, l_int_entry_component
@@ -3284,7 +3179,7 @@ class ZarrDataFrame:
             del self[name_col_availability]  # delete the column
             # update metadata of the sink column
             self._zs.open(path_column_sink, mode="a")
-            self._zs.set_attrs(path_column_sink, flag_is_being_lazy_loaded=False)
+            self._zs.set_attrs( path_column_sink, flag_is_being_lazy_loaded=False)
         else:
             # save metadata of availability column
             self.set_column_metadata(
@@ -3460,15 +3355,13 @@ class ZarrDataFrame:
             # automatically set arguments based on the template column
             path_za = path_col_template
             self._zs.open(path_za, mode="r")  # open zarr object
-            prop_za = self._zs.properties[path_za]
-            dtype = prop_za["dtype"]
-            shape_not_primary_axis = prop_za["shape"][1:]
-            chunks = prop_za["chunks"]
-            fill_value = prop_za["fill_value"]
+            prop_za = self._zs.properties[ path_za ]
+            dtype = prop_za[ 'dtype' ]
+            shape_not_primary_axis = prop_za[ 'shape' ][1:]
+            chunks = prop_za[ 'chunks' ]
+            fill_value = prop_za[ 'fill_value' ]
             # retrieve column metadata
-            dict_col_metadata = self._fo.read_json_file(path_za + ".zattrs")[
-                "dict_col_metadata"
-            ]
+            dict_col_metadata = self._fo.read_json_file( path_za + '.zattrs' )[ "dict_col_metadata" ]
             dict_metadata_description = (
                 dict_col_metadata["dict_metadata_description"]
                 if "dict_metadata_description" in dict_col_metadata
@@ -3482,11 +3375,7 @@ class ZarrDataFrame:
             )  # retrieve categorical values
 
         # interpret object dtype as the string datatype
-        if (
-            isinstance(dtype, np.dtypes.ObjectDType)
-            or dtype == np.dtype("O")
-            or dtype == "object"
-        ):
+        if isinstance( dtype, np.dtypes.ObjectDType ) or dtype == np.dtype("O") or dtype == "object":
             dtype = str
 
         # if no column is initialized, return data used for initialization
@@ -3646,10 +3535,7 @@ class ZarrDataFrame:
                     )  # create a new Zarr object if the object does not exist.
 
                     # write metadata
-                    self._fo.write_json_file(
-                        path_folder_col + ".zattrs",
-                        {"dict_col_metadata": dict_col_metadata},
-                    )
+                    self._fo.write_json_file( path_folder_col + '.zattrs', { "dict_col_metadata" : dict_col_metadata } )
 
                     # add column to zdf (and update the associated metadata)
                     self._add_column(name_col, dict_metadata_description)
@@ -3669,14 +3555,14 @@ class ZarrDataFrame:
                 "dict_col_metadata": dict_col_metadata,  # containing required data to initialize a ZarrDataFrame column
             }
             return dict_data_for_initialization
-
-    def change_operator(self):
-        """# 2023-11-14 16:22:49
+        
+    def change_operator( self ) :
+        """ # 2023-11-14 16:22:49
         changing opertor in a forked process is recommended to increase the performance by distributing the workload across the operator pool
         """
         # reload operators
-        self._zs = self._fop.get_zarr_objects()
-        self._fo = self._fop.get_operator()
+        self._zs = self._fop.get_zarr_objects( )
+        self._fo = self._fop.get_operator( )
 
     def __getitem__(self, args):
         """# 2022-12-11 05:45:07
@@ -3909,21 +3795,19 @@ class ZarrDataFrame:
                 if (
                     flag_coords_in_bool_mask
                     and isinstance(coords, np.ndarray)
-                    and self._zs.properties[path_za]["shape"] == coords.shape
+                    and self._zs.properties[ path_za ][ 'shape' ] == coords.shape
                 ):
                     # use mask selection
-                    values = self._zs.get_mask_selection(path_za, coords)
+                    values = self._zs.get_mask_selection( path_za, coords)
                 elif flag_coords_in_coordinate_arrays:
                     # coordinate array selection
-                    values = self._zs.get_coordinate_selection(path_za, coords)
+                    values = self._zs.get_coordinate_selection( path_za, coords)
                 else:
                     # use orthogonal selection as a default
                     values = (
-                        self._zs.get_orthogonal_selection(
-                            path_za, tuple([coords] + list(coords_rest))
-                        )
+                        self._zs.get_orthogonal_selection( path_za, tuple([coords] + list(coords_rest)))
                         if flag_indexing_in_non_primary_axis
-                        else self._zs.get_orthogonal_selection(path_za, coords)
+                        else self._zs.get_orthogonal_selection( path_za, coords)
                     )
 
                 # check whether the current column contains categorical data
@@ -4090,15 +3974,11 @@ class ZarrDataFrame:
                 """read settings from the existing columns"""
                 path_za = path_folder_col
                 self._zs.open(path_za, mode="a")  # open Zarr object
-                dict_col_metadata = self._fo.read_json_file(path_za + ".zattrs")[
-                    "dict_col_metadata"
-                ]  # load previous written metadata
+                dict_col_metadata = self._fo.read_json_file( path_za + '.zattrs' )[ "dict_col_metadata" ]  # load previous written metadata
 
                 # retrieve dtype
                 dtype = (
-                    str
-                    if dict_col_metadata["flag_categorical"]
-                    else self._zs.properties[path_za]["dtype"]
+                    str if dict_col_metadata["flag_categorical"] else self._zs.properties[ path_za ][ 'dtype' ]
                 )  # dtype of cetegorical data columns should be str
             else:
                 dtype = None  # define default dtype
@@ -4335,11 +4215,11 @@ class ZarrDataFrame:
                     dtype=dtype,
                     fill_value=fill_value,
                 )  # create a new Zarr object if the object does not exist.
-                prop_za = self._zs.properties[path_za]
+                prop_za = self._zs.properties[ path_za ]
 
                 # if dtype changed from the previous zarr object, re-write the entire Zarr object with changed dtype. (this will happens very rarely, and will not significantly affect the performance)
                 if (
-                    dtype != prop_za["dtype"]
+                    dtype != prop_za[ 'dtype' ]
                 ):  # dtype should be larger than za.dtype if they are not equal (due to increased number of bits required to encode categorical data)
                     if self.verbose:
                         logger.info(
@@ -4350,17 +4230,15 @@ class ZarrDataFrame:
                     self._zs.open(
                         path_folder_col_new,
                         mode="w",
-                        shape=prop_za["shape"],
+                        shape=prop_za[ 'shape' ],
                         chunks=__replace_chunk_size_for_the_primary_axis(
-                            prop_za["chunks"], int_num_rows_in_a_chunk
+                            prop_za[ 'chunks' ], int_num_rows_in_a_chunk
                         ),
                         dtype=dtype,
                     )  # create a new Zarr object using the new dtype # use the new 'int_num_rows_in_a_chunk' from the new dtype
-                    self._zs[path_za_new, :] = self._zs[path_za, :]  # copy the data
-                    self._fo.rm(path_folder_col)  # delete the previous Zarr object
-                    self._fo.mv(
-                        path_folder_col_new, path_folder_col
-                    )  # replace the previous Zarr object with the new object
+                    self._zs[ path_za_new, : ] = self._zs[ path_za, : ]  # copy the data
+                    self._fo.rm( path_folder_col ) # delete the previous Zarr object
+                    self._fo.mv( path_folder_col_new, path_folder_col )  # replace the previous Zarr object with the new object
                     self._zs.open(
                         path_za, mode="a", reload=True
                     )  # re-open the new Zarr object
@@ -4407,9 +4285,7 @@ class ZarrDataFrame:
 
             # open zarr object and write data
             path_za = path_folder_col
-            self._zs.open(
-                path_za, mode="a"
-            ) if flag_col_already_exists else self._zs.open(
+            self._zs.open(path_za, mode="a") if flag_col_already_exists else self._zs.open(
                 path_za,
                 mode="w",
                 shape=shape_inferred,
@@ -4421,23 +4297,24 @@ class ZarrDataFrame:
             if (
                 flag_coords_in_bool_mask
                 and isinstance(coords, np.ndarray)
-                and self._zs.properties[path_za]["shape"] == coords.shape
+                and self._zs.properties[ path_za ][ 'shape' ] == coords.shape
             ):
                 # use mask selection
-                self._zs.set_mask_selection(path_za, coords, values)
+                self._zs.set_mask_selection( path_za, coords, values)
             elif flag_coords_in_coordinate_arrays:
                 # coordinate array selection
-                self._zs.set_coordinate_selection(path_za, coords, values)
+                self._zs.set_coordinate_selection( path_za, coords, values)
             else:
                 # use orthogonal selection as a default
                 self._zs.set_orthogonal_selection(
-                    path_za, tuple([coords] + list(coords_rest)), values
+                    path_za,
+                    tuple([coords] + list(coords_rest)), values
                 ) if flag_indexing_in_non_primary_axis else self._zs.set_orthogonal_selection(
                     path_za, coords, values
                 )
             # save/update column metadata
             if flag_update_dict_col_metadata:
-                self._zs.set_attrs(path_za, dict_col_metadata=dict_col_metadata)
+                self._zs.set_attrs( path_za, dict_col_metadata=dict_col_metadata)
 
             # update metadata of the current zdf object
             if name_col not in self._dict_metadata["columns"]:
@@ -4503,10 +4380,8 @@ class ZarrDataFrame:
                 self._lh.wait_lock(
                     f"{path_prefix_col}.lock"
                 )  # wait until the lock becomes available (the column is now ready for 'delete' operation)
-            if self._fo.exists(
-                path_prefix_col + "/",
-            ):  # delete the folder if the folder exists
-                self._fo.rm(path_prefix_col + "/")
+            if self._fo.exists( path_prefix_col + "/", ) :  # delete the folder if the folder exists
+                self._fo.rm( path_prefix_col + "/" )
 
     def __repr__(self):
         """# 2022-07-20 23:00:15"""
@@ -4582,7 +4457,7 @@ class ZarrDataFrame:
             # multiprocessing version
             def __work(pipe_receiver, pipe_sender):
                 """# 2023-01-20 13:10:40"""
-                self.change_operator()  # distribute load
+                self.change_operator( ) # distribute load
                 while True:
                     ins = pipe_receiver.recv()
                     if ins is None:
@@ -4644,7 +4519,7 @@ class ZarrDataFrame:
             del self[name_col]  # delete element from the current object
 
     def get_df(self, *l_name_col):
-        """# 2023-11-14 20:41:46
+        """# 2023-11-14 20:41:46 
         get dataframe of a given list of columns, and empty the cache
         """
         l_name_col = list(
@@ -4667,11 +4542,9 @@ class ZarrDataFrame:
         for name_col in l_name_col:  # for each column
             # retrieve values for the column
             arr = self[name_col]
-            if len(arr.shape) > 1:
-                raise RuntimeError(
-                    f"{len( arr.shape )}-dimensional array was stored in the {name_col} column. These columns should be retrieved as a dictionary, not as a DataFrame."
-                )
-
+            if len( arr.shape ) > 1 :
+                raise RuntimeError( f'{len( arr.shape )}-dimensional array was stored in the {name_col} column. These columns should be retrieved as a dictionary, not as a DataFrame.' )
+            
             if self.get_column_metadata(name_col)[
                 "flag_categorical"
             ]:  # if the column contains the categorical data, convert to categorical datatype
@@ -4704,7 +4577,7 @@ class ZarrDataFrame:
         # open a zarr object, and access the shape
         path_folder_zarr = f"{self._path_folder_zdf}{self._get_folder_name_from_column_name( name_col )}/"
         self._zs.open(path_folder_zarr, mode="r")
-        return self._zs.properties[path_folder_zarr]["shape"][
+        return self._zs.properties[ path_folder_zarr ][ 'shape' ][
             1:
         ]  # return the shape including the dimension of the primary axis
 
@@ -4913,7 +4786,7 @@ class ZarrDataFrame:
         """# 2022-12-05 23:45:38
         return the path to the zarr object.
         if mask is available and the current zdf contains remote zdf component or current zdf is remotely located, copy the zarr object of the column to the mask and return the path to the zarr object.
-
+        
         """
         # the column should exist
         if name_col not in self:
@@ -4980,7 +4853,7 @@ class ZarrDataFrame:
         path_folder_zarr = f"{self._path_folder_zdf}{name_folder}/"
 
         # if lock already exists, exit
-        if self._fo.exists(path_folder_lock):
+        if self._fo.exists( path_folder_lock ):
             if self.verbose:
                 logger.info(
                     f"current column {name_col} appear to be used in another processes, exiting"
@@ -5013,7 +4886,7 @@ class ZarrDataFrame:
             """# 2022-08-06 13:20:57
             destroy the locks used for multiprocessing-enabled modification of a zarr object
             """
-            self._fo.rm(path_folder_lock)
+            self._fo.rm( path_folder_lock )
 
         return self._zs, path_folder_zarr, __delete_locks
 
@@ -5082,9 +4955,9 @@ class ZarrDataFrame:
             """
             path_za = f"{self._path_folder_zdf}{name_folder}"
             self._zs.open(path_za, mode="a")
-            l_shape = list(self._zs.properties[path_za]["shape"])
+            l_shape = list(self._zs.properties[ path_za ][ 'shape' ])
             l_shape_new = [int_num_rows_new] + l_shape[1:]
-            self._zs.resize(path_za, *l_shape_new)
+            self._zs.resize( path_za, *l_shape_new)
 
         # resize all columns
         for name_col in self.columns:  # for each column
@@ -5669,8 +5542,7 @@ class ZarrDataFrame:
                     )  # update the list of flag to whether exclude category
 
                 for int_index, int_cat in zip(
-                    BA.find(self.filter),
-                    self.get_categorical_data_as_integers(name_col),
+                    BA.find(self.filter), self.get_categorical_data_as_integers(name_col)
                 ):  # interate over the active entries # int_category of each entry
                     if int_cat == -1:  # ignore NaN values
                         continue
@@ -5833,9 +5705,7 @@ class RamDataAxis:
         },
         flag_load_all_string_representations_from_components: bool = False,
         spinlockfileholder: Union[None, managers.SpinLockFileHolder] = None,
-        file_system_operator_pool: Union[
-            None, managers.FileSystemOperatorPool
-        ] = None,  # the managers.FileSystemOperatorPool object to utilized for multiprocessing on remote objects.
+        file_system_operator_pool : Union[None, managers.FileSystemOperatorPool] = None, # the managers.FileSystemOperatorPool object to utilized for multiprocessing on remote objects.
         flag_spawn: Union[None, bool] = None,
         int_num_cpus: int = 10,
         verbose: bool = True,
@@ -5873,14 +5743,10 @@ class RamDataAxis:
         self._flag_spawn = flag_spawn
 
         # load file system operators
-        self._fop = (
-            file_system_operator_pool
-            if isinstance(file_system_operator_pool, managers.FileSystemOperatorPool)
-            else managers.FileSystemOperatorPool(0)
-        )
-        self._fo = self._fop.get_operator()
-        self._zs = self._fop.get_zarr_objects()
-
+        self._fop = file_system_operator_pool if isinstance( file_system_operator_pool, managers.FileSystemOperatorPool ) else managers.FileSystemOperatorPool( 0 )
+        self._fo = self._fop.get_operator( )
+        self._zs = self._fop.get_zarr_objects( )
+        
         # load a zarr spin lock server
         self._lh = (
             spinlockfileholder
@@ -5938,18 +5804,14 @@ class RamDataAxis:
             """ if current 'combined' type is 'interleaved', load/build an index-mapping dictionary """
             if flag_is_interleaved:
                 path_folder_interleaved_mapping = f"{path_folder}{name_axis}.interleaved.mapping/"  # define a folder for saving mapping information for 'interleaved' 'combined' axis
-
+                
                 if self._fo.exists(
-                    path_folder_interleaved_mapping + ".zattrs"
+                    path_folder_interleaved_mapping + '.zattrs'
                 ):  # if metadata exists
                     # if folder exists, load index mapping dictionary
                     path_za = path_folder_interleaved_mapping
-                    self._zs.open(path_za)
-                    dict_metadata = self._fo.read_json_file(
-                        path_folder_interleaved_mapping + ".zattrs"
-                    )[
-                        "dict_metadata"
-                    ]  # read metadata
+                    self._zs.open( path_za )
+                    dict_metadata = self._fo.read_json_file( path_folder_interleaved_mapping + '.zattrs' )[ "dict_metadata" ] # read metadata
                     l_int_num_records = dict_metadata["l_int_num_records"]
 
                     l_dict_index_mapping_interleaved = (
@@ -6088,17 +5950,13 @@ class RamDataAxis:
                             ]  # set combined axis
                             arr[i, 1] = int_entry_component  # set component axis
                         # write converted array containing the mapping to the zarr object
-                        self._zs[
-                            path_za, int_pos_mapping : int_pos_mapping + int_num_records
-                        ] = arr
+                        self._zs[ path_za, int_pos_mapping : int_pos_mapping + int_num_records] = arr
                         # update 'int_pos_mapping'
                         int_pos_mapping += int_num_records
 
                     # write collected metadata to the zarr object
                     dict_metadata = {"l_int_num_records": l_int_num_records}
-                    self._fo.write_json_file(
-                        path_za + ".zattrs", {"dict_metadata": dict_metadata}
-                    )  # write metadata to the storage
+                    self._fo.write_json_file( path_za + '.zattrs', { 'dict_metadata' : dict_metadata } ) # write metadata to the storage
 
                     """ write the combined axis """
                     if flag_load_all_string_representations_from_components:
@@ -6129,19 +5987,12 @@ class RamDataAxis:
 
                         # create a folder to save a chunked string representations
                         path_folder_str_chunks = f"{path_folder}{name_axis}.str.chunks/"
-                        self._fo.mkdir(path_folder_str_chunks, exist_ok=True)
+                        self._fo.mkdir( path_folder_str_chunks, exist_ok=True)
                         dict_metadata = {
                             "int_num_entries": int_num_entries,
                             "int_num_of_entries_in_a_chunk": int_num_entries_in_a_chunk,
                         }  # write essential metadata for str.chunks
-                        self._fo.write_json_files(
-                            {
-                                f"{path_folder_str_chunks}.zattrs": {
-                                    "dict_metadata": dict_metadata
-                                },
-                                f"{path_folder_str_chunks}.zgroup": {"zarr_format": 2},
-                            }
-                        )  # write the metadata
+                        self._fo.write_json_files( { f"{path_folder_str_chunks}.zattrs" : { "dict_metadata" : dict_metadata }, f"{path_folder_str_chunks}.zgroup" : { "zarr_format": 2 } } ) # write the metadata
 
                         while (
                             int_pos < int_num_entries
@@ -6215,7 +6066,7 @@ class RamDataAxis:
                                     int_pos + int_num_entries_in_a_chunk,
                                 ),
                             )
-                            self._zs[path_za, sl_chunk] = arr_str_chunk  # set str.zarr
+                            self._zs[ path_za, sl_chunk ] = arr_str_chunk  # set str.zarr
                             # set str.chunks
                             for index_col, arr_val in enumerate(arr_str_chunk.T):
                                 with open(
@@ -6317,19 +6168,12 @@ class RamDataAxis:
 
                         # create a folder to save a chunked string representations (for web application)
                         path_folder_str_chunks = f"{path_folder}{name_axis}.str.chunks/"
-                        self._fo.mkdir(path_folder_str_chunks, exist_ok=True)
+                        self._fo.mkdir( path_folder_str_chunks, exist_ok=True)
                         dict_metadata = {
                             "int_num_entries": int_num_entries,
                             "int_num_of_entries_in_a_chunk": int_num_entries_in_a_chunk,
                         }  # write essential metadata for str.chunks
-                        self._fo.write_json_files(
-                            {
-                                f"{path_folder_str_chunks}.zattrs": {
-                                    "dict_metadata": dict_metadata
-                                },
-                                f"{path_folder_str_chunks}.zgroup": {"zarr_format": 2},
-                            }
-                        )  # write the metadata
+                        self._fo.write_json_files( { f"{path_folder_str_chunks}.zattrs" : { "dict_metadata" : dict_metadata }, f"{path_folder_str_chunks}.zgroup" : { "zarr_format": 2 } } ) # write the metadata
 
                         for ax in self._l_ax:  # iterate over each axis object
                             int_pos_component = 0  # initialize 'int_pos_component' for the iteration of the current axis object
@@ -6355,7 +6199,7 @@ class RamDataAxis:
                                     int_pos
                                     + int_pos_component : int_pos
                                     + int_pos_component
-                                    + int_num_entries_batch,
+                                    + int_num_entries_batch
                                 ] = arr_str_rep_batch
 
                                 # update the string representation buffer for 'str.chunks'
@@ -6440,10 +6284,10 @@ class RamDataAxis:
             if path_folder_mask is None
             else f"{path_folder_mask}{name_axis}.num_and_cat.zdf",
             flag_is_read_only=self._flag_is_read_only,
-            spinlockfileholder=self._lh,  # use the same lock file holder
+            spinlockfileholder=self._lh, # use the same lock file holder
             int_num_cpus=int_num_cpus,
             flag_spawn=self.flag_spawn,
-            file_system_operator_pool=self._fop,
+            file_system_operator_pool = self._fop, 
             **dict_kw_zdf,
         )  # open a ZarrDataFrame with a given filter
         self.int_num_entries = (
@@ -6967,9 +6811,7 @@ class RamDataAxis:
                 else:  # if the number of active entries is smaller than the threshold, use the
                     queries = BA.to_integer_indices(queries)
 
-            return self._zs.get_orthogonal_selection(
-                path_folder_str_zarr, (queries, int_index_col)
-            )
+            return self._zs.get_orthogonal_selection( path_folder_str_zarr, (queries, int_index_col))
 
     def iterate_str(
         self,
@@ -7105,10 +6947,8 @@ class RamDataAxis:
             self, "_num_available_columns_string_representation"
         ):  # if the attribute has not been calculated
             # retrieve the number of available columns containing string representations
-
-            self._num_available_columns_string_representation = self._fo.read_json_file(
-                f"{self._path_folder}{self._name_axis}.str.zarr/.zarray"
-            )["shape"][1]
+            
+            self._num_available_columns_string_representation = self._fo.read_json_file( f"{self._path_folder}{self._name_axis}.str.zarr/.zarray" )[ 'shape' ][ 1 ]
         return self._num_available_columns_string_representation
 
     @property
@@ -7240,7 +7080,7 @@ class RamDataAxis:
         assert self._path_folder != path_folder
 
         # create output folder
-        self._fo.mkdir(path_folder, exist_ok=True)
+        self._fo.mkdir( path_folder, exist_ok=True)
 
         """
         # save metadata
@@ -7254,20 +7094,20 @@ class RamDataAxis:
         # save string data
         """
         # initialize
-        path_za = (f"{self._path_folder}{name_axis}.str.zarr",)
-        path_za_new = (f"{path_folder}{name_axis}.str.zarr",)
+        path_za = f"{self._path_folder}{name_axis}.str.zarr", 
+        path_za_new = f"{path_folder}{name_axis}.str.zarr",
         self._zs.open(
             path_za,
             mode="r",
         )  # open a zarr object containing the string representation of the entries
-        prop_za = self._zs.properties[path_za]
+        prop_za = self._zs.properties[ path_za ]
         self._zs.open(
             path_za_new,
             mode="w",
-            shape=(self.meta.n_rows, prop_za["shape"][1]),
-            chunks=prop_za["chunks"],
+            shape=(self.meta.n_rows, prop_za[ 'shape' ][1]),
+            chunks=prop_za[ 'chunks' ],
             dtype=str,
-        )  # writing a new zarr object
+        ) # writing a new zarr object
 
         int_size_buffer = (
             self.int_num_entries_in_a_chunk
@@ -7293,28 +7133,20 @@ class RamDataAxis:
             if not ns["flag_axis_initialized"]:  # if the axis has not been initialized
                 # create a folder to save a chunked string representations
                 path_folder_str_chunks = f"{path_folder}{name_axis}.str.chunks/"
-                self._fo.mkdir(
-                    path_folder_str_chunks, exist_ok=True
-                )  # create the output folder
+                self._fo.mkdir( path_folder_str_chunks, exist_ok=True)  # create the output folder
                 dict_metadata = {
                     "int_num_entries": len(self),
                     "int_num_of_entries_in_a_chunk": self.int_num_entries_in_a_chunk,
                 }  # write essential metadata for str.chunks
-                self._fo.write_json_files(
-                    {
-                        f"{path_folder_str_chunks}.zattrs": {
-                            "dict_metadata": dict_metadata
-                        },
-                        f"{path_folder_str_chunks}.zgroup": {"zarr_format": 2},
-                    }
-                )  # write the metadata
+                self._fo.write_json_files( { f"{path_folder_str_chunks}.zattrs" : { "dict_metadata" : dict_metadata }, f"{path_folder_str_chunks}.zgroup" : { "zarr_format": 2 } } ) # write the metadata
                 ns["path_folder_str_chunks"] = path_folder_str_chunks
                 ns["flag_axis_initialized"] = True  # set the flag to True
 
             # retrieve data of the entries in the buffer, and empty the buffer
             n = len(ns["l_buffer"])  # retrieve number of entries in the buffer
             data = self._zs.get_orthogonal_selection(
-                path_za, ns["l_buffer"]
+                path_za,
+                ns["l_buffer"]
             )  # retrieve data from the Zarr object
             ns["l_buffer"] = []  # empty the buffer
 
@@ -7332,8 +7164,7 @@ class RamDataAxis:
             # write Zarr object
             self._zs[
                 path_za_new,
-                ns["int_num_entries_written"] : ns["int_num_entries_written"] + n,
-                :,
+                ns["int_num_entries_written"] : ns["int_num_entries_written"] + n, :
             ] = data  # transfer data to the new Zarr object
             ns["int_num_entries_written"] += n  # update the number of entries written
 
@@ -7868,7 +7699,7 @@ class RamDataAxis:
 
 
 class RAMtx:
-    """# 2023-11-14 22:19:46
+    """# 2023-11-14 22:19:46 
     This class represent a random-access mtx format for memory-efficient exploration of extremely large single-cell transcriptomics/genomics data.
     This class use a count matrix data stored in a random read-access compatible format, called RAMtx, enabling exploration of a count matrix with hundreds of millions cells with hundreds of millions of features.
     Also, the RAMtx format is supports multi-processing, and provide convenient interface for parallel processing of single-cell data
@@ -7940,12 +7771,10 @@ class RAMtx:
         is_for_querying_features: bool = True,
         int_total_number_of_values_in_a_batch_for_dense_matrix: int = 10000000,
         rtx_template=None,
-        dict_metadata: Union[None, dict] = None,
+        dict_metadata : Union[ None, dict ] = None,
         flag_spawn=False,
         spinlockfileholder: Union[None, managers.SpinLockFileHolder] = None,
-        file_system_operator_pool: Union[
-            None, managers.FileSystemOperatorPool
-        ] = None,  # the managers.FileSystemOperatorPool object to utilized for multiprocessing on remote objects.
+        file_system_operator_pool : Union[None, managers.FileSystemOperatorPool] = None, # the managers.FileSystemOperatorPool object to utilized for multiprocessing on remote objects.
     ):
         """# 2023-02-27 20:51:21"""
         if (
@@ -8029,17 +7858,11 @@ class RAMtx:
             self._dict_index_mapping_from_combined_to_component_bc = (
                 dict_index_mapping_from_combined_to_component_bc
             )
-
+            
             # load file system operators
-            self._fop = (
-                file_system_operator_pool
-                if isinstance(
-                    file_system_operator_pool, managers.FileSystemOperatorPool
-                )
-                else managers.FileSystemOperatorPool(3)
-            )
-            self._fo = self._fop.get_operator()
-            self._zs = self._fop.get_zarr_objects()
+            self._fop = file_system_operator_pool if isinstance( file_system_operator_pool, managers.FileSystemOperatorPool ) else managers.FileSystemOperatorPool( 3 )
+            self._fo = self._fop.get_operator( )
+            self._zs = self._fop.get_zarr_objects( )
 
             # load a zarr spin lock server
             self._lh = (
@@ -8073,15 +7896,8 @@ class RAMtx:
                         ),  # calculate the total number of records
                         "version": _version_,
                     }
-                    self._fo.mkdir(path_folder_ramtx, exist_ok=True)
-                    self._fo.write_json_files(
-                        {
-                            f"{path_folder_ramtx}.zattrs": {
-                                "dict_metadata": self._dict_metadata
-                            },
-                            f"{path_folder_ramtx}.zgroup": {"zarr_format": 2},
-                        }
-                    )  # write the metadata
+                    self._fo.mkdir( path_folder_ramtx, exist_ok = True )
+                    self._fo.write_json_files( { f"{path_folder_ramtx}.zattrs" : { "dict_metadata" : self._dict_metadata }, f"{path_folder_ramtx}.zgroup" : { "zarr_format": 2 } } ) # write the metadata
 
                     if self.use_locking:  # %% FILE LOCKING %%
                         self._lh.release_lock(f"{path_folder_ramtx}.zattrs.lock")
@@ -8114,20 +7930,14 @@ class RAMtx:
                         rtx._dict_index_mapping_from_combined_to_component_bc = (
                             dict_index_mapping_from_combined_to_component_bc
                         )
-            """ load metadata """
-            if isinstance(
-                dict_metadata, dict
-            ):  # if valid 'dict_metadata' has been given as an argument
+            ''' load metadata '''
+            if isinstance( dict_metadata, dict ) : # if valid 'dict_metadata' has been given as an argument
                 self._dict_metadata = dict_metadata
-            else:
+            else :
                 # read metadata from the storage
                 if self.use_locking:  # %% FILE LOCKING %%
                     self._lh.wait_lock(f"{path_folder_ramtx}.zattrs.lock")
-                self._dict_metadata = self._fo.read_json_file(
-                    f"{path_folder_ramtx}.zattrs"
-                )[
-                    "dict_metadata"
-                ]  # retrieve the metadata
+                self._dict_metadata = self._fo.read_json_file( f"{path_folder_ramtx}.zattrs" )[ "dict_metadata" ]  # retrieve the metadata
 
         # parse the metadata of the RAMtx object
         self._int_num_features, self._int_num_barcodes, self._int_num_records = (
@@ -8157,22 +7967,13 @@ class RAMtx:
                 ]  # for sparse matrix, this attribute is fixed
                 # open Zarr object containing matrix and matrix indices
                 self._path_za_mtx_index = f"{self._path_folder_ramtx}matrix.index.zarr"
-                self._zs.open_array(
-                    self._path_za_mtx_index,
-                    "r",
-                )
-                self._zs.open_array(
-                    self._path_za_mtx,
-                    "r",
-                )
+                self._zs.open_array( self._path_za_mtx_index, "r", )
+                self._zs.open_array( self._path_za_mtx, "r", )
             else:  # dense matrix
                 self.is_for_querying_features = (
                     is_for_querying_features  # set this attribute
                 )
-                self._zs.open_array(
-                    self._path_za_mtx,
-                    "r",
-                )
+                self._zs.open_array( self._path_za_mtx, "r", )
         else:
             # %% COMBINED %%
             self._is_sparse = None
@@ -8324,9 +8125,7 @@ class RAMtx:
             self._path_folder_ramtx,
             self._path_folder_ramtx_modifiable,
         ]:
-            if path_folder is not None and self._fo.exists(
-                f"{path_folder}matrix.{axis}.active_entries.zarr/",
-            ):
+            if path_folder is not None and self._fo.exists( f"{path_folder}matrix.{axis}.active_entries.zarr/", ):
                 path_folder_zarr = f"{path_folder}matrix.{axis}.active_entries.zarr/"  # define an existing zarr object path
                 flag_available = True
         if (
@@ -8335,9 +8134,7 @@ class RAMtx:
             # try constructing the zarr object
             path_folder_zarr = f"{self._path_folder_ramtx_modifiable}matrix.{axis}.active_entries.zarr/"  # define zarr object path
             self.survey_number_of_records_for_each_entry()  # survey the number of records for each entry using default settings
-            if self._fo.exists(
-                path_folder_zarr
-            ):  # if the zarr object is available, set 'flag_available' to True
+            if self._fo.exists( path_folder_zarr ) :  # if the zarr object is available, set 'flag_available' to True
                 flag_available = True
 
         if not flag_available:  # if the zarr object still does not exists
@@ -8349,12 +8146,9 @@ class RAMtx:
             ba.setall(1)
             return ba
 
-        self._zs.open(
-            path_folder_zarr,
-            mode="r",
-        )  # open zarr object of the current RAMtx object
+        self._zs.open( path_folder_zarr, mode = "r", ) # open zarr object of the current RAMtx object
         ba = BA.to_bitarray(
-            self._zs[path_folder_zarr, :]
+            self._zs[ path_folder_zarr, : ]
         )  # return the boolean array of active entries as a bitarray object
 
         # if metadata of the number of active entries is not available, update the metadata
@@ -8383,9 +8177,7 @@ class RAMtx:
             self._path_folder_ramtx,
             self._path_folder_ramtx_modifiable,
         ]:
-            if path_folder is not None and self._fo.exists(
-                f"{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/",
-            ):
+            if path_folder is not None and self._fo.exists( f"{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/",):
                 flag_res_available = True
                 break
         return (
@@ -8488,7 +8280,7 @@ class RAMtx:
                 mode="w",
                 shape=(len_axis,),
                 chunks=(int_size_chunk,),
-                dtype="f8",
+                dtype='f8',
             )  # open zarr object of the current RAMtx object
             self._zs.open(
                 path_za_bool,
@@ -8526,9 +8318,7 @@ class RAMtx:
                             path_folder is not None
                         )  # the ramtx object should have the summary result for the current axis
                         path_za_component = f"{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/"
-                        path_za_bool_component = (
-                            f"{path_folder}matrix.{axis}.active_entries.zarr/"
-                        )
+                        path_za_bool_component = f"{path_folder}matrix.{axis}.active_entries.zarr/"
                         self._zs.open(
                             path_za_component,
                             mode="r",
@@ -8570,8 +8360,8 @@ class RAMtx:
                                 l_int_entry_component_batch,
                             )
                     # write result for the batch
-                    self._zs[path_za, st_batch:en_batch] = arr_num_records
-                    self._zs[path_za_bool, st_batch:en_batch] = arr_num_active
+                    self._zs[ path_za, st_batch:en_batch] = arr_num_records
+                    self._zs[ path_za_bool, st_batch:en_batch] = arr_num_active
                     int_pos += int_num_entries_in_a_batch  # update 'int_pos'
             else:
                 # %% COMBINED - STACKED %%
@@ -8597,9 +8387,7 @@ class RAMtx:
                             path_folder is not None
                         )  # the ramtx object should have the summary result for the current axis
                         path_za_component = f"{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/"
-                        path_za_bool_component = (
-                            f"{path_folder}matrix.{axis}.active_entries.zarr/"
-                        )
+                        path_za_bool_component = f"{path_folder}matrix.{axis}.active_entries.zarr/"
                         self._zs.open(
                             path_za_component,
                             mode="r",
@@ -8621,16 +8409,14 @@ class RAMtx:
                                 path_za,
                                 int_pos_combined
                                 + st_component : int_pos_combined
-                                + en_component,
-                            ] = self._zs[path_za_component, st_component:en_component]
+                                + en_component
+                            ] = self._zs[ path_za_component, st_component:en_component]
                             self._zs[
-                                path_za_bool,
+                                path_za_bool, 
                                 int_pos_combined
                                 + st_component : int_pos_combined
-                                + en_component,
-                            ] = self._zs[
-                                path_za_bool_component, st_component:en_component
-                            ]
+                                + en_component
+                            ] = self._zs[ path_za_bool_component, st_component:en_component]
 
                             int_pos_component += (
                                 int_num_entries_in_a_batch  # update 'int_pos_component'
@@ -8641,12 +8427,12 @@ class RAMtx:
             return
 
         """ prepare """
-        path_za_mtx_index, path_za_mtx = self.get_za_paths()
-        prop_za_mtx = self._zs.properties[path_za_mtx]
-        if self.is_sparse:
-            """%% SPARSE %%"""
-            prop_za_mtx_index = self._zs.properties[path_za_mtx_index]
-
+        path_za_mtx_index, path_za_mtx = self.get_za_paths( )
+        prop_za_mtx = self._zs.properties[ path_za_mtx ]
+        if self.is_sparse :
+            ''' %% SPARSE %% '''
+            prop_za_mtx_index = self._zs.properties[ path_za_mtx_index ]
+        
         # for each axis
         for axis in axes:
             # check validity of the axis name
@@ -8660,9 +8446,7 @@ class RAMtx:
                 self._path_folder_ramtx,
                 self._path_folder_ramtx_modifiable,
             ]:
-                if path_folder is not None and self._fo.exists(
-                    f"{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/",
-                ):
+                if path_folder is not None and self._fo.exists(f"{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/",):
                     flag_res_already_available = True
                     break
             if flag_res_already_available:
@@ -8737,12 +8521,12 @@ class RAMtx:
                     del l_r, r
 
                     self._zs.set_coordinate_selection(
-                        path_za, (arr_coord_combined,), arr_num_records_combined
+                        path_za,
+                        (arr_coord_combined,), arr_num_records_combined
                     )  # save the number of records
                     self._zs.set_coordinate_selection(
                         path_za_bool,
-                        (arr_coord_combined,),
-                        arr_num_records_combined > 0,
+                        (arr_coord_combined,), arr_num_records_combined > 0
                     )  # active entry is defined by finding entries with at least one count record
                     del arr_coord_combined, arr_num_records_combined
 
@@ -8760,10 +8544,10 @@ class RAMtx:
                 # surveying on the axis of the sparse matrix
                 int_num_entries_processed = 0
                 int_num_entries_to_retrieve = int(
-                    prop_za_mtx_index["chunks"][0]
+                    prop_za_mtx_index[ 'chunks' ][0] 
                     * int_num_chunks_in_a_batch_for_index_of_sparse_matrix
                 )
-
+                
                 while int_num_entries_processed < len_axis:
                     sl = slice(
                         int_num_entries_processed,
@@ -8772,7 +8556,7 @@ class RAMtx:
                             int_num_entries_processed + int_num_entries_to_retrieve,
                         ),
                     )
-                    _arr = self._zs[path_za_mtx_index, sl]
+                    _arr = self._zs[ path_za_mtx_index, sl]
                     arr_num_records = (
                         _arr[:, 1] - _arr[:, 0]
                     )  # retrieve the number of records
@@ -8799,8 +8583,8 @@ class RAMtx:
                     int_size_chunk_axis_for_querying,
                     int_size_chunk_axis_not_for_querying,
                 ) = (
-                    prop_za_mtx["chunks"][0 if flag_axis_is_barcode else 1],
-                    prop_za_mtx["chunks"][1 if flag_axis_is_barcode else 0],
+                    prop_za_mtx[ 'chunks' ][0 if flag_axis_is_barcode else 1],
+                    prop_za_mtx[ 'chunks' ][1 if flag_axis_is_barcode else 0],
                 )
 
                 # retrieve entries for each axis for batch and a subbatch
@@ -8873,11 +8657,13 @@ class RAMtx:
                             arr_num_records += (
                                 (
                                     self._zs.get_orthogonal_selection(
-                                        self._path_za_mtx, (sl, sl_secondary)
+                                        self._path_za_mtx,
+                                        (sl, sl_secondary)
                                     ).T
                                     if flag_axis_is_barcode
                                     else self._zs.get_orthogonal_selection(
-                                        self._path_za_mtx, (sl_secondary, sl)
+                                        self._path_za_mtx,
+                                        (sl_secondary, sl)
                                     )
                                 )
                                 > 0
@@ -8936,10 +8722,7 @@ class RAMtx:
             if hasattr(self, "_dict_metadata"):  # if metadata has been loaded
                 if self.use_locking:  # %% FILE LOCKING %%
                     self._lh.acquire_lock(f"{self._path_folder_ramtx}.zattrs.lock")
-                self._fo.write_json_file(
-                    f"{self._path_folder_ramtx}.zattrs",
-                    {"dict_metadata": self._dict_metadata},
-                )  # update metadata
+                self._fo.write_json_file( f"{self._path_folder_ramtx}.zattrs", { "dict_metadata" : self._dict_metadata } ) # update metadata
                 if self.use_locking:  # %% FILE LOCKING %%
                     self._lh.release_lock(f"{self._path_folder_ramtx}.zattrs.lock")
 
@@ -9256,15 +9039,15 @@ class RAMtx:
         """
         retrieve data from the RAMtx data structure (from this point, self.is_combined should be False)
         """
-        """ retrieve metadata of zarr objects """
-        path_za_mtx_index, path_za_mtx = self.get_za_paths()
-        prop_za_mtx = self._zs.properties[path_za_mtx]
-        if self.is_sparse:
-            """%% SPARSE %%"""
-            prop_za_mtx_index = self._zs.properties[path_za_mtx_index]
-
+        ''' retrieve metadata of zarr objects '''
+        path_za_mtx_index, path_za_mtx = self.get_za_paths( )
+        prop_za_mtx = self._zs.properties[ path_za_mtx ]
+        if self.is_sparse :
+            ''' %% SPARSE %% '''
+            prop_za_mtx_index = self._zs.properties[ path_za_mtx_index ]
+            
         # retrieve flags for dtype conversions
-        flag_change_dtype_of_values = prop_za_mtx["dtype"] != self._dtype_of_values
+        flag_change_dtype_of_values = prop_za_mtx[ 'dtype' ] != self._dtype_of_values
 
         """ create view """
         # retrieve dictionaries for changing coordinates
@@ -9534,7 +9317,8 @@ class RAMtx:
                     arr_int_entry_of_axis_not_for_querying,
                     arr_value,
                 ) = self._zs.get_orthogonal_selection(
-                    path_za_mtx, slice(st_batch, en_batch)
+                    path_za_mtx,
+                    slice(st_batch, en_batch)
                 ).T  # fetch data from the Zarr object
 
                 for int_entry, index in zip(
@@ -9585,11 +9369,13 @@ class RAMtx:
                     for int_entry, arr_data in zip(
                         l_int_entry_in_a_batch,
                         self._zs.get_orthogonal_selection(
-                            path_za_mtx, (sl_secondary, l_int_entry_in_a_batch)
+                            path_za_mtx,
+                            (sl_secondary, l_int_entry_in_a_batch)
                         ).T
                         if is_for_querying_features
                         else self._zs.get_orthogonal_selection(
-                            path_za_mtx, (l_int_entry_in_a_batch, sl_secondary)
+                            path_za_mtx,
+                            (l_int_entry_in_a_batch, sl_secondary)
                         ),
                     ):  # fetch data from the Zarr object for the current subbatch and iterate through each entry and its data
                         arr_int_entry_of_axis_not_for_querying = np.where(arr_data)[
@@ -9638,18 +9424,19 @@ class RAMtx:
             if self.is_sparse:  # handle sparse ramtx
                 """%% Sparse ramtx %%"""
                 # prepare
-                int_num_records_in_a_chunk = prop_za_mtx["chunks"][
+                int_num_records_in_a_chunk = prop_za_mtx[ 'chunks' ][
                     0
                 ]  # retrieve the number of records in a chunk
                 # retrieve flags for dtype conversions
-                flag_change_dtype_mtx_index = prop_za_mtx_index["dtype"] != np.int64
+                flag_change_dtype_mtx_index = prop_za_mtx_index[ 'dtype' ] != np.int64
                 flag_change_dtype_of_feature_and_barcode_indices = (
-                    prop_za_mtx["dtype"] != self._dtype_of_feature_and_barcode_indices
+                    prop_za_mtx[ 'dtype' ] != self._dtype_of_feature_and_barcode_indices
                 )
 
                 # retrieve mtx_index data and remove invalid entries
                 arr_index = self._zs.get_orthogonal_selection(
-                    path_za_mtx_index, l_int_entry
+                    path_za_mtx_index,
+                    l_int_entry
                 )  # retrieve mtx_index data
                 if (
                     flag_change_dtype_mtx_index
@@ -9712,9 +9499,7 @@ class RAMtx:
                 """%% Dense ramtx %%"""
                 # prepare
                 int_num_entries_in_a_chunk = (
-                    prop_za_mtx["chunks"][1]
-                    if is_for_querying_features
-                    else prop_za_mtx["chunks"][0]
+                    prop_za_mtx[ 'chunks' ][1] if is_for_querying_features else prop_za_mtx[ 'chunks' ][0]
                 )  # retrieve the number of entries in a chunk
                 flag_change_dtype_of_feature_and_barcode_indices = False  # since indices from dense ramtx (return values of np.where) will be in np.int64 format, there will be no need to change dtype of indices
 
@@ -9980,9 +9765,7 @@ class RAMtx:
                 path_folder_zarr_weight = f"{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/"  # define an existing zarr object path
                 flag_weight_available = True
                 path_za_weight = path_folder_zarr_weight
-                self._zs.open(
-                    path_za_weight, "r"
-                )  # open zarr object containing weights if available
+                self._zs.open( path_za_weight, "r" )  # open zarr object containing weights if available
                 break
 
         def __update_total_num_records():
@@ -9996,7 +9779,8 @@ class RAMtx:
             ):  # if weight is available
                 # load weight for the batch
                 arr_weight = self._zs.get_orthogonal_selection(
-                    path_za_weight, ns["l_int_entry_for_weight_calculation_batch"]
+                    path_za_weight,
+                    ns["l_int_entry_for_weight_calculation_batch"]
                 )  # retrieve weights
             else:  # if weight is not available
                 arr_weight = np.full(
@@ -10081,16 +9865,11 @@ class RAMtx:
             self._path_folder_ramtx,
             self._path_folder_ramtx_modifiable,
         ]:
-            if path_folder is not None and self._fo.exists(
-                f"{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/",
-            ):
+            if path_folder is not None and self._fo.exists(f"{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/",):
                 path_folder_zarr_weight = f"{path_folder}matrix.{axis}.number_of_records_for_each_entry.zarr/"  # define an existing zarr object path
                 flag_weight_available = True
                 path_za_weight = path_folder_zarr_weight
-                self._zs.open(
-                    path_za_weight,
-                    "r",
-                )  # open zarr object containing weights if available (open a fork-safe version if 'flag_spawn')
+                self._zs.open( path_za_weight, "r", )  # open zarr object containing weights if available (open a fork-safe version if 'flag_spawn')
                 break
 
         def __compose_batch():
@@ -10119,7 +9898,8 @@ class RAMtx:
             ):  # if weight is available and if dense, 'flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx' is False
                 # load weight for the batch
                 arr_weight = self._zs.get_orthogonal_selection(
-                    path_za_weight, ns["l_int_entry_for_weight_calculation_batch"]
+                    path_za_weight,
+                    ns["l_int_entry_for_weight_calculation_batch"]
                 )  # retrieve weights
             else:  # if weight is not available
                 arr_weight = np.full(
@@ -10202,7 +9982,6 @@ class RAMtx:
         if len(ns["l_int_entry_current_batch"]) > 0:
             yield __compose_batch()  # return a batch
 
-
 """ a class for representing a layer of RamData """
 
 
@@ -10238,9 +10017,7 @@ class RamDataLayer:
         path_folder_ramdata_mask=None,
         flag_is_read_only=False,
         spinlockfileholder: Union[None, managers.SpinLockFileHolder] = None,
-        file_system_operator_pool: Union[
-            None, managers.FileSystemOperatorPool
-        ] = None,  # the managers.FileSystemOperatorPool object to utilized for multiprocessing on remote objects.
+        file_system_operator_pool : Union[None, managers.FileSystemOperatorPool] = None, # the managers.FileSystemOperatorPool object to utilized for multiprocessing on remote objects.
     ):
         """# 2022-07-31 14:33:46"""
         # harded coded settings
@@ -10273,15 +10050,11 @@ class RamDataLayer:
         self._dtype_of_feature_and_barcode_indices = (
             dtype_of_feature_and_barcode_indices
         )
-
+        
         # load file system operators
-        self._fop = (
-            file_system_operator_pool
-            if isinstance(file_system_operator_pool, managers.FileSystemOperatorPool)
-            else managers.FileSystemOperatorPool(0)
-        )
-        self._fo = self._fop.get_operator()
-        self._zs = self._fop.get_zarr_objects()
+        self._fop = file_system_operator_pool if isinstance( file_system_operator_pool, managers.FileSystemOperatorPool ) else managers.FileSystemOperatorPool( 0 )
+        self._fo = self._fop.get_operator( )
+        self._zs = self._fop.get_zarr_objects( )
 
         # load a zarr spin lock server
         self._lh = (
@@ -10291,36 +10064,27 @@ class RamDataLayer:
         )
 
         """ write metadata if RamDataLayer is newly initialized """
-        if not self._fo.exists(
-            f"{self._path_folder_ramdata_layer}.zattrs"
-        ):  # check whether the metadata exists
+        if not self._fo.exists(f"{self._path_folder_ramdata_layer}.zattrs"): # check whether the metadata exists
             if self.use_locking:  # %% FILE LOCKING %%
-                self._lh.acquire_lock(f"{self._path_folder_ramdata_layer}.zattrs.lock")
+                self._lh.acquire_lock(
+                    f"{self._path_folder_ramdata_layer}.zattrs.lock"
+                )
 
             # compose metadata
             self._dict_metadata = {
                 "set_modes": [],  # no available modes
                 "version": _version_,
             }
-            self._fo.mkdir(self._path_folder_ramdata_layer)  # create the directory
-            self._fo.write_json_files(
-                {
-                    f"{self._path_folder_ramdata_layer}.zattrs": {
-                        "dict_metadata": self._dict_metadata
-                    },
-                    f"{self._path_folder_ramdata_layer}.zgroup": {"zarr_format": 2},
-                }
-            )  # write the metadata
+            self._fo.mkdir( self._path_folder_ramdata_layer ) # create the directory
+            self._fo.write_json_files( { f"{self._path_folder_ramdata_layer}.zattrs" : { "dict_metadata" : self._dict_metadata }, f"{self._path_folder_ramdata_layer}.zgroup" : { "zarr_format": 2 } } ) # write the metadata
 
             if self.use_locking:  # %% FILE LOCKING %%
-                self._lh.release_lock(f"{self._path_folder_ramdata_layer}.zattrs.lock")
+                self._lh.release_lock(
+                    f"{self._path_folder_ramdata_layer}.zattrs.lock"
+                )
         # read metadata
-        else:
-            self._dict_metadata = self._fo.read_json_file(
-                f"{self._path_folder_ramdata_layer}.zattrs"
-            )[
-                "dict_metadata"
-            ]  # retrieve the metadata
+        else :
+            self._dict_metadata = self._fo.read_json_file( f"{self._path_folder_ramdata_layer}.zattrs" )[ "dict_metadata" ]  # retrieve the metadata
 
         # retrieve filters from the axes
         ba_filter_features = ramdata.ft.filter if ramdata is not None else None
@@ -10377,30 +10141,14 @@ class RamDataLayer:
         return self._l_layer is not None
 
     def _load_ramtx_objects(self):
-        """# 2023-11-14 22:45:38
+        """# 2023-11-14 22:45:38 
         load all ramtx present in the layer
         """
-        """ load metadata of the RAMtx objects as a batch (locking is disabled in the current implementation) """
-        l_name_ramtx = list(
-            set(self.modes).intersection(
-                {
-                    "dense",
-                    "sparse_for_querying_barcodes",
-                    "sparse_for_querying_features",
-                }
-            )
-        )  # retrieve a list of valid ramtx object names in the current layer
-        l_res = self._fo.read_json_files(
-            list(
-                f"{self._path_folder_ramdata_layer}{name_ramtx}/.zattrs"
-                for name_ramtx in l_name_ramtx
-            )
-        )
-        dict_name_ramtx_to_dict_metadata = dict(
-            (k, None if res is None else res["dict_metadata"])
-            for k, res in zip(l_name_ramtx, l_res)
-        )
-
+        ''' load metadata of the RAMtx objects as a batch (locking is disabled in the current implementation) '''
+        l_name_ramtx = list( set( self.modes ).intersection( {'dense', 'sparse_for_querying_barcodes', 'sparse_for_querying_features'} ) ) # retrieve a list of valid ramtx object names in the current layer
+        l_res = self._fo.read_json_files( list( f"{self._path_folder_ramdata_layer}{name_ramtx}/.zattrs" for name_ramtx in l_name_ramtx ) )
+        dict_name_ramtx_to_dict_metadata = dict( ( k, None if res is None else res[ 'dict_metadata' ] ) for k, res in zip( l_name_ramtx, l_res ) ) 
+        
         # load RAMtx objects without filters
         # define arguments for opening RAMtx objects
         dict_kwargs = {
@@ -10414,7 +10162,7 @@ class RamDataLayer:
             "flag_is_read_only": self._flag_is_read_only,
             "l_rtx": None,
             "spinlockfileholder": self._lh,
-            "file_system_operator_pool": self._fop,
+            'file_system_operator_pool' : self._fop,
         }
         # load ramtx
         for mode in self.modes:  # iterate through each mode
@@ -10439,14 +10187,14 @@ class RamDataLayer:
                             1
                         ]
                         == "features",
-                        dict_metadata=dict_name_ramtx_to_dict_metadata["dense"],
+                        dict_metadata = dict_name_ramtx_to_dict_metadata[ 'dense' ],
                         **dict_kwargs,
                     )  # open dense ramtx in querying_features/querying_barcodes modes
                 else:
                     rtx = RAMtx(
-                        f"{self._path_folder_ramdata_layer}{mode}/",
-                        dict_metadata=dict_name_ramtx_to_dict_metadata[mode],
-                        **dict_kwargs,
+                        f"{self._path_folder_ramdata_layer}{mode}/", 
+                        dict_metadata = dict_name_ramtx_to_dict_metadata[ mode ],
+                        **dict_kwargs
                     )
                 setattr(self, f"ramtx_{mode}", rtx)  # set ramtx as an attribute
 
@@ -10494,18 +10242,12 @@ class RamDataLayer:
                 f"{path_folder}.zattrs.lock"
             )  # wait until a lock is released
             self._dict_metadata = self._fo.read_json_file(
-                f"{path_folder}.zattrs",
-            )[
-                "dict_metadata"
-            ]  # retrieve metadata from the storage, and update the metadata stored in the object
+                f"{path_folder}.zattrs", 
+            )[ "dict_metadata" ]  # retrieve metadata from the storage, and update the metadata stored in the object
         elif not hasattr(
             self, "_dict_metadata"
         ):  # when locking is not used but the metadata has not been loaded, read the metadata without using the locking algorithm
-            self._dict_metadata = self._fo.read_json_file(
-                f"{self._path_folder_ramdata_layer}.zattrs"
-            )[
-                "dict_metadata"
-            ]  # retrieve 'dict_metadata' from the storage
+            self._dict_metadata = self._fo.read_json_file( f"{self._path_folder_ramdata_layer}.zattrs" )[ "dict_metadata" ]  # retrieve 'dict_metadata' from the storage
         return self._dict_metadata  # return the metadata
 
     def set_metadata(self, dict_metadata: dict):
@@ -10523,14 +10265,10 @@ class RamDataLayer:
         if (
             self._lh is None
         ):  # if locking is not used, return previously loaded metadata
-            self._fo.write_json_file(
-                f"{path_folder}.zattrs", {"dict_metadata": self._dict_metadata}
-            )  # write metadata to the storage
+            self._fo.write_json_file( f"{path_folder}.zattrs", { "dict_metadata" : self._dict_metadata } )  # write metadata to the storage
         else:  # when locking has been enabled
             self._lh.acquire_lock(f"{path_folder}.zattrs.lock")  # acquire a lock
-            self._fo.write_json_file(
-                f"{path_folder}.zattrs", {"dict_metadata": self._dict_metadata}
-            )  # write metadata to the storage
+            self._fo.write_json_file( f"{path_folder}.zattrs", { "dict_metadata" : self._dict_metadata } )  # write metadata to the storage
             self._lh.release_lock(f"{path_folder}.zattrs.lock")  # release the lock
 
     def update_metadata(
@@ -10588,26 +10326,20 @@ class RamDataLayer:
                 l_mode_to_be_deleted,
                 l_mode_to_be_added,
             )  # update 'self._dict_metadata' with 'dict_metadata_to_be_updated'
-            self._fo.write_json_file(
-                f"{path_folder}.zattrs", {"dict_metadata": self._dict_metadata}
-            )  # write metadata to the storage
+            self._fo.write_json_file( f"{path_folder}.zattrs", { "dict_metadata" : self._dict_metadata } )  # write metadata to the storage
         else:  # when locking has been enabled
             self._lh.acquire_lock(f"{path_folder}.zattrs.lock")  # acquire a lock
 
             self._dict_metadata = self._fo.read_json_file(
-                f"{path_folder}.zattrs",
-            )[
-                "dict_metadata"
-            ]  # read metadata from the storage and update the metadata
+                f"{path_folder}.zattrs", 
+            )[ "dict_metadata" ]  # read metadata from the storage and update the metadata
             self._dict_metadata = __update_dict_metadata(
                 self._dict_metadata,
                 dict_metadata_to_be_updated,
                 l_mode_to_be_deleted,
                 l_mode_to_be_added,
             )  # update 'self._dict_metadata' with 'dict_metadata_to_be_updated'
-            self._fo.write_json_file(
-                f"{path_folder}.zattrs", {"dict_metadata": self._dict_metadata}
-            )  # write metadata to the storage
+            self._fo.write_json_file( f"{path_folder}.zattrs", { "dict_metadata" : self._dict_metadata } )  # write metadata to the storage
 
             self._lh.release_lock(f"{path_folder}.zattrs.lock")  # release the lock
 
@@ -10622,10 +10354,7 @@ class RamDataLayer:
             if self.use_locking:  # %% FILE LOCKING %%
                 self.set_metadata(self._dict_metadata)
             else:
-                self._fo.write_json_file(
-                    f"{self._path_folder_ramdata_layer}.zattrs",
-                    {"dict_metadata": self._dict_metadata},
-                )  # write metadata to the storage
+                self._fo.write_json_file( f"{self._path_folder_ramdata_layer}.zattrs", { "dict_metadata" : self._dict_metadata } )  # write metadata to the storage
 
     """ </Methods for Synchronization> """
 
@@ -10870,7 +10599,7 @@ class RamDataLayer:
                 )  # update metadata
 
                 # delete from the storage
-                self._fo.rm(f"{self._path_folder_ramdata_layer}{mode}/")
+                self._fo.rm( f"{self._path_folder_ramdata_layer}{mode}/")
 
     def survey_number_of_records_for_each_entry(self):
         """# 2023-06-09 22:28:39
@@ -10885,7 +10614,7 @@ class RamDataLayer:
 
 
 class RamData:
-    """# 2023-11-08 14:42:03
+    """# 2023-11-08 14:42:03 
     This class provides frameworks for single-cell transcriptomic/genomic data analysis, utilizing RAMtx data structures, which is backed by Zarr persistant arrays.
     Extreme lazy loading strategies used by this class allows efficient parallelization of analysis of single cell data with minimal memory footprint, loading only essential data required for analysis.
 
@@ -10972,11 +10701,9 @@ class RamData:
         flag_does_not_wait_and_raise_error_when_modification_is_not_possible_due_to_lock: bool = False,
         float_second_to_wait_before_checking_availability_of_a_spin_lock: float = 0.05,
         flag_enable_synchronization_through_locking: bool = True,
-        int_num_managed_file_system_operators: int = 8,
-        file_system_operator_pool: Union[None, managers.FileSystemOperatorPool] = None,
-        flag_is_read_only: Union[
-            None, bool
-        ] = False,  # flag indicating whether the current RamData of given path is read-only. This argument is independent from 'mode' argument, which indicates read-only status including the mask RamData objects connected to this RamData. if None is given, a test will be performed to check whether the current RamData is modifiable
+        int_num_managed_file_system_operators : int = 8,
+        file_system_operator_pool : Union[None, managers.FileSystemOperatorPool] = None,
+        flag_is_read_only : Union[None, bool] = False, # flag indicating whether the current RamData of given path is read-only. This argument is independent from 'mode' argument, which indicates read-only status including the mask RamData objects connected to this RamData. if None is given, a test will be performed to check whether the current RamData is modifiable
         verbose: bool = True,
         flag_debugging: bool = False,
     ):
@@ -11018,10 +10745,8 @@ class RamData:
 
         # default settings
         # handle input object paths
-        if not managers.is_remote_url(
-            path_folder_ramdata
-        ):  # if the RamData object path is a local directory, get an absolute path
-            path_folder_ramdata = os.path.abspath(path_folder_ramdata) + "/"
+        if not managers.is_remote_url( path_folder_ramdata ) : # if the RamData object path is a local directory, get an absolute path
+            path_folder_ramdata = os.path.abspath( path_folder_ramdata ) + '/'
         if (
             path_folder_ramdata[-1] != "/"
         ):  # add '/' at the end of path to indicate it is a directory
@@ -11082,28 +10807,21 @@ class RamData:
                 ram._ramdata_composite = self  # give component RamData access to the current composite RamData
 
         """ load managers.FileSystemOperatorPool """
-        if isinstance(
-            file_system_operator_pool, managers.FileSystemOperatorPool
-        ):  # if 'file_system_operator_pool' is valid
+        if isinstance( file_system_operator_pool, managers.FileSystemOperatorPool ) : # if 'file_system_operator_pool' is valid
             self._fop = file_system_operator_pool
-        else:
-            self._fop = managers.FileSystemOperatorPool(
-                int_num_managed_file_system_operators if self.contains_remote else 1
-            )
-        self._fo = self._fop.get_operator()
-        self._zs = self._fop.get_zarr_objects()
-        self._lh = self._fop.create_spinlockfileholder()
-
-        """ set the read-only status of the given RamData  """
-        if isinstance(flag_is_read_only, bool):
+        else :
+            self._fop = managers.FileSystemOperatorPool( int_num_managed_file_system_operators if self.contains_remote else 1 )
+        self._fo = self._fop.get_operator( )
+        self._zs = self._fop.get_zarr_objects( )
+        self._lh = self._fop.create_spinlockfileholder( ) if flag_enable_synchronization_through_locking else None
+                
+        ''' set the read-only status of the given RamData  '''
+        if isinstance( flag_is_read_only, bool ) :
             self._flag_is_read_only = flag_is_read_only
-        else:
-            """perform a test to check read-only status of the given RamData"""
+        else :
+            """ perform a test to check read-only status of the given RamData """
             try:
-                self._fo.write_json_file(
-                    f"{self._path_folder_ramdata}modification.test.json",
-                    {"time": time.time()},
-                )
+                self._fo.write_json_file( f"{self._path_folder_ramdata}modification.test.json", { 'time' : time.time( ) } )
                 self._flag_is_read_only = False
             except:
                 # if test zarr data cannot be written to the source, consider the given RamData object as read-only
@@ -11128,22 +10846,21 @@ class RamData:
         self._path_folder_temp = path_folder_temp
 
         # create 'path_folder_temp'
-        self._fo.mkdir(self.path_folder_temp, exist_ok=True)
-
-        """ retrieve metadata of the current RamData and its the components """
-        (
+        self._fo.mkdir( self.path_folder_temp, exist_ok = True )
+        
+        ''' retrieve metadata of the current RamData and its the components '''
+        ( 
             _dm,
             _dm_bc,
             _dm_ft,
-        ) = self._fo.read_json_files(
-            [
-                f"{self._path_folder_ramdata}.zattrs",
-                f"{self._path_folder_ramdata}barcodes.num_and_cat.zdf/.zattrs",
-                f"{self._path_folder_ramdata}features.num_and_cat.zdf/.zattrs",
-            ]
-        )
+        ) = self._fo.read_json_files([
+            f"{self._path_folder_ramdata}.zattrs",
+            f"{self._path_folder_ramdata}barcodes.num_and_cat.zdf/.zattrs",
+            f"{self._path_folder_ramdata}features.num_and_cat.zdf/.zattrs",
+        ]) 
 
-        """ initialize axis objects """
+        
+        ''' initialize axis objects '''
         dict_setting = dict(
             flag_check_combined_type=flag_check_combined_type,
             ba_filter=None,
@@ -11154,8 +10871,8 @@ class RamData:
             path_folder_mask=self._path_folder_ramdata_mask,
             flag_is_read_only=self._flag_is_read_only,
             int_num_cpus=self.int_num_cpus_for_updating_metadata,
-            spinlockfileholder=self._lh,  # use the same lock file holder
-            file_system_operator_pool=self._fop,  # operator pool
+            spinlockfileholder = self._lh, # use the same lock file holder
+            file_system_operator_pool = self._fop, # operator pool
         )
         self.bc = RamDataAxis(
             path_folder_ramdata,
@@ -11166,11 +10883,7 @@ class RamData:
             l_ax=list(ram.bc for ram in self._l_ramdata)
             if self._l_ramdata is not None
             else None,
-            dict_kw_zdf=(
-                dict_kw_zdf
-                if _dm_bc is None
-                else {**dict_kw_zdf, "dict_metadata": _dm_bc["dict_metadata"]}
-            ),  # pass metadata
+            dict_kw_zdf = ( dict_kw_zdf if _dm_bc is None else { ** dict_kw_zdf, 'dict_metadata' : _dm_bc[ 'dict_metadata' ] } ), # pass metadata 
             **dict_setting,
         )
 
@@ -11183,16 +10896,12 @@ class RamData:
             l_ax=list(ram.ft for ram in self._l_ramdata)
             if self._l_ramdata is not None
             else None,
-            dict_kw_zdf=(
-                dict_kw_zdf
-                if _dm_ft is None
-                else {**dict_kw_zdf, "dict_metadata": _dm_ft["dict_metadata"]}
-            ),  # pass metadata
+            dict_kw_zdf = ( dict_kw_zdf if _dm_ft is None else { ** dict_kw_zdf, 'dict_metadata' : _dm_ft[ 'dict_metadata' ] } ), # pass metadata 
             **dict_setting,
         )
-
-        """ initialize the metadata of the RamData """
-        if _dm is None:  # if the metadata does not exist
+        
+        ''' initialize the metadata of the RamData '''
+        if _dm is None : # if the metadata does not exist
             # compose metadata for the combined ramdata
             if self.is_combined:
                 # %% COMBINED %%
@@ -11208,20 +10917,16 @@ class RamData:
                     "version": _version_,
                     "identifier": bk.UUID(),
                 }
-                self.set_metadata(self._dict_metadata)  # write the metadata
-            else:  # if RamData is not 'combined' RamData, raise an error
-                raise FileExistsError(
-                    f"RamData does not exist at {self._path_folder_ramdata}"
-                )  # raise FileExistsError
-        else:
-            self._dict_metadata = _dm["dict_metadata"]  # set the metadata
+                self.set_metadata(self._dict_metadata) # write the metadata
+            else : # if RamData is not 'combined' RamData, raise an error
+                raise FileExistsError( f"RamData does not exist at {self._path_folder_ramdata}" ) # raise FileExistsError
+        else :
+            self._dict_metadata = _dm[ 'dict_metadata' ] # set the metadata
+            
+            if not hasattr( self, '_dict_metadata' ) : # if metadata has not been loaded, load metadata # deprecated
+                self.metadata  # load metadata       
 
-            if not hasattr(
-                self, "_dict_metadata"
-            ):  # if metadata has not been loaded, load metadata # deprecated
-                self.metadata  # load metadata
-
-        """ initialize the layor object """
+        ''' initialize the layor object '''
         if (
             name_layer is not None and name_layer in self.layers
         ):  # if given name of the layer is valid
@@ -11317,7 +11022,8 @@ class RamData:
 
     @property
     def lock_holder(self):
-        """# 2022-12-23 00:02:37"""
+        """# 2022-12-23 00:02:37
+        """
         return self._lh
 
     @lock_holder.setter
@@ -11598,10 +11304,8 @@ class RamData:
                 f"{path_folder}.zattrs.lock"
             )  # wait until a lock is released
             self._dict_metadata = self._fo.read_json_file(
-                path_folder + ".zattrs",
-            )[
-                "dict_metadata"
-            ]  # retrieve metadata from the storage, and update the metadata stored in the object
+                path_folder + '.zattrs', 
+            )[ "dict_metadata" ]  # retrieve metadata from the storage, and update the metadata stored in the object
 
         #             # 🐘TEMP(for converting temporary metadata structures)🐘
         #             # update 'layers' metadata structure
@@ -11627,25 +11331,20 @@ class RamData:
         elif not hasattr(
             self, "_dict_metadata"
         ):  # when locking is not used but the metadata has not been loaded, read the metadata without using the locking algorithm
-            self._dict_metadata = self._fo.read_json_file(f"{path_folder}.zattrs")[
-                "dict_metadata"
-            ]  # retrieve 'dict_metadata' from the storage
+            self._dict_metadata = self._fo.read_json_file( f"{path_folder}.zattrs" )[ "dict_metadata" ] # retrieve 'dict_metadata' from the storage
 
         # open RamData as a Zarr object (group)
         if (
             self._path_folder_ramdata_mask is not None
         ):  # if mask is given, open the mask object as a zarr group to save/retrieve metadata
-            if not self._fo.exists(
-                f"{self._path_folder_ramdata_mask}.zattrs"
+            if (
+                not self._fo.exists( f"{self._path_folder_ramdata_mask}.zattrs" )
             ):  # if mask object does not have a ramdata attribute
                 if self.use_locking:  # %% FILE LOCKING %%
                     self._lh.wait_lock(
                         f"{self._path_folder_ramdata}.zattrs.lock"
                     )  # wait until a lock is released before reading the metadata of the current RamData object
-                self._fo.write_json_file(
-                    f"{self._path_folder_ramdata_mask}.zattrs",
-                    {"dict_metadata": self._dict_metadata},
-                )  # copy the ramdata attribute of the current RamData to the mask object
+                self._fo.write_json_file( f"{self._path_folder_ramdata_mask}.zattrs", { "dict_metadata" : self._dict_metadata } ) # copy the ramdata attribute of the current RamData to the mask object
 
         return self._dict_metadata  # return the metadata
 
@@ -11664,14 +11363,10 @@ class RamData:
         if (
             self._lh is None
         ):  # if locking is not used, return previously loaded metadata
-            self._fo.write_json_file(
-                f"{path_folder}.zattrs", {"dict_metadata": self._dict_metadata}
-            )
+            self._fo.write_json_file( f"{path_folder}.zattrs", { "dict_metadata" : self._dict_metadata } )
         else:  # when locking has been enabled
             self._lh.acquire_lock(f"{path_folder}.zattrs.lock")  # acquire a lock
-            self._fo.write_json_file(
-                f"{path_folder}.zattrs", {"dict_metadata": self._dict_metadata}
-            )  # write metadata to the storage
+            self._fo.write_json_file( f"{path_folder}.zattrs", { "dict_metadata" : self._dict_metadata } ) # write metadata to the storage
             self._lh.release_lock(f"{path_folder}.zattrs.lock")  # release the lock
 
     def update_metadata(
@@ -11772,17 +11467,13 @@ class RamData:
                 l_id_model_to_be_deleted,
                 dict_rename_id_model,
             )  # update 'self._dict_metadata' with 'dict_metadata_to_be_updated'
-            self._fo.write_json_file(
-                f"{path_folder}.zattrs", {"dict_metadata": self._dict_metadata}
-            )
+            self._fo.write_json_file( f"{path_folder}.zattrs", { "dict_metadata" : self._dict_metadata } )
         else:  # when locking has been enabled
             self._lh.acquire_lock(f"{path_folder}.zattrs.lock")  # acquire a lock
 
             self._dict_metadata = self._fo.read_json_file(
-                path_folder + ".zattrs",
-            )[
-                "dict_metadata"
-            ]  # read metadata from the storage and update the metadata
+                path_folder + '.zattrs', 
+            )[ "dict_metadata" ]  # read metadata from the storage and update the metadata
             self._dict_metadata = __update_dict_metadata(
                 self._dict_metadata,
                 dict_metadata_to_be_updated,
@@ -11792,7 +11483,7 @@ class RamData:
                 dict_rename_id_model,
             )  # update 'self._dict_metadata' with 'dict_metadata_to_be_updated'
             self._fo.write_json_file(
-                path_folder + ".zattrs", {"dict_metadata": self._dict_metadata}
+                path_folder + '.zattrs', { "dict_metadata" : self._dict_metadata }
             )  # write metadata to the storage
 
             self._lh.release_lock(f"{path_folder}.zattrs.lock")  # release the lock
@@ -11965,9 +11656,7 @@ class RamData:
                         http_response_code(path_file) == 200
                     )  # check whether http file exists
             else:
-                return self._fo.exists(
-                    path_file
-                )  # check whether the file exists in the local file system
+                return self._fo.exists( path_file )  # check whether the file exists in the local file system
 
         path_file = None  # initialize the output value
         name_model_file = __get_name_file_of_a_model(
@@ -12050,7 +11739,7 @@ class RamData:
         ],
         index_component: Union[int, None] = None,
     ):
-        """# 2023-11-15 21:43:54
+        """# 2023-11-15 21:43:54 
         load model from the current RamData.
 
         name_model : str # the name of the model
@@ -12094,7 +11783,7 @@ class RamData:
 
         # define a folder for storage of models
         path_folder_models = f"{self._path_folder_ramdata_modifiable}models/"  # define a folder to save/load model
-        self._fo.mkdir(path_folder_models, exist_ok=True)
+        self._fo.mkdir( path_folder_models, exist_ok=True)
 
         # define internal functions
         def __search_and_download_model_file(name_model_file):
@@ -12103,9 +11792,7 @@ class RamData:
             """
             # define the paths of the model files
             path_file_dest = f"{path_folder_models}{name_model_file}"  # local path
-            if self._fo.exists(
-                path_file_dest
-            ):  # check whether the destination file already exists
+            if self._fo.exists( path_file_dest ):  # check whether the destination file already exists
                 return
 
             path_file_src = self.get_model_path(
@@ -12121,7 +11808,7 @@ class RamData:
                     f"{path_folder_model_src}{str_prefix_file_model}.lock"
                 )
 
-            self._fo.cp(path_file_src, path_file_dest)  # copy file
+            self._fo.cp( path_file_src, path_file_dest ) # copy file
 
         # load model
         if type_model in self._set_type_model_picklable:  # handle picklable models
@@ -12133,7 +11820,7 @@ class RamData:
             __search_and_download_model_file(name_model_file)
 
             # exit if the file does not exists
-            if not self._fo.exists(path_file_model):
+            if not self._fo.exists( path_file_model):
                 return
 
             model = bk.PICKLE_Read(path_file_model)
@@ -12149,13 +11836,11 @@ class RamData:
             __search_and_download_model_file(name_model_file)
 
             # exit if the file does not exists
-            if not self._fo.exists(path_file_model):
+            if not self._fo.exists( path_file_model):
                 return
 
             # extract tar.gz
-            if not self._fo.exists(
-                path_prefix_model
-            ):  # if the model has not been extracted from the tar.gz archive
+            if not self._fo.exists( path_prefix_model ):  # if the model has not been extracted from the tar.gz archive
                 tar_extract(
                     path_file_model, path_folder_models
                 )  # extract tar.gz file of pumap object
@@ -12178,13 +11863,11 @@ class RamData:
             __search_and_download_model_file(name_model_file)
 
             # exit if the file does not exists
-            if not self._fo.exists(path_file_model):
+            if not self._fo.exists( path_file_model):
                 return
 
             # extract tar.gz
-            if not self._fo.exists(
-                path_prefix_model
-            ):  # if the model has not been extracted from the tar.gz archive
+            if not self._fo.exists( path_prefix_model):  # if the model has not been extracted from the tar.gz archive
                 tar_extract(
                     path_file_model, path_folder_models
                 )  # extract tar.gz file of pumap object
@@ -12240,7 +11923,7 @@ class RamData:
         ],
         dict_metadata_description: dict = dict(),
     ):
-        """# 2023-11-15 21:43:48
+        """# 2023-11-15 21:43:48 
         save model to RamData. if mask is available, save model to the mask
 
         'model' : input model
@@ -12257,7 +11940,7 @@ class RamData:
 
         # define a folder for storage of models
         path_folder_models = f"{self._path_folder_ramdata_modifiable}models/"  # define a folder to save/load model
-        self._fo.mkdir(path_folder_models, exist_ok=True)
+        self._fo.mkdir( path_folder_models, exist_ok=True)
 
         # retrieve the prefix of the file
         str_prefix_file_model = self.get_model_prefix(name_model, type_model)
@@ -12276,7 +11959,7 @@ class RamData:
                 self._path_folder_ramdata_modifiable
             ):  # when the destination folder is located remotely, the temporary local folder should be used.
                 path_folder_models_local = f"{self._path_folder_temp}models/"  # define a local folder to save/load model
-                self._fo.mkdir(path_folder_models_local)  # create a local folder
+                self._fo.mkdir( path_folder_models_local)  # create a local folder
 
             # if the model already exists in the current RamData (excluding components), delete the model
             if self.check_model(
@@ -12311,9 +11994,7 @@ class RamData:
                 bk.PICKLE_Write(
                     f"{path_prefix_model}/metadata.pickle", model
                 )  # save metadata as a pickle file
-                model[
-                    "dl_model"
-                ] = dl_model  # put 'dl_model' back to the 'model' for its downstream usage without reloading the model from the storage
+                model[ 'dl_model' ] = dl_model # put 'dl_model' back to the 'model' for its downstream usage without reloading the model from the storage
                 tar_create(
                     path_file_model, path_prefix_model
                 )  # create tar.gz file of pumap object for efficient retrieval and download
@@ -12323,13 +12004,12 @@ class RamData:
 
             # if a temporary location was used for saving models (for remote RamData), upload the model to the remote location
             if path_folder_models_local != path_folder_models:
-                self._fo.cp(
-                    path_file_model,
+                self._fo.cp( path_file_model,
                     path_file_model.replace(
                         path_folder_models_local, path_folder_models
                     ),
                 )  # upload the model
-                self._fo.rm(path_file_model)  # delete the local copy
+                self._fo.rm( path_file_model)  # delete the local copy
         finally:
             # locking
             if self.use_locking:  # %% FILE LOCKING %%
@@ -12389,7 +12069,7 @@ class RamData:
 
         # define a folder for storage of models
         path_folder_models = f"{self._path_folder_ramdata_modifiable}models/"  # define a folder to save/load model
-        self._fo.mkdir(path_folder_models, exist_ok=True)
+        self._fo.mkdir( path_folder_models, exist_ok=True)
 
         # retrieve the prefix of the file
         str_prefix_file_model = self.get_model_prefix(name_model, type_model)
@@ -12408,12 +12088,12 @@ class RamData:
                 path_prefix_model = f"{path_folder_models}{str_prefix_file_model}"
                 path_file_model = path_prefix_model + ".tar.gz"
                 # if an extracted folder exists, delete the folder
-                if self._fo.exists(path_prefix_model):
-                    self._fo.rm(path_prefix_model)
+                if self._fo.exists( path_prefix_model):
+                    self._fo.rm( path_prefix_model)
             int_file_size = os.path.getsize(
                 path_file_model
             )  # retrieve file size of the model
-            self._fo.rm(path_file_model)
+            self._fo.rm( path_file_model)
         finally:
             # locking
             if self.use_locking:  # %% FILE LOCKING %%
@@ -12524,9 +12204,9 @@ class RamData:
                 path_file_model = path_prefix_model + ".tar.gz"
                 path_file_model_new = path_prefix_model_new + ".tar.gz"
                 # if an extracted folder exists, rename the folder
-                if self._fo.exists(path_prefix_model):
-                    self._fo.mv(path_prefix_model, path_prefix_model_new)
-            self._fo.mv(path_file_model, path_file_model_new)
+                if self._fo.exists( path_prefix_model):
+                    self._fo.mv( path_prefix_model, path_prefix_model_new )
+            self._fo.mv( path_file_model, path_file_model_new)
         finally:
             # locking
             if self.use_locking:  # %% FILE LOCKING %%
@@ -12709,7 +12389,7 @@ class RamData:
                         path_folder_ramdata_mask=self._path_folder_ramdata_mask,
                         flag_is_read_only=self._flag_is_read_only,
                         spinlockfileholder=self._lh,
-                        file_system_operator_pool=self._fop,
+                        file_system_operator_pool = self._fop,
                     )
                 else:  # load the layer from the combined RamData object directly
                     self._layer = RamDataLayer(
@@ -12724,7 +12404,7 @@ class RamData:
                         path_folder_ramdata_mask=self._path_folder_ramdata_mask,
                         flag_is_read_only=self._flag_is_read_only,
                         spinlockfileholder=self._lh,
-                        file_system_operator_pool=self._fop,
+                        file_system_operator_pool = self._fop,
                     )
                 if self.verbose:
                     logger.info(f"'{name_layer}' layer has been loaded")
@@ -12799,16 +12479,20 @@ class RamData:
                 continue
 
             if self.use_locking:  # %% FILE LOCKING %%
-                self._lh.acquire_lock(f"{self._path_folder_ramdata}{name_layer}.lock")
+                self._lh.acquire_lock(
+                    f"{self._path_folder_ramdata}{name_layer}.lock"
+                )
 
             # delete an entire layer
-            self._fo.rm(f"{self._path_folder_ramdata}{name_layer}/")
+            self._fo.rm( f"{self._path_folder_ramdata}{name_layer}/")
 
             # remove the current layer from the metadata
             self.update_metadata(l_name_layer_to_be_deleted=[name_layer])
 
             if self.use_locking:  # %% FILE LOCKING %%
-                self._lh.release_lock(f"{self._path_folder_ramdata}{name_layer}.lock")
+                self._lh.release_lock(
+                    f"{self._path_folder_ramdata}{name_layer}.lock"
+                )
 
     """ </Layer Methods> """
 
@@ -12847,11 +12531,12 @@ class RamData:
         return flag_axis_is_barcode
 
     def __repr__(self):
-        """# 2022-07-20 00:38:24
+        """# 2023-11-18 01:08:26 
         display RamData
         """
+        dict_metadata = self.metadata if self.use_locking else self._dict_metadata
         return (
-            f"<{'' if not self._mode == 'r' else '(read-only) '}RamData object ({'' if self.bc.filter is None else f'{self.bc.meta.n_rows}/'}{self.metadata[ 'int_num_barcodes' ]} barcodes X {'' if self.ft.filter is None else f'{self.ft.meta.n_rows}/'}{self.metadata[ 'int_num_features' ]} features"
+            f"<{'' if not self._mode == 'r' else '(read-only) '}RamData object ({'' if self.bc.filter is None else f'{self.bc.meta.n_rows}/'}{dict_metadata[ 'int_num_barcodes' ]} barcodes X {'' if self.ft.filter is None else f'{self.ft.meta.n_rows}/'}{dict_metadata[ 'int_num_features' ]} features"
             + (
                 ""
                 if self.layer is None
@@ -12861,20 +12546,12 @@ class RamData:
         )  # show the number of records of the current layer if available.
 
     def _repr_html_(self, index_component=None):
-        """# 2023-02-23 22:16:42
+        """# 2023-11-18 01:08:23 
         display RamData in an interactive environment
 
         'index_component' : an integer indices of the component RamData
         """
-        (
-            f"<{'' if not self._mode == 'r' else '(read-only) '}RamData object ({'' if self.bc.filter is None else f'{self.bc.meta.n_rows}/'}{self.metadata[ 'int_num_barcodes' ]} barcodes X {'' if self.ft.filter is None else f'{self.ft.meta.n_rows}/'}{self.metadata[ 'int_num_features' ]} features"
-            + (
-                ""
-                if self.layer is None
-                else f", {self.layer.int_num_records} records in the currently active layer '{self.layer.name}'"
-            )
-            + f") stored at {self._path_folder_ramdata}{'' if self._path_folder_ramdata_mask is None else f' with local mask available at {self._path_folder_ramdata_mask}'}\n\twith the following layers : {self.layers}\n\t\tcurrent layer is '{self.layer.name if self.layer is not None else None}'>"
-        )
+        dict_metadata = self.metadata if self.use_locking else self._dict_metadata
         dict_data = {
             f"ramdata_{self.identifier}": {
                 "barcodes": {
@@ -13114,7 +12791,7 @@ class RamData:
         for ax, name_attr, l in zip(
             [self.ft, self.bc], ["varm", "obsm"], [l_col_ft, l_col_bc]
         ):
-            logger.info(f"{l = }")
+            logger.info( f'{l = }' )
             for e in l:
                 if isinstance(e, set):  # retrieve all data in the secondary axis
                     for name_col in e:
@@ -13467,24 +13144,21 @@ class RamData:
                     flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx=self.flag_use_total_number_of_entries_of_axis_not_for_querying_as_weight_for_dense_ramtx,
                 ),
             )
-            zdf = (
-                ax.meta
-            )  # retrieve ZarrDataFrame metadata that does not using locking # 💜
-            zdf.change_operator()  # change the operator
-
-            """ % writer process % """
-
-            def _save_result(p_i, p_o):
-                """# 2023-11-15 15:54:21
+            zdf = ax.meta # retrieve ZarrDataFrame metadata that does not using locking # 💜
+            zdf.change_operator( ) # change the operator
+            
+            ''' % writer process % '''
+            def _save_result( p_i, p_o ) :
+                '''# 2023-11-15 15:54:21 
                 a function for writing results to storage
-                """
-                while True:
-                    inputs = p_i.recv()
-                    if inputs is None:
+                '''
+                while True :
+                    inputs = p_i.recv( )
+                    if inputs is None :
                         break
-                    l_int_entry_of_axis_for_querying, dict_data = inputs  # parse inputs
-
-                    """ update metadata """
+                    l_int_entry_of_axis_for_querying, dict_data = inputs # parse inputs
+                    
+                    ''' update metadata '''
                     df = pd.DataFrame(
                         dict_data, index=l_int_entry_of_axis_for_querying
                     )  # compose dataframe using 'dict_data'
@@ -13498,20 +13172,16 @@ class RamData:
                         ),
                         inplace=True,
                     )  # rename column names
-                    zdf.update(df, flag_use_index_as_integer_indices=True)
+                    zdf.update(
+                        df, flag_use_index_as_integer_indices=True
+                    )
                     del df
-                p_o.send("completed")  # notify all works has been completed
+                p_o.send( 'completed' ) # notify all works has been completed
 
-            pm2w_s, pm2w_r = mp.Pipe()
-            pw2m_s, pw2m_r = mp.Pipe()
-            p_writer = mp.Process(
-                target=_save_result,
-                args=(
-                    pm2w_r,
-                    pw2m_s,
-                ),
-            )
-            p_writer.start()
+            pm2w_s, pm2w_r = mp.Pipe( )
+            pw2m_s, pw2m_r = mp.Pipe( )
+            p_writer = mp.Process( target = _save_result, args = ( pm2w_r, pw2m_s, ) )
+            p_writer.start( )
 
             def post_process_batch(res):
                 """# 2022-07-06 03:21:49"""
@@ -13525,8 +13195,8 @@ class RamData:
                     return
 
                 pbar.update(int_num_processed_records)  # update the progress bar
-
-                pm2w_s.send((l_int_entry_of_axis_for_querying, dict_data))  # send work
+                
+                pm2w_s.send( ( l_int_entry_of_axis_for_querying, dict_data ) ) # send work
 
             # summarize the RAMtx using multiple processes
             try:
@@ -13542,12 +13212,10 @@ class RamData:
                     int_num_threads=int_num_threads,
                     int_num_seconds_to_wait_before_identifying_completed_processes_for_a_loop=0.2,
                 )
-                """ % writer process % """
-                pm2w_s.send(
-                    None
-                )  # notify to the writer that all work has been delivered
-                pw2m_r.recv()  # wait until all works of the writer is completed
-                p_writer.join()  # wait until the writer process exits
+                ''' % writer process % '''
+                pm2w_s.send( None ) # notify to the writer that all work has been delivered
+                pw2m_r.recv( ) # wait until all works of the writer is completed
+                p_writer.join( ) # wait until the writer process exits
             finally:
                 pbar.close()  # close the progress bar
         finally:
@@ -13848,7 +13516,7 @@ class RamData:
             ] = 0  # initlaize the total number of records written to ramtx object
             # create a temporary folder
             path_folder_temp = f"{self.path_folder_temp}tmp{bk.UUID( )}/"  # retrieve temporary folder specific to the current run
-            self._fo.mkdir(path_folder_temp, exist_ok=True)
+            self._fo.mkdir( path_folder_temp, exist_ok=True)
             # retrieve the number of entries for each axis for the output RAMtx object
             int_num_features = (
                 len(self.ft.m) if self.ft.is_view_active else rtx._int_num_features
@@ -13860,9 +13528,7 @@ class RamData:
             """ %% DENSE %% """
             if flag_dense_ramtx_output:  # if dense output is present
                 path_folder_ramtx_dense = f"{path_folder_layer_new}dense/"
-                self._fo.mkdir(
-                    path_folder_ramtx_dense, exist_ok=True
-                )  # create the output ramtx object folder
+                self._fo.mkdir( path_folder_ramtx_dense, exist_ok=True)  # create the output ramtx object folder
                 path_folder_ramtx_dense_mtx = f"{path_folder_ramtx_dense}matrix.zarr/"  # retrieve the folder path of the output RAMtx Zarr matrix object.
                 # assert not fs.filesystem_operations( 'exists', path_folder_ramtx_dense_mtx ) # output zarr object should NOT exists!
                 path_file_lock_mtx_dense = f"{path_folder_temp}lock_{bk.UUID( )}.sync"  # define path to locks for parallel processing with multiple processes
@@ -13878,9 +13544,7 @@ class RamData:
             if flag_sparse_ramtx_output:  # if sparse output is present
                 mode_sparse = f"sparse_for_querying_{'features' if rtx.is_for_querying_features else 'barcodes'}"
                 path_folder_ramtx_sparse = f"{path_folder_layer_new}{mode_sparse}/"
-                self._fo.mkdir(
-                    path_folder_ramtx_sparse, exist_ok=True
-                )  # create the output ramtx object folder
+                self._fo.mkdir( path_folder_ramtx_sparse, exist_ok=True)  # create the output ramtx object folder
                 path_folder_ramtx_sparse_mtx = f"{path_folder_ramtx_sparse}matrix.zarr/"  # retrieve the folder path of the output RAMtx Zarr matrix object.
                 # assert not fs.filesystem_operations( 'exists', path_folder_ramtx_sparse_mtx ) # output zarr object should NOT exists!
                 # assert not fs.filesystem_operations( 'exists', f'{path_folder_ramtx_sparse}matrix.index.zarr' ) # output zarr object should NOT exists!
@@ -13900,9 +13564,9 @@ class RamData:
                     chunks=(int_num_of_entries_in_a_chunk_zarr_matrix_index, 2),
                     dtype=dtype_sparse_mtx_index,
                 )  # use the same dtype and chunk size of the current RAMtx
-                prop_za_mtx_sparse = self._zs.properties[path_za_mtx_sparse]
+                prop_za_mtx_sparse = self._zs.properties[ path_za_mtx_sparse ]
 
-                int_num_records_in_a_chunk_of_mtx_sparse = prop_za_mtx_sparse["chunks"][
+                int_num_records_in_a_chunk_of_mtx_sparse = prop_za_mtx_sparse[ 'chunks' ][
                     0
                 ]  # retrieve the number of records in a chunk of output zarr matrix
 
@@ -13919,13 +13583,11 @@ class RamData:
                 retrieve data for a given list of entries, transform values, and save to a Zarr object and index the object, and returns the number of written records and the paths of the written objects (index and Zarr matrix)
                 """
                 str_uuid = bk.UUID()
-
+                
                 """ %% DENSE %% """
                 if flag_dense_ramtx_output:  # if dense output is present
                     path_za_mtx_dense = path_folder_ramtx_dense_mtx
-                    self._zs.open(
-                        path_za_mtx_dense, mode="a"
-                    )  # use the same chunk size of the current RAMtx # open a synchronized, fork-safe zarr object
+                    self._zs.open( path_za_mtx_dense, mode="a" )  # use the same chunk size of the current RAMtx # open a synchronized, fork-safe zarr object
 
                 while True:
                     batch = pipe_receiver_batch.recv()
@@ -13968,7 +13630,7 @@ class RamData:
                             path_za_output_sparse,
                             mode="w",
                             shape=(rtx._int_num_records, 2),
-                            chunks=prop_za_mtx_sparse["chunks"],
+                            chunks=prop_za_mtx_sparse[ 'chunks' ],
                             dtype=dtype_of_value,
                         )  # 'za_output_sparse' will be stored locally, and ZarrServer will not be used
                         # define an index file
@@ -14072,7 +13734,7 @@ class RamData:
                     """ %% DENSE %% """
                     if flag_dense_ramtx_output:  # if dense output is present
                         self._zs.set_coordinate_selection(
-                            path_za_mtx_dense,
+                            path_za_mtx_dense, 
                             (
                                 arr_int_entry_of_axis_not_for_querying,
                                 arr_int_entry_of_axis_for_querying,
@@ -14087,13 +13749,12 @@ class RamData:
 
                     """ %% SPARSE %% """
                     if flag_sparse_ramtx_output:  # if sparse output is present
-                        self._zs[
-                            path_za_output_sparse, :int_num_records_written
-                        ] = np.vstack(
+                        self._zs[ path_za_output_sparse, :int_num_records_written] = np.vstack(
                             (arr_int_entry_of_axis_not_for_querying, arr_value)
                         ).T  # save transformed data
                         self._zs.resize(
-                            path_za_output_sparse, int_num_records_written, 2
+                            path_za_output_sparse,
+                            int_num_records_written, 2
                         )  # resize the output Zarr object
                         pd.DataFrame(l_index).to_csv(
                             path_file_index_output_sparse,
@@ -14146,23 +13807,13 @@ class RamData:
                         else path_folder_ramtx_sparse_mtx
                     )  # define a path to the local output folder, which is either final destionation (local output) or temporary destionation before being uploaded (remote output)
 
-                    self._fo.mkdir(
-                        path_folder_local_dest
-                    )  # make the local output folder
+                    self._fo.mkdir( path_folder_local_dest )  # make the local output folder
                     # initialize zarr objects
                     path_za_mtx_sparse = path_folder_ramtx_sparse_mtx
-                    self._zs.open(
-                        path_za_mtx_sparse,
-                        mode="a",
-                    )  # use the same chunk size of the current RAMtx
-                    prop_za_mtx_sparse = self._zs.properties[path_za_mtx_sparse]
-                    path_za_mtx_sparse_index = (
-                        f"{path_folder_ramtx_sparse}matrix.index.zarr"
-                    )
-                    self._zs.open(
-                        path_za_mtx_sparse_index,
-                        mode="a",
-                    )  # use the same dtype and chunk size of the current RAMtx
+                    self._zs.open( path_za_mtx_sparse, mode="a", )  # use the same chunk size of the current RAMtx
+                    prop_za_mtx_sparse = self._zs.properties[ path_za_mtx_sparse ]
+                    path_za_mtx_sparse_index = f"{path_folder_ramtx_sparse}matrix.index.zarr"
+                    self._zs.open( path_za_mtx_sparse_index, mode="a",)  # use the same dtype and chunk size of the current RAMtx
                     int_num_chunks_written_to_ramtx = 0  # initialize the number of chunks written to ramtx object # the number of chunks already present in the output RAMtx zarr matrix object
                     int_len_matrix = 1  # default length # keep track the number of rows in the output sparse matrix in order to resize the matrix once the output has been written
 
@@ -14195,10 +13846,11 @@ class RamData:
                             + int_num_chunks_written_for_a_batch
                         ) * int_num_records_in_a_chunk_of_mtx_sparse  # calculate the minimal number of rows required in the RAMtx Zarr matrix object
                         if (
-                            prop_za_mtx_sparse["shape"][0] < int_min_num_rows_required
+                            prop_za_mtx_sparse[ 'shape' ][0] < int_min_num_rows_required
                         ):  # check whether the size of Zarr matrix is smaller than the minimum requirement
                             self._zs.resize(
-                                path_za_mtx_sparse, int_min_num_rows_required, 2
+                                path_za_mtx_sparse,
+                                int_min_num_rows_required, 2
                             )  # resize the Zarr matrix so that data can be safely added to the matrix
 
                         # copy Zarr chunks to the sparse RAMtx Zarr matrix object folder
@@ -14226,11 +13878,9 @@ class RamData:
                                 path_folder_ramtx_sparse,
                                 flag_recursive=True,
                             )  # upload the processed chunks to the remote locations
-                            self._fo.rm(
-                                path_folder_local_dest, flag_recursive=True
+                            self._fo.rm( path_folder_local_dest, flag_recursive=True
                             )  # delete the processed chunks
-                            self._fo.mkdir(
-                                path_folder_local_dest
+                            self._fo.mkdir( path_folder_local_dest
                             )  # re-create the local temporary output folder
 
                         # retrieve index data of the current batch
@@ -14244,7 +13894,8 @@ class RamData:
                             * int_num_records_in_a_chunk_of_mtx_sparse
                         )  # match the chunk boundary. if there are empty rows in the chunks currently written to ramtx, these empty rows will be considered as rows containing records, so that Zarr matrix written for a batch can be easily transferred by simply renaming the chunk files
                         self._zs.set_orthogonal_selection(
-                            path_za_mtx_sparse_index, arr_index[:, 0], arr_index[:, 1:]
+                            path_za_mtx_sparse_index, 
+                            arr_index[:, 0], arr_index[:, 1:]
                         )  # update the index of the entries of the current batch
                         int_len_matrix = arr_index[
                             -1, -1
@@ -14256,15 +13907,15 @@ class RamData:
                         )
 
                         # delete temporary files and folders
-                        self._fo.rm(path_folder_zarr_output)
-                        self._fo.rm(path_file_index_output)
+                        self._fo.rm( path_folder_zarr_output)
+                        self._fo.rm( path_file_index_output)
                     """ send output and indicate the post-processing has been completed """
                     pipe_output.send(int_len_matrix)
                     # delete temporary folders
                     if (
                         flag_is_destination_remote
                     ):  # delete local destination folder only when the final destination folder is located remotely (when the final destination folder is located locally, the final destination folder is the 'path_folder_local_dest')
-                        self._fo.rm(path_folder_local_dest)
+                        self._fo.rm( path_folder_local_dest)
                     return  # exit
 
                 # create pipes for communications
@@ -14382,24 +14033,19 @@ class RamData:
             """ export ramtx settings """
             """ %% DENSE %% """
             if flag_dense_ramtx_output:  # if dense output is present
-                self._fo.rm(path_file_lock_mtx_dense)  # delete file system locks
+                self._fo.rm( path_file_lock_mtx_dense )  # delete file system locks
                 # save a zarr metadata
                 self._fo.write_json_files(
-                    {
-                        path_folder_ramtx_dense
-                        + ".zattrs": {
-                            "dict_metadata": {
-                                "mode": "dense",
-                                "str_completed_time": bk.TIME_GET_timestamp(True),
-                                "int_num_features": int_num_features,
-                                "int_num_barcodes": int_num_barcodes,
-                                "int_num_records": ns[
-                                    "int_num_records_written_to_ramtx"
-                                ],
-                                "version": _version_,
-                            }
-                        },
-                        path_folder_ramtx_dense + ".zgroup": {"zarr_format": 2},
+                    { 
+                        path_folder_ramtx_dense + '.zattrs' : { "dict_metadata" : {
+                            "mode": "dense",
+                            "str_completed_time": bk.TIME_GET_timestamp(True),
+                            "int_num_features": int_num_features,
+                            "int_num_barcodes": int_num_barcodes,
+                            "int_num_records": ns["int_num_records_written_to_ramtx"],
+                            "version": _version_,
+                        }},
+                        path_folder_ramtx_dense + ".zgroup" : { "zarr_format": 2 },
                     }
                 )
             """ %% SPARSE %% """
@@ -14407,21 +14053,16 @@ class RamData:
                 # save a metadata
                 self._fo.write_json_files(
                     {
-                        path_folder_ramtx_sparse
-                        + ".zattrs": {
-                            "dict_metadata": {
-                                "mode": mode_sparse,
-                                "flag_ramtx_sorted_by_id_feature": rtx.is_for_querying_features,
-                                "str_completed_time": bk.TIME_GET_timestamp(True),
-                                "int_num_features": int_num_features,
-                                "int_num_barcodes": int_num_barcodes,
-                                "int_num_records": ns[
-                                    "int_num_records_written_to_ramtx"
-                                ],
-                                "version": _version_,
-                            }
-                        },
-                        path_folder_ramtx_sparse + ".zgroup": {"zarr_format": 2},
+                        path_folder_ramtx_sparse + '.zattrs' : { "dict_metadata" : {
+                            "mode": mode_sparse,
+                            "flag_ramtx_sorted_by_id_feature": rtx.is_for_querying_features,
+                            "str_completed_time": bk.TIME_GET_timestamp(True),
+                            "int_num_features": int_num_features,
+                            "int_num_barcodes": int_num_barcodes,
+                            "int_num_records": ns["int_num_records_written_to_ramtx"],
+                            "version": _version_,
+                        }},
+                        path_folder_ramtx_sparse + ".zgroup" : { "zarr_format": 2 },
                     }
                 )
                 # retrieve result from the worker process
@@ -14433,13 +14074,14 @@ class RamData:
                 )  # receive the length of the matrix
                 p_sparse_matrix_post_processing.join()  # dismiss worker
                 # resize the za_mtx_sparse matrix if its length is larger than 'int_len_matrix'
-                if prop_za_mtx_sparse["shape"][0] > int_len_matrix:
+                if prop_za_mtx_sparse[ 'shape' ][0] > int_len_matrix:
                     self._zs.resize(
-                        path_za_mtx_sparse, int_len_matrix, 2
+                        path_za_mtx_sparse, 
+                        int_len_matrix, 2
                     )  # resize the Zarr matrix to according to the actual number of rows in the matrix
 
             # remove temp folder once all operations have been completed
-            self._fo.rm(path_folder_temp)
+            self._fo.rm( path_folder_temp)
 
             return  # exit
             # END of RAMtx_Apply function
@@ -14927,7 +14569,7 @@ class RamData:
                     f"the output RamData object directory is exactly same that of the current RamData object, exiting"
                 )
         # create the RamData output folder
-        self._fo.mkdir(path_folder_ramdata_output, exist_ok=True)
+        self._fo.mkdir( path_folder_ramdata_output, exist_ok=True)
 
         # retrieve valid set of name_layer
         set_name_layer = self.layers.intersection(l_name_layer)
@@ -14960,7 +14602,7 @@ class RamData:
                 )  # flag_dtype_output = None : use the same dtype as the input RAMtx object
 
         # compose metadata
-        self._fo.mkdir(path_folder_ramdata_output, exist_ok=True)
+        self._fo.mkdir( path_folder_ramdata_output, exist_ok = True )
         dict_metadata = deepcopy(self.metadata)  # get metadata of the current RamData
         # update the metadata
         dict_metadata.update(
@@ -14975,14 +14617,7 @@ class RamData:
                 "identifier": bk.UUID(),
             }
         )
-        self._fo.write_json_files(
-            {
-                f"{path_folder_ramdata_output}.zattrs": {
-                    "dict_metadata": dict_metadata
-                },
-                f"{path_folder_ramdata_output}.zgroup": {"zarr_format": 2},
-            }
-        )  # write the metadata
+        self._fo.write_json_files( { f"{path_folder_ramdata_output}.zattrs" : { "dict_metadata" : dict_metadata }, f"{path_folder_ramdata_output}.zgroup" : { "zarr_format": 2 } } ) # write the metadata
 
         # open the destination RamData
         ram_subset = RamData(path_folder_ramdata_output)
@@ -15786,8 +15421,12 @@ class RamData:
                     batch = ins  # parse input
 
                     # load mean and variance data in memory
-                    arr_mean = zdf_meta[name_col_mean_with_prefix, None, batch]
-                    arr_var = zdf_meta[name_col_variance_with_prefix, None, batch]
+                    arr_mean = zdf_meta[
+                        name_col_mean_with_prefix, None, batch
+                    ]
+                    arr_var = zdf_meta[
+                        name_col_variance_with_prefix, None, batch
+                    ]
 
                     # learn mean-variance relationship for the data
                     mask = ~np.isnan(arr_var)  # exclude values containing np.nan
@@ -18945,12 +18584,7 @@ class RamData:
         # retrieve labels
         arr_label = (
             ax.meta[name_col_label]
-            if len(
-                self._fo.read_json_file(f"{ax.meta.get_zarr(name_col_label)}.zarray")[
-                    "shape"
-                ]
-            )
-            == 1
+            if len( self._fo.read_json_file( f"{ax.meta.get_zarr(name_col_label)}.zarray" )[ 'shape' ] ) == 1
             else ax.meta[name_col_label, None, index_col_of_name_col_label]
         )  # check whether the dimension of the column containing labels is 1D or 2D
 
@@ -19069,9 +18703,7 @@ class RamData:
 
         # attemps to read adjacency matrix from an existing file (if given)
         flag_adata_loaded = False  # initialize the flag
-        if path_file_adata is not None and self._fo.exists(
-            path_file_adata
-        ):  # if a path to the given anndata was given appears to be not empty
+        if path_file_adata is not None and self._fo.exists( path_file_adata):  # if a path to the given anndata was given appears to be not empty
             try:  # attemps to read the adjacency matrix
                 adata = sc.read_h5ad(path_file_adata)
                 flag_adata_loaded = True  # the flag
@@ -19229,7 +18861,7 @@ class RamData:
                     process_batch=__run_leiden,
                     int_num_threads=int_num_processes,
                 )
-                self._fo.rm(path_file_X)  # delete the temporary file
+                self._fo.rm( path_file_X)  # delete the temporary file
         return adata  # return the resulting anndata
 
     """ knn-index based embedding/classification """
@@ -19353,8 +18985,8 @@ class RamData:
             def process_batch(pipe_receiver_batch, pipe_sender_result):
                 """# 2022-09-06 17:05:15"""
                 ax_meta = ax.meta
-                ax_meta.change_operator()  # distribute works
-
+                ax_meta.change_operator( ) # distribute works
+                
                 while True:
                     batch = pipe_receiver_batch.recv()
                     if batch is None:
@@ -19704,8 +19336,8 @@ class RamData:
         # define functions for multiprocessing step
         def process_batch(pipe_receiver_batch, pipe_sender_result):
             """# 2022-12-16 01:30:06"""
-            ax_meta = ax.meta  # retrieve metadata object
-            ax_meta.change_operator()  # change operator
+            ax_meta = ax.meta # retrieve metadata object
+            ax_meta.change_operator( ) # change operator
 
             # define functions
             def __find_label_with_largest_sum_of_weights(labels, weights):
@@ -20309,10 +19941,8 @@ class RamData:
         # define functions for multiprocessing step
         def process_batch(pipe_receiver_batch, pipe_sender_result):
             """# 2022-09-06 17:05:15"""
-            path_za = ax.meta.get_zarr(
-                name_col_x
-            )  # retrieve zarr object or zarr-server object according to the axis setting (whether the axis includes remote dataset)
-            self._zs.open(path_za)
+            path_za = ax.meta.get_zarr( name_col_x ) # retrieve zarr object or zarr-server object according to the axis setting (whether the axis includes remote dataset)
+            self._zs.open( path_za )
 
             while True:
                 batch = pipe_receiver_batch.recv()
@@ -20327,7 +19957,7 @@ class RamData:
                 # retrieve data from the axis metadata
                 X = self._zs.get_orthogonal_selection(
                     path_za,
-                    (l_int_entry_current_batch, slice(None, int_num_components_x)),
+                    (l_int_entry_current_batch, slice(None, int_num_components_x))
                 )
                 pipe_sender_result.send(
                     (l_int_entry_current_batch, X)

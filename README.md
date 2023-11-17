@@ -12,15 +12,25 @@
 
 
 
-A <tt>RamData</tt> object is composed of two <b><tt>RamDataAxis</tt></b> (<b>Axis</b>) objects and multiple <b><tt>RamDataLayer</tt></b> (<b>Layer</b>) objects.
+Tutorials can be found at `doc/jn/`
+
+[Tutorials) PBMC3k processing and analysis using SC-Elephant](https://scelephant-free.s3.amazonaws.com/doc/SC-Elephant_PBMC3k_processing_and_analysis_tutorials.html)
+
+[Tutorials) Alignment of PBMC3k to the ELDB (320,000 subset) and cell type prediction using SC-Elephant](https://scelephant-free.s3.amazonaws.com/doc/SC-Elephant_PBMC3k_alignment_to_the_ELDB_subset_320k_tutorials.html)
 
 
 
-![scelephant-logo](https://raw.githubusercontent.com/ahs2202/scelephant/master/doc/img/scelephant.js.structure.png)
+Briefly, a <tt>RamData</tt> object is composed of two <b><tt>RamDataAxis</tt></b> (<b>Axis</b>) objects and multiple <b><tt>RamDataLayer</tt></b> (<b>Layer</b>) objects.
+
+![ramdata_struc](https://raw.githubusercontent.com/ahs2202/scelephant/master/doc/img/ramdata_struc.png)
 
 
 
 The two RamDataAxis objects, <b>'Barcode'</b> and <b>'Feature'</b> objects, use <b><tt>'filter'</tt></b> to select cells (barcodes) and genes (features) before retrieving data from the <tt>RamData</tt> object, respectively.
+
+![ramdata_struc](https://raw.githubusercontent.com/ahs2202/scelephant/master/doc/img/ramtx_sparse_matrix.png)
+
+`RamData` employs `RAMtx` (Random-accessible matrix) objects to store count matrix in sparse or dense formats.
 
 
 
