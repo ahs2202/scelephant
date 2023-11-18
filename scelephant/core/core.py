@@ -5033,7 +5033,7 @@ class ZarrDataFrame:
             if name_col_after in self.columns_excluding_components:
                 if self.verbose:
                     logger.info(
-                        f"[ZarrDataFrame.rename_column] 'name_col_after' {name_col_after} already exists in the current ZDF, exiting"
+                        f"{name_col_after = } already exists in the current ZDF, exiting"
                     )
                 return
             # if a mask is available, call method on the mask
@@ -7069,7 +7069,7 @@ class RamDataAxis:
 
         if self.verbose:
             logger.info(
-                f"[Axis {self._name_axis}] completed loading of {len( arr_str )} number of strings"
+                f"completed loading of {len( arr_str )} number of strings"
             )
         return arr_str  # return loaded strings
 
@@ -9150,7 +9150,7 @@ class RAMtx:
             l_int_entry = [l_int_entry]
 
         flag_empty_input = len(l_int_entry) == 0  # retrieve flag indicating empty input
-        # logger.info( f'flag_empty_input: {flag_empty_input}' )
+        # logger.info( f'{flag_empty_input = }' )
 
         # %% COMBINED %%
         # translate query entries of the combined ramtx to the entries of a component ramtx
@@ -11361,7 +11361,7 @@ class RamData:
         if int_index is not None and str_identifier is not None:
             if self.verbose:
                 logger.info(
-                    "[RamData.get_component] only one of 'int_index' or 'str_identifier' should be given but both were given, exiting"
+                    "only one of 'int_index' or 'str_identifier' should be given but both were given, exiting"
                 )
             return
         # if current RamData has a matching 'str_identifier', return 'self'
@@ -13111,7 +13111,6 @@ class RamData:
         for ax, name_attr, l in zip(
             [self.ft, self.bc], ["varm", "obsm"], [l_col_ft, l_col_bc]
         ):
-            logger.info(f"{l = }")
             for e in l:
                 if isinstance(e, set):  # retrieve all data in the secondary axis
                     for name_col in e:
@@ -14838,7 +14837,7 @@ class RamData:
         # report results
         if self.verbose:
             logger.info(
-                f"[RamData.apply] apply operation {name_layer} > {name_layer_new} has been completed"
+                f"apply operation {name_layer} > {name_layer_new} has been completed"
             )
 
     """ </CORE METHODS> """
@@ -15162,7 +15161,7 @@ class RamData:
         ):  # 'name_col_total_count' column should be available in the metadata
             if self.verbose:
                 logger.info(
-                    f"[RamData.normalize] 'name_col_total_count' '{name_col_total_count}' does not exist in the 'barcodes' metadata, exiting"
+                    f"'name_col_total_count' '{name_col_total_count}' does not exist in the 'barcodes' metadata, exiting"
                 )
             return
 
@@ -15405,7 +15404,7 @@ class RamData:
             ):  # 'name_col_variance' column should be available in the metadata
                 if self.verbose:
                     logger.info(
-                        f"[RamData.scale] 'name_col_variance' '{name_col_total_count}' does not exist in the 'barcodes' metadata, exiting"
+                        f"'name_col_variance' '{name_col_total_count}' does not exist in the 'barcodes' metadata, exiting"
                     )
                 return
 
@@ -16092,7 +16091,7 @@ class RamData:
             if len(ax.meta) < int_num_highly_variable_features:
                 if self.verbose:
                     logger.info(
-                        f"[RamData.identify_highly_variable_features] there are only {len( ax.meta )} number of features satisfying the thresholds, 'int_num_highly_variable_features' will be modified."
+                        f"there are only {len( ax.meta )} number of features satisfying the thresholds, 'int_num_highly_variable_features' will be modified."
                     )
                 int_num_highly_variable_features = len(ax.meta)
 
@@ -17258,8 +17257,8 @@ class RamData:
         # load layer
         if name_layer not in self.layers:
             if self.verbose:
-                logger.info(
-                    f"[ERROR] [RamData.apply_pca] invalid argument 'name_layer' : '{name_layer}' does not exist."
+                logger.error(
+                    f"invalid argument 'name_layer' : '{name_layer}' does not exist."
                 )
             return -1
         # set layer
@@ -17275,8 +17274,8 @@ class RamData:
         )
         if rtx is None:
             if self.verbose:
-                logger.info(
-                    f"[ERROR] [RamData.train_pca] valid ramtx object is not available in the '{self.layer.name}' layer"
+                logger.error(
+                    f"valid ramtx object is not available in the '{self.layer.name}' layer"
                 )
 
         # set/save filter
@@ -17516,8 +17515,8 @@ class RamData:
         # check the validility of the input arguments
         if name_layer not in self.layers:
             if self.verbose:
-                logger.info(
-                    f"[ERROR] [RamData.apply_pca] invalid argument 'name_layer' : '{name_layer}' does not exist."
+                logger.error(
+                    f"invalid argument 'name_layer' : '{name_layer}' does not exist."
                 )
             return -1
         # set layer
@@ -17539,8 +17538,8 @@ class RamData:
         )
         if rtx is None:
             if self.verbose:
-                logger.info(
-                    f"[ERROR] [RamData.train_pca] valid ramtx object is not available in the '{self.layer.name}' layer"
+                logger.error(
+                    f"valid ramtx object is not available in the '{self.layer.name}' layer"
                 )
 
         # set default 'index_component_reference'
@@ -17784,7 +17783,7 @@ class RamData:
         # report
         if self.verbose:
             logger.info(
-                f"[Info] [RamData.train_umap] training for {ax.meta.n_rows} entries completed"
+                f"training for {ax.meta.n_rows} entries completed"
             )
 
         # save the model
@@ -17795,7 +17794,7 @@ class RamData:
             # report the file size of the model if saving of the model was successful
             if self.verbose:
                 logger.info(
-                    f"[Info] [RamData.train_umap] Parametric UMAP model of {int_model_file_size} Bytes has been saved."
+                    f"Parametric UMAP model of {int_model_file_size} Bytes has been saved."
                 )
         return pumap_embedder  # return the model
 
@@ -17989,7 +17988,7 @@ class RamData:
         # report
         if self.verbose:
             logger.info(
-                f"[Info] [RamData.hdbscan] clustering completed for {ax.meta.n_rows} number of barcodes"
+                f"clustering completed for {ax.meta.n_rows} number of barcodes"
             )
 
         # draw graphs
@@ -18136,7 +18135,7 @@ class RamData:
         g = get_igraph_from_adjacency(conn, directed)
         del conn
         if self.verbose:
-            logger.info(f"[Info] [RamData.leiden] knn-graph loaded")
+            logger.info(f"knn-graph loaded")
 
         # compose partition arguments
         if resolution is not None:
@@ -18165,7 +18164,7 @@ class RamData:
                 dict_kw_leiden_partition["resolution_parameter"] *= 1.2
                 if self.verbose:
                     logger.info(
-                        f"[Info] [RamData.leiden] resolution increased to {dict_kw_leiden_partition[ 'resolution_parameter' ]}"
+                        f"resolution increased to {dict_kw_leiden_partition[ 'resolution_parameter' ]}"
                     )
             else:
                 break
@@ -18188,7 +18187,7 @@ class RamData:
         # report
         if self.verbose:
             logger.info(
-                f"[Info] [RamData.leiden] clustering completed for {ax.meta.n_rows} number of barcodes"
+                f"clustering completed for {ax.meta.n_rows} number of barcodes"
             )
 
         # draw graphs
@@ -18299,7 +18298,7 @@ class RamData:
         # report
         if self.verbose:
             logger.info(
-                f"[Info] [RamData.train_label] training of labels completed for {ax.meta.n_rows} number of entries of the axis '{'barcodes' if flag_axis_is_barcode else 'features'}'"
+                f"training of labels completed for {ax.meta.n_rows} number of entries of the axis '{'barcodes' if flag_axis_is_barcode else 'features'}'"
             )
 
     def apply_label(
@@ -18373,7 +18372,7 @@ class RamData:
         """
         if self.verbose:
             logger.info(
-                f"[Info] [RamData.apply_label] the nearest-neighbor search started"
+                f"the nearest-neighbor search started"
             )
         # initialize the counter for counting labels
         dict_label_counter = dict()
@@ -18587,7 +18586,7 @@ class RamData:
         ):  # for each iteration
             if self.verbose:
                 logger.info(
-                    f"[Info] [RamData.subsample] iteration #{index_iteration} started."
+                    f"iteration #{index_iteration} started."
                 )
             """
             community detection - leiden
@@ -18638,7 +18637,7 @@ class RamData:
             """
             if self.verbose:
                 logger.info(
-                    f"[Info] [RamData.subsample] iteration #{index_iteration} calculating density information started"
+                    f"iteration #{index_iteration} calculating density information started"
                 )
 
             # prepare knn search index
@@ -18795,7 +18794,7 @@ class RamData:
 
             if self.verbose:
                 logger.info(
-                    f"[Info] [RamData.subsample] iteration #{index_iteration} subsampling started"
+                    f"iteration #{index_iteration} subsampling started"
                 )
 
             # define functions for multiprocessing step
@@ -18931,8 +18930,8 @@ class RamData:
 
         if name_col_label not in ax.meta:
             if self.verbose:
-                logger.info(
-                    f"[Error] [RamData.subsample_for_each_clus] name_col_label '{name_col_label}' does not exist, exiting"
+                logger.error(
+                    f"name_col_label '{name_col_label}' does not exist, exiting"
                 )
             return
 
@@ -19074,7 +19073,7 @@ class RamData:
                 flag_adata_loaded = True  # the flag
                 if self.verbose:
                     logger.info(
-                        f"[RamData.run_scanpy_using_pca] AnnData was loaded from {path_file_adata}"
+                        f"AnnData was loaded from {path_file_adata}"
                     )
             except:
                 pass
@@ -19087,7 +19086,7 @@ class RamData:
                 :, [{name_col_pca}], [], []
             ]  # load all barcodes in the filter, no feature in the filter, load PCA data only, load no feature metadata
             if self.verbose:
-                logger.info("[RamData.run_scanpy_using_pca] anndata retrieved.")
+                logger.info("anndata retrieved.")
 
             # build a neighborhood graph
             sc.pp.neighbors(
@@ -19099,7 +19098,7 @@ class RamData:
             )
             if self.verbose:
                 logger.info(
-                    "[RamData.run_scanpy_using_pca] K-nearest neighbor graphs calculation completed."
+                    "K-nearest neighbor graphs calculation completed."
                 )
             if (
                 path_file_adata is not None
@@ -19107,7 +19106,7 @@ class RamData:
                 adata.write(path_file_adata)
                 if self.verbose:
                     logger.info(
-                        f"[RamData.run_scanpy_using_pca] AnnData containing the calculated adjacency matrix has been saved to {path_file_adata}"
+                        f"AnnData containing the calculated adjacency matrix has been saved to {path_file_adata}"
                     )
         # perform analysis
         if "umap" in set_method:
@@ -19126,7 +19125,7 @@ class RamData:
                 self.bc.meta[name_col] = adata.obsm["X_umap"]  # save result to RamData
                 if self.verbose:
                     logger.info(
-                        f"[RamData.run_scanpy_using_pca] UMAP calculation completed, and the resulting UMAP-embedding was saved to the '{name_col}' column of the RamData."
+                        f"UMAP calculation completed, and the resulting UMAP-embedding was saved to the '{name_col}' column of the RamData."
                     )
         # perform analysis
         if "tsne" in set_method:
@@ -19147,7 +19146,7 @@ class RamData:
                 self.bc.meta[name_col] = adata.obsm["X_tsne"]  # save result to RamData
                 if self.verbose:
                     logger.info(
-                        f"[RamData.run_scanpy_using_pca] calculation of tSNE embedding completed, and the resulting embedding was saved to the '{name_col}' column of the RamData."
+                        f"calculation of tSNE embedding completed, and the resulting embedding was saved to the '{name_col}' column of the RamData."
                     )
         if "leiden" in set_method:
             if isinstance(
@@ -19172,7 +19171,7 @@ class RamData:
                     ]  # save result to RamData
                     if self.verbose:
                         logger.info(
-                            f"[RamData.run_scanpy_using_pca] leiden clustering completed, and the resulting cluster membership information was saved to the '{name_col}' column of the RamData."
+                            f"leiden clustering completed, and the resulting cluster membership information was saved to the '{name_col}' column of the RamData."
                         )
             else:  # when multiple clustering runs should be run
                 import joblib  # for persistent, reference-counting-free memory
@@ -19212,7 +19211,7 @@ class RamData:
 
                         if self.verbose:
                             logger.info(
-                                f"[RamData.run_scanpy_using_pca] leiden clustering completed, and the resulting cluster membership information was saved to the '{name_col}' column of the RamData."
+                                f"leiden clustering completed, and the resulting cluster membership information was saved to the '{name_col}' column of the RamData."
                             )
 
                         pipe_sender.send(
@@ -19460,7 +19459,7 @@ class RamData:
         # report
         if self.verbose:
             logger.info(
-                f"[RamData.train_knn] knn index building completed for {ax.meta.n_rows} number of entries of the axis '{'barcodes' if flag_axis_is_barcode else 'features'}' using the data from the column '{name_col_x}'"
+                f"knn index building completed for {ax.meta.n_rows} number of entries of the axis '{'barcodes' if flag_axis_is_barcode else 'features'}' using the data from the column '{name_col_x}'"
             )
 
     def apply_knn(
@@ -19575,7 +19574,7 @@ class RamData:
         if flag_name_col_y_input_and_output_are_same:
             if self.verbose:
                 logger.info(
-                    "[RamData.apply_knn] 'name_col_y_input' and 'name_col_y_output' are the same. the input column will be overwritten."
+                    "'name_col_y_input' and 'name_col_y_output' are the same. the input column will be overwritten."
                 )
 
         # set default 'index_component_reference'
@@ -20000,7 +19999,7 @@ class RamData:
         type_model = f"deep_learning.keras.{operation}"
         if self.check_model(name_model, type_model):  # if the model exists, return
             logger.info(
-                f"[RamData.train_dl] the model '{name_model}' for '{operation}' operation already exists, exiting"
+                f"the model '{name_model}' for '{operation}' operation already exists, exiting"
             )
             return
 
@@ -20156,7 +20155,7 @@ class RamData:
         # report
         if self.verbose:
             logger.info(
-                f"[Info] [RamData.train_dl] deep learning {operation} training completed for {ax.meta.n_rows} number of entries of the axis '{'barcodes' if flag_axis_is_barcode else 'features'}' using the data from the column '{name_col_x}' as X and '{name_col_y}' as y"
+                f"deep learning {operation} training completed for {ax.meta.n_rows} number of entries of the axis '{'barcodes' if flag_axis_is_barcode else 'features'}' using the data from the column '{name_col_x}' as X and '{name_col_y}' as y"
             )
 
     def apply_dl(
@@ -20256,13 +20255,13 @@ class RamData:
 
         # exit if the input columns do not exist
         if name_col_x not in ax.meta:
-            logger.error(f"[RamData.train_dl] {name_col_x} column does not exist")
+            logger.error(f"{name_col_x} column does not exist")
             return
         # if the output column does not exist, initialize the 'y' output column using the 'y' column used for training.
         if name_col_y not in ax.meta:
             if model["name_col_y"] not in ax.meta:
                 logger.info(
-                    f"[RamData.train_dl] '{name_col_y}' output column will be initialized with the existing metadata of the '{model[ 'name_col_y' ]}' column"
+                    f"'{name_col_y}' output column will be initialized with the existing metadata of the '{model[ 'name_col_y' ]}' column"
                 )
                 ax.meta.initialize_column(
                     name_col=name_col_y,
@@ -20615,7 +20614,7 @@ class RamData:
         # report
         if self.verbose:
             logger.info(
-                f"[RamData.find_markers] [Info] finding markers for {len( l_unique_cluster_label_to_analyze )} number of clusters completed"
+                f"finding markers for {len( l_unique_cluster_label_to_analyze )} number of clusters completed"
             )
 
     def get_marker_table(

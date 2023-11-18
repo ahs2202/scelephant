@@ -14,9 +14,9 @@
 
 Tutorials can be found at `doc/jn/`
 
-[Tutorials) PBMC3k processing and analysis using SC-Elephant](https://scelephant-free.s3.amazonaws.com/doc/SC-Elephant_PBMC3k_processing_and_analysis_tutorials.html)
+[Tutorial 1) Processing and analysis of the 3k PBMCs dataset using SC-Elephant](https://scelephant-free.s3.amazonaws.com/doc/SC-Elephant_PBMC3k_processing_and_analysis_tutorials.html)
 
-[Tutorials) Alignment of PBMC3k to the ELDB (320,000 subset) and cell type prediction using SC-Elephant](https://scelephant-free.s3.amazonaws.com/doc/SC-Elephant_PBMC3k_alignment_to_the_ELDB_subset_320k_tutorials.html)
+[Tutorial 2) Alignment of PBMC3k to the ELDB (320,000 subset) and cell type prediction using SC-Elephant](https://scelephant-free.s3.amazonaws.com/doc/SC-Elephant_PBMC3k_alignment_to_the_ELDB_subset_320k_tutorials.html)
 
 
 
@@ -33,7 +33,8 @@ The two RamDataAxis objects, <b>'Barcode'</b> and <b>'Feature'</b> objects, use 
 `RamData` employs `RAMtx` (Random-accessible matrix) objects to store count matrix in sparse or dense formats.
 
 
+Once processed by SC-Elephant, `RamData` can be uploaded to GitHub, Amazon S3 Cloud, or any other static file servers to share your single-cell datasets with the community. The machine learning models, cell-type annotations, and random-accessible expression count matrix of your single-cell dataset on the Web can be easily explored in Python and web browser using SC-Elephant and SC-Elephant.js, respectively.
 
-For a demonstration of the use of `RamData` object on a web browser, please visit http://scelephant.org/
+For a demonstration of the use of `RamData` object on a web browser, please visit [SC-Elephant DB Viewer](http://scelephant.org/).
 
 ![scelephant-js-example](https://raw.githubusercontent.com/ahs2202/scelephant/master/doc/img/scelephant_js_example.png)
