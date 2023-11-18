@@ -78,9 +78,9 @@ logger.setLevel(logging.INFO)
 
 
 # define version
-_version_ = "0.2.2"
+_version_ = "0.2.3"
 _scelephant_version_ = _version_
-_last_modified_time_ = "2023-11-18 01:27:54"
+_last_modified_time_ = "2023-11-19 01:02:57"
 
 str_release_note = [
     """
@@ -371,7 +371,10 @@ str_release_note = [
     'Multiprocessing_Batch_Generator_and_Workers' framework was updated, and relevant sections of scelephant was changed, too
 
     # 2023-11-16 22:54:23 
-    combined FileSystemServer, ZarrMetadataServer, ZarrServer to allow more efficient (both time and memory efficient) multiprocessing spawning operations on remote RamData objects requiring s3fs in spawned processs.
+    Combined FileSystemServer, ZarrMetadataServer, ZarrServer to allow more efficient (both time and memory efficient) multiprocessing spawning operations on remote RamData objects requiring s3fs in spawned processs.
+    
+    # 2023-11-19 01:03:06 
+    Metadata caching has been implemented for RamData and ZarrDataFrame
     ##### Future implementations #####
 
     """
@@ -1706,6 +1709,8 @@ class ZarrDataFrame:
         flag_mask: bool = False,
     ):
         """# 2023-11-14 23:04:50"""
+        self._dict_metadata_cached = None
+        
         # set attributes from arguments
         if zdf_template is not None:
             # set attributes that can be changed anytime during the lifetime of the object
@@ -2426,8 +2431,21 @@ class ZarrDataFrame:
 
     @property
     def metadata(self):
-        """# 2022-07-21 02:38:31"""
-        return self.get_metadata() if self.use_locking else self._dict_metadata
+        """# 2023-11-19 00:41:15 """
+        return self.get_metadata() if self._dict_metadata_cached is None else self._dict_metadata_cached
+    
+    def _cache_metadata(self):
+        """# 2023-11-19 00:41:15 """
+        if self._dict_metadata_cached is None :
+            self._dict_metadata_cached = self.get_metadata( )
+        
+    def _delete_cached_metadata(self):
+        """# 2023-11-19 00:41:15 """
+        self._dict_metadata_cached = None
+    
+    def reload_metadata(self):
+        """# 2023-11-19 00:41:09 """
+        self._dict_metadata = self.get_metadata()
 
     def get_metadata(self):
         """# 2022-12-13 02:00:26
@@ -2845,6 +2863,47 @@ class ZarrDataFrame:
                 return dict_col_metadata["l_value_unique"]
             else:
                 return []
+
+    def set_categories(self, name_col: str, l_name_categories: Union[ None, List, Dict ] = None):
+        """# 2022-12-12 01:09:37
+        for a column containing a categorical data, rename categories using a given list or the mapping
+        
+        l_name_categories: Union[ None, List ] = None, # list of new category names or the mapping of previous category names to the new category names (if the mapping is not available, previous category names will be used).
+        """
+        if l_name_categories is None :
+            logger.error( f"no valid inputs were given, existing." )
+            return -1
+        
+        if (
+            name_col in self.columns_excluding_components
+        ):  # if the column is present in the current object
+            # if the column is available in the mask, return the result of the mask
+            if self._mask is not None and name_col in self._mask:
+                return self._mask.set_categories(name_col=name_col, l_name_categories = l_name_categories)
+
+            # get column metadata
+            dict_col_metadata = self.get_column_metadata(
+                name_col
+            )  # retrieve metadata of the current column
+            if dict_col_metadata[
+                "flag_categorical"
+            ]:  # if the current column contains categorical data
+                l_name_cat_existing = dict_col_metadata["l_value_unique"] # retrieve category names
+                if isinstance( l_name_categories, dict ) : # if a mapping has been given, compose 'l_name_categories' using the mapping
+                    dict_name_cat_prev_to_name_cat_new = l_name_categories # retrieve the mapping
+                    l_name_categories  = list( dict_name_cat_prev_to_name_cat_new[ e ] if e in dict_name_cat_prev_to_name_cat_new else e for e in l_name_cat_existing )
+                    
+                if len( l_name_cat_existing ) != len( l_name_categories ) :
+                    logger.error( f"the length of the given list of new category names {len( l_name_categories )} is not equal to that of the existing category list (which is {len( l_name_cat_existing )}), existing" )
+                    return -1
+                dict_col_metadata["l_value_unique"] = l_name_categories
+                self.set_column_metadata(
+                    name_col,
+                    dict_col_metadata,
+                ) # set column metadata
+            else:
+                logger.error( f"'{name_col}' column does not contain categorical data" )
+                return -1
 
     """ </Methods handling Metadata> """
 
@@ -10993,6 +11052,7 @@ class RamData:
             "deep_learning.keras.classifier",
             "deep_learning.keras.embedder",
         }  # model containing keras model. keras model can be retrieved from the 'dict_model' using 'dl_model' as a key
+        self._dict_metadata_cached = None
 
         """ soft-coded settings """
         # changable settings (settings that can be changed anytime in the lifetime of a RamData object)
@@ -11582,8 +11642,39 @@ class RamData:
 
     @property
     def metadata(self):
-        """# 2022-07-21 02:38:31"""
-        return self.get_metadata()
+        """# 2023-11-19 00:24:44 """
+        return self.get_metadata() if self._dict_metadata_cached is None else self._dict_metadata_cached
+        
+    def _cache_metadata(self):
+        """# 2023-11-19 00:41:15 """
+        # cache metadata of RamData object
+        if self._dict_metadata_cached is None :
+            self._dict_metadata_cached = self.get_metadata( )
+        # cache metadata of subcomponents
+        self.bc.meta._cache_metadata( ) 
+        self.ft.meta._cache_metadata( ) 
+        
+        if self.is_combined:
+            # %% COMBINED %%
+            for ram in self._l_ramdata :
+                ram._cache_metadata( ) # cache metadata of RamData component
+        
+    def _delete_cached_metadata(self):
+        """# 2023-11-19 00:41:15 """
+        # delete the cached metadata of RamData object
+        self._dict_metadata_cached = None
+        # delete cached metadata of subcomponents
+        self.bc.meta._delete_cached_metadata( ) 
+        self.ft.meta._delete_cached_metadata( ) 
+        
+        if self.is_combined:
+            # %% COMBINED %%
+            for ram in self._l_ramdata :
+                ram._delete_cached_metadata( ) # cache metadata of RamData component
+    
+    def reload_metadata(self):
+        """# 2023-11-19 00:24:35 """
+        self._dict_metadata = self.get_metadata()
 
     def get_metadata(self):
         """# 2022-12-13 02:00:26
@@ -12848,13 +12939,16 @@ class RamData:
         }  # retrieve a flag indicating whether the axis is barcode or not
         return flag_axis_is_barcode
 
-    def __repr__(self):
+    def __repr__(self, flag_do_not_invalidate_cache : bool = False):
         """# 2023-11-18 01:08:26
-        display RamData
+        display RamData in a string format
+        
+        flag_do_not_invalidate_cache : bool = False # if True, does not invalidate cached metadata before exiting
         """
-        dict_metadata = self.metadata if self.use_locking else self._dict_metadata
+        self._cache_metadata( ) # cache metadata
+            
         return (
-            f"<{'' if not self._mode == 'r' else '(read-only) '}RamData object ({'' if self.bc.filter is None else f'{self.bc.meta.n_rows}/'}{dict_metadata[ 'int_num_barcodes' ]} barcodes X {'' if self.ft.filter is None else f'{self.ft.meta.n_rows}/'}{dict_metadata[ 'int_num_features' ]} features"
+            f"<{'' if not self._mode == 'r' else '(read-only) '}RamData object ({'' if self.bc.filter is None else f'{self.bc.meta.n_rows}/'}{self.metadata[ 'int_num_barcodes' ]} barcodes X {'' if self.ft.filter is None else f'{self.ft.meta.n_rows}/'}{self.metadata[ 'int_num_features' ]} features"
             + (
                 ""
                 if self.layer is None
@@ -12862,6 +12956,7 @@ class RamData:
             )
             + f") stored at {self._path_folder_ramdata}{'' if self._path_folder_ramdata_mask is None else f' with local mask available at {self._path_folder_ramdata_mask}'}\n\twith the following layers : {self.layers}\n\t\tcurrent layer is '{self.layer.name if self.layer is not None else None}'>"
         )  # show the number of records of the current layer if available.
+        self._delete_cached_metadata( )
 
     def _repr_html_(self, index_component=None):
         """# 2023-11-18 01:08:23
@@ -12869,7 +12964,8 @@ class RamData:
 
         'index_component' : an integer indices of the component RamData
         """
-        dict_metadata = self.metadata if self.use_locking else self._dict_metadata
+        self._cache_metadata( ) # cache metadata
+        
         dict_data = {
             f"ramdata_{self.identifier}": {
                 "barcodes": {
@@ -12935,7 +13031,7 @@ class RamData:
             }
         }
         component_header = "h2" if index_component is None else "h5"
-        name_title = f'<{component_header}>RamData{"" if index_component is None else f"-component ({index_component})"}</{component_header}><div><tt>{self.__repr__( )[ 1 : -1 ]}</tt></div>'  # use 0-based coordinates
+        name_title = f'<{component_header}>RamData{"" if index_component is None else f"-component ({index_component})"}</{component_header}><div><tt>{self.__repr__( flag_do_not_invalidate_cache = True )[ 1 : -1 ]}</tt></div>'  # use 0-based coordinates
         str_html = html_from_dict(
             dict_data=dict_data, name_dict=name_title
         )  # retrieve html representation of current RamData
@@ -12943,6 +13039,7 @@ class RamData:
             # %% COMBINED %%
             for index, ram in enumerate(self._l_ramdata):  # for each component RamData
                 str_html += ram._repr_html_(index_component=index)
+        self._delete_cached_metadata( ) # delete cached metadata
         return str_html
 
     def create_view(self):
