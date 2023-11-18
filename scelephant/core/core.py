@@ -7068,9 +7068,7 @@ class RamDataAxis:
                 )  # load the list of string representations (for autocompletion in IPython environment)
 
         if self.verbose:
-            logger.info(
-                f"completed loading of {len( arr_str )} number of strings"
-            )
+            logger.info(f"completed loading of {len( arr_str )} number of strings")
         return arr_str  # return loaded strings
 
     @property
@@ -17782,9 +17780,7 @@ class RamData:
 
         # report
         if self.verbose:
-            logger.info(
-                f"training for {ax.meta.n_rows} entries completed"
-            )
+            logger.info(f"training for {ax.meta.n_rows} entries completed")
 
         # save the model
         int_model_file_size = self.save_model(
@@ -17987,9 +17983,7 @@ class RamData:
 
         # report
         if self.verbose:
-            logger.info(
-                f"clustering completed for {ax.meta.n_rows} number of barcodes"
-            )
+            logger.info(f"clustering completed for {ax.meta.n_rows} number of barcodes")
 
         # draw graphs
         if (
@@ -18186,9 +18180,7 @@ class RamData:
 
         # report
         if self.verbose:
-            logger.info(
-                f"clustering completed for {ax.meta.n_rows} number of barcodes"
-            )
+            logger.info(f"clustering completed for {ax.meta.n_rows} number of barcodes")
 
         # draw graphs
         if (
@@ -18371,9 +18363,7 @@ class RamData:
         assign labels
         """
         if self.verbose:
-            logger.info(
-                f"the nearest-neighbor search started"
-            )
+            logger.info(f"the nearest-neighbor search started")
         # initialize the counter for counting labels
         dict_label_counter = dict()
 
@@ -18585,9 +18575,7 @@ class RamData:
             int_num_iterations_for_subsampling
         ):  # for each iteration
             if self.verbose:
-                logger.info(
-                    f"iteration #{index_iteration} started."
-                )
+                logger.info(f"iteration #{index_iteration} started.")
             """
             community detection - leiden
             """
@@ -18793,9 +18781,7 @@ class RamData:
             )
 
             if self.verbose:
-                logger.info(
-                    f"iteration #{index_iteration} subsampling started"
-                )
+                logger.info(f"iteration #{index_iteration} subsampling started")
 
             # define functions for multiprocessing step
             def process_batch(pipe_receiver_batch, pipe_sender_result):
@@ -19072,9 +19058,7 @@ class RamData:
                 adata = sc.read_h5ad(path_file_adata)
                 flag_adata_loaded = True  # the flag
                 if self.verbose:
-                    logger.info(
-                        f"AnnData was loaded from {path_file_adata}"
-                    )
+                    logger.info(f"AnnData was loaded from {path_file_adata}")
             except:
                 pass
         # fetch PCA values from RamData and calculate adjacency matrix
@@ -19097,9 +19081,7 @@ class RamData:
                 **dict_kw_neighbors,
             )
             if self.verbose:
-                logger.info(
-                    "K-nearest neighbor graphs calculation completed."
-                )
+                logger.info("K-nearest neighbor graphs calculation completed.")
             if (
                 path_file_adata is not None
             ):  # if a valid value has been given for 'path_file_adata'
