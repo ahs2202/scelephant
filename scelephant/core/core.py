@@ -16137,6 +16137,8 @@ class RamData:
         name_col_filter_filtered_barcode: str = "filtered_barcodes",
         min_counts: int = 500,
         min_features: int = 100,
+        max_counts : int = 15000, 
+        max_features : int = 2500,
         int_total_count_target: int = 10000,
         int_num_highly_variable_features: int = 2000,
         max_value: float = 10,
@@ -16183,7 +16185,7 @@ class RamData:
         name_col_filter_filtered_barcode : str = 'filtered_barcodes' # the name of metadata column that will contain filter containing active barcode entries after barcode filtering
 
         'int_total_count_target' : total count target for normalization
-        'min_counts' = 500, 'min_features' = 100 : for barcode filtering
+        'min_counts' = 500, 'min_features' = 100, 'max_counts' = 15000, 'max_features' = 2500 : for barcode filtering        
 
         === highly variable feature detection ===
         'int_num_highly_variable_features' : the number of highly variable genes to retrieve
@@ -16343,6 +16345,9 @@ class RamData:
             ):  # if the filter is available, load the filter
                 self.bc.change_filter(name_col_filter_filtered_barcode)
             else:  # if the filter is not available, filter barcodes based on the settings
+                # retrieve n_count and n_features for each cell
+                arr_n_counts = self.bc.meta[f"{name_layer_raw}_sum", :]
+                arr_n_features = self.bc.meta[f"{name_layer_raw}_num_nonzero_values", :]
                 self.bc.filter = (
                     (
                         self.bc.all(
@@ -16352,11 +16357,16 @@ class RamData:
                         else self.bc.filter
                     )
                     & BA.to_bitarray(
-                        self.bc.meta[f"{name_layer_raw}_sum", :] > min_counts
+                        arr_n_counts >= min_counts
                     )
                     & BA.to_bitarray(
-                        self.bc.meta[f"{name_layer_raw}_num_nonzero_values", :]
-                        > min_features
+                       arr_n_features >= min_features
+                    )
+                    & BA.to_bitarray(
+                        arr_n_counts <= max_counts
+                    )
+                    & BA.to_bitarray(
+                        arr_n_features <= max_features
                     )
                 )  # set 'flag_return_valid_entries_in_the_currently_active_layer' to False in order to avoid surveying the combined RamData layer
                 self.bc.save_filter(
