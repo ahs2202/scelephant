@@ -2448,10 +2448,10 @@ class ZarrDataFrame:
         self._dict_metadata_cached = None
 
     def reload_metadata(self):
-        """# 2023-11-19 00:41:09 """
-        if hasattr( self, '_dict_metadata' ) :
-            delattr( self, '_dict_metadata' ) # delete attribute
-        self.get_metadata() # reload metadata
+        """# 2023-11-19 00:41:09"""
+        if hasattr(self, "_dict_metadata"):
+            delattr(self, "_dict_metadata")  # delete attribute
+        self.get_metadata()  # reload metadata
 
     def get_metadata(self):
         """# 2022-12-13 02:00:26
@@ -4689,7 +4689,7 @@ class ZarrDataFrame:
             ):
                 self[name_col, coords] = values  # update values
 
-        self.reload_metadata( ) # retrieve the latest metadata of the current object
+        self.reload_metadata()  # retrieve the latest metadata of the current object
 
     def load(self, *l_name_col):
         """# 2022-06-20 22:09:42
@@ -5107,7 +5107,7 @@ class ZarrDataFrame:
         if self._mode == "r":
             return
         # retrieve up-to-date metadata
-        self.reload_metadata( )
+        self.reload_metadata()
         if (
             name_col_before in self.columns_excluding_components
         ):  # does not rename columns in the component RamData
@@ -11304,7 +11304,7 @@ class RamData:
             if not hasattr(
                 self, "_dict_metadata"
             ):  # if metadata has not been loaded, load metadata # deprecated
-                self.reload_metadata( ) # load metadata
+                self.reload_metadata()  # load metadata
 
         """ initialize the layor object """
         if (
@@ -11700,10 +11700,10 @@ class RamData:
                 ram._delete_cached_metadata()  # cache metadata of RamData component
 
     def reload_metadata(self):
-        """# 2023-11-19 00:24:35 """
-        if hasattr( self, '_dict_metadata' ) :
-            delattr( self, '_dict_metadata' ) # delete attribute
-        self.get_metadata() # reload metadata
+        """# 2023-11-19 00:24:35"""
+        if hasattr(self, "_dict_metadata"):
+            delattr(self, "_dict_metadata")  # delete attribute
+        self.get_metadata()  # reload metadata
 
     def get_metadata(self):
         """# 2022-12-13 02:00:26
