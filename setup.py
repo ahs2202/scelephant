@@ -12,7 +12,7 @@ with open(os.path.join(HERE, "README.md")) as fid:
 
 setup(
     name="scelephant",
-    version="0.2.3",
+    version="0.2.4",
     author="Hyunsu An",
     author_email="ahs2202@gm.gist.ac.kr",
     description="SC-Elephant (Single-Cell Extremely Large Data Analysis Platform)",
@@ -41,8 +41,5 @@ setup(
         "leidenalg>=0.8.10",
         "igraph>=0.9.11",
         "h5py>=3.8.0",
-        # "rapidfuzz>=2.13.7", # for autocompletion feature
-        #         'pyopa>=0.8.2',
-        #         'numpy>=1.22.4',
     ],
 )

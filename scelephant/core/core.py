@@ -2445,7 +2445,9 @@ class ZarrDataFrame:
     
     def reload_metadata(self):
         """# 2023-11-19 00:41:09 """
-        self._dict_metadata = self.get_metadata()
+        if hasattr( self, '_dict_metadata' ) :
+            delattr( self, '_dict_metadata' ) # delete attribute
+        self.get_metadata() # reload metadata
 
     def get_metadata(self):
         """# 2022-12-13 02:00:26
@@ -4666,7 +4668,7 @@ class ZarrDataFrame:
             ):
                 self[name_col, coords] = values  # update values
 
-        self.metadata  # retrieve the latest metadata of the current object
+        self.reload_metadata( ) # retrieve the latest metadata of the current object
 
     def load(self, *l_name_col):
         """# 2022-06-20 22:09:42
@@ -5084,7 +5086,7 @@ class ZarrDataFrame:
         if self._mode == "r":
             return
         # retrieve up-to-date metadata
-        self.metadata
+        self.reload_metadata( )
         if (
             name_col_before in self.columns_excluding_components
         ):  # does not rename columns in the component RamData
@@ -11281,7 +11283,7 @@ class RamData:
             if not hasattr(
                 self, "_dict_metadata"
             ):  # if metadata has not been loaded, load metadata # deprecated
-                self.metadata  # load metadata
+                self.reload_metadata( ) # load metadata
 
         """ initialize the layor object """
         if (
@@ -11674,7 +11676,9 @@ class RamData:
     
     def reload_metadata(self):
         """# 2023-11-19 00:24:35 """
-        self._dict_metadata = self.get_metadata()
+        if hasattr( self, '_dict_metadata' ) :
+            delattr( self, '_dict_metadata' ) # delete attribute
+        self.get_metadata() # reload metadata
 
     def get_metadata(self):
         """# 2022-12-13 02:00:26
@@ -13646,7 +13650,7 @@ class RamData:
                 release_locks_for_metadata_columns()
 
         # update attributes of metadata ZarrDataFrame # locking & metadata was updated by a cloned object of the ZarrDataFrame, and the attributes should be updated
-        ax.meta.get_metadata()
+        ax.meta.reload_metadata()
         # report results
         if self.verbose:
             logger.info(

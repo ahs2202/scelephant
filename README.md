@@ -4,7 +4,7 @@
 
 [![PyPI version](https://badge.fury.io/py/scelephant.svg)](https://badge.fury.io/py/scelephant)
 
-`SC-Elephant` utilizes `RamData`, a novel single-cell data storage format, to support a wide range of single-cell bioinformatics applications in a highly scalable manner, while providing a convenient interface to export any subset of the single-cell data in `SCANPY`'s `AnnData` format, enabling efficient downstream analysis the cells of interest. The analysis result can then be made available to other researchers by updating the original `RamData`, which can be stored in cloud storage like `AWS` (or any AWS-like object storage).
+`SC-Elephant` utilizes `RamData`, a novel single-cell data storage format, to support a wide range of single-cell bioinformatics applications in a highly scalable manner, while providing a convenient interface to export any subset of the single-cell data in `SCANPY`'s `AnnData` format, enabling efficient downstream analysis of the cells of interest. The analysis result can then be made available to other researchers by updating the original `RamData`, which can be stored in cloud storage like `AWS` (or any AWS-like object storage).
 
 
 
@@ -14,9 +14,11 @@
 
 Tutorials can be found at `doc/jn/`
 
-[Tutorial 1) Processing and analysis of the 3k PBMCs dataset using SC-Elephant](https://scelephant-free.s3.amazonaws.com/doc/SC-Elephant_PBMC3k_processing_and_analysis_tutorials.html)
+**[Tutorial 1) Processing and analysis of the 3k PBMCs dataset using SC-Elephant](https://scelephant-free.s3.amazonaws.com/doc/SC-Elephant_PBMC3k_processing_and_analysis_tutorials.html)**
 
-[Tutorial 2) Alignment of PBMC3k to the ELDB (320,000 cells subset) and cell type prediction using SC-Elephant](https://scelephant-free.s3.amazonaws.com/doc/SC-Elephant_PBMC3k_alignment_to_the_ELDB_subset_320k_tutorials.html)
+**[Tutorial 2) Alignment of PBMC3k to the ELDB (320,000 cells subset) and cell type prediction using SC-Elephant](https://scelephant-free.s3.amazonaws.com/doc/SC-Elephant_PBMC3k_alignment_to_the_ELDB_subset_320k_tutorials.html)**
+
+**[Tutorial 3) Combine 10x MEX count matrices memory-efficiently using SC-Elephant](https://scelephant-free.s3.amazonaws.com/doc/SC-Elephant_Combine_10x_MEX_Count_Matrices.html)**
 
 
 
