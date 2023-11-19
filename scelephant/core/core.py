@@ -1710,7 +1710,7 @@ class ZarrDataFrame:
     ):
         """# 2023-11-14 23:04:50"""
         self._dict_metadata_cached = None
-        
+
         # set attributes from arguments
         if zdf_template is not None:
             # set attributes that can be changed anytime during the lifetime of the object
@@ -2431,18 +2431,22 @@ class ZarrDataFrame:
 
     @property
     def metadata(self):
-        """# 2023-11-19 00:41:15 """
-        return self.get_metadata() if self._dict_metadata_cached is None else self._dict_metadata_cached
-    
+        """# 2023-11-19 00:41:15"""
+        return (
+            self.get_metadata()
+            if self._dict_metadata_cached is None
+            else self._dict_metadata_cached
+        )
+
     def _cache_metadata(self):
-        """# 2023-11-19 00:41:15 """
-        if self._dict_metadata_cached is None :
-            self._dict_metadata_cached = self.get_metadata( )
-        
+        """# 2023-11-19 00:41:15"""
+        if self._dict_metadata_cached is None:
+            self._dict_metadata_cached = self.get_metadata()
+
     def _delete_cached_metadata(self):
-        """# 2023-11-19 00:41:15 """
+        """# 2023-11-19 00:41:15"""
         self._dict_metadata_cached = None
-    
+
     def reload_metadata(self):
         """# 2023-11-19 00:41:09 """
         if hasattr( self, '_dict_metadata' ) :
@@ -2866,22 +2870,26 @@ class ZarrDataFrame:
             else:
                 return []
 
-    def set_categories(self, name_col: str, l_name_categories: Union[ None, List, Dict ] = None):
+    def set_categories(
+        self, name_col: str, l_name_categories: Union[None, List, Dict] = None
+    ):
         """# 2022-12-12 01:09:37
         for a column containing a categorical data, rename categories using a given list or the mapping
-        
+
         l_name_categories: Union[ None, List ] = None, # list of new category names or the mapping of previous category names to the new category names (if the mapping is not available, previous category names will be used).
         """
-        if l_name_categories is None :
-            logger.error( f"no valid inputs were given, existing." )
+        if l_name_categories is None:
+            logger.error(f"no valid inputs were given, existing.")
             return -1
-        
+
         if (
             name_col in self.columns_excluding_components
         ):  # if the column is present in the current object
             # if the column is available in the mask, return the result of the mask
             if self._mask is not None and name_col in self._mask:
-                return self._mask.set_categories(name_col=name_col, l_name_categories = l_name_categories)
+                return self._mask.set_categories(
+                    name_col=name_col, l_name_categories=l_name_categories
+                )
 
             # get column metadata
             dict_col_metadata = self.get_column_metadata(
@@ -2890,21 +2898,34 @@ class ZarrDataFrame:
             if dict_col_metadata[
                 "flag_categorical"
             ]:  # if the current column contains categorical data
-                l_name_cat_existing = dict_col_metadata["l_value_unique"] # retrieve category names
-                if isinstance( l_name_categories, dict ) : # if a mapping has been given, compose 'l_name_categories' using the mapping
-                    dict_name_cat_prev_to_name_cat_new = l_name_categories # retrieve the mapping
-                    l_name_categories  = list( dict_name_cat_prev_to_name_cat_new[ e ] if e in dict_name_cat_prev_to_name_cat_new else e for e in l_name_cat_existing )
-                    
-                if len( l_name_cat_existing ) != len( l_name_categories ) :
-                    logger.error( f"the length of the given list of new category names {len( l_name_categories )} is not equal to that of the existing category list (which is {len( l_name_cat_existing )}), existing" )
+                l_name_cat_existing = dict_col_metadata[
+                    "l_value_unique"
+                ]  # retrieve category names
+                if isinstance(
+                    l_name_categories, dict
+                ):  # if a mapping has been given, compose 'l_name_categories' using the mapping
+                    dict_name_cat_prev_to_name_cat_new = (
+                        l_name_categories  # retrieve the mapping
+                    )
+                    l_name_categories = list(
+                        dict_name_cat_prev_to_name_cat_new[e]
+                        if e in dict_name_cat_prev_to_name_cat_new
+                        else e
+                        for e in l_name_cat_existing
+                    )
+
+                if len(l_name_cat_existing) != len(l_name_categories):
+                    logger.error(
+                        f"the length of the given list of new category names {len( l_name_categories )} is not equal to that of the existing category list (which is {len( l_name_cat_existing )}), existing"
+                    )
                     return -1
                 dict_col_metadata["l_value_unique"] = l_name_categories
                 self.set_column_metadata(
                     name_col,
                     dict_col_metadata,
-                ) # set column metadata
+                )  # set column metadata
             else:
-                logger.error( f"'{name_col}' column does not contain categorical data" )
+                logger.error(f"'{name_col}' column does not contain categorical data")
                 return -1
 
     """ </Methods handling Metadata> """
@@ -11644,36 +11665,40 @@ class RamData:
 
     @property
     def metadata(self):
-        """# 2023-11-19 00:24:44 """
-        return self.get_metadata() if self._dict_metadata_cached is None else self._dict_metadata_cached
-        
+        """# 2023-11-19 00:24:44"""
+        return (
+            self.get_metadata()
+            if self._dict_metadata_cached is None
+            else self._dict_metadata_cached
+        )
+
     def _cache_metadata(self):
-        """# 2023-11-19 00:41:15 """
+        """# 2023-11-19 00:41:15"""
         # cache metadata of RamData object
-        if self._dict_metadata_cached is None :
-            self._dict_metadata_cached = self.get_metadata( )
+        if self._dict_metadata_cached is None:
+            self._dict_metadata_cached = self.get_metadata()
         # cache metadata of subcomponents
-        self.bc.meta._cache_metadata( ) 
-        self.ft.meta._cache_metadata( ) 
-        
+        self.bc.meta._cache_metadata()
+        self.ft.meta._cache_metadata()
+
         if self.is_combined:
             # %% COMBINED %%
-            for ram in self._l_ramdata :
-                ram._cache_metadata( ) # cache metadata of RamData component
-        
+            for ram in self._l_ramdata:
+                ram._cache_metadata()  # cache metadata of RamData component
+
     def _delete_cached_metadata(self):
-        """# 2023-11-19 00:41:15 """
+        """# 2023-11-19 00:41:15"""
         # delete the cached metadata of RamData object
         self._dict_metadata_cached = None
         # delete cached metadata of subcomponents
-        self.bc.meta._delete_cached_metadata( ) 
-        self.ft.meta._delete_cached_metadata( ) 
-        
+        self.bc.meta._delete_cached_metadata()
+        self.ft.meta._delete_cached_metadata()
+
         if self.is_combined:
             # %% COMBINED %%
-            for ram in self._l_ramdata :
-                ram._delete_cached_metadata( ) # cache metadata of RamData component
-    
+            for ram in self._l_ramdata:
+                ram._delete_cached_metadata()  # cache metadata of RamData component
+
     def reload_metadata(self):
         """# 2023-11-19 00:24:35 """
         if hasattr( self, '_dict_metadata' ) :
@@ -12943,14 +12968,14 @@ class RamData:
         }  # retrieve a flag indicating whether the axis is barcode or not
         return flag_axis_is_barcode
 
-    def __repr__(self, flag_do_not_invalidate_cache : bool = False):
+    def __repr__(self, flag_do_not_invalidate_cache: bool = False):
         """# 2023-11-18 01:08:26
         display RamData in a string format
-        
+
         flag_do_not_invalidate_cache : bool = False # if True, does not invalidate cached metadata before exiting
         """
-        self._cache_metadata( ) # cache metadata
-            
+        self._cache_metadata()  # cache metadata
+
         return (
             f"<{'' if not self._mode == 'r' else '(read-only) '}RamData object ({'' if self.bc.filter is None else f'{self.bc.meta.n_rows}/'}{self.metadata[ 'int_num_barcodes' ]} barcodes X {'' if self.ft.filter is None else f'{self.ft.meta.n_rows}/'}{self.metadata[ 'int_num_features' ]} features"
             + (
@@ -12960,7 +12985,7 @@ class RamData:
             )
             + f") stored at {self._path_folder_ramdata}{'' if self._path_folder_ramdata_mask is None else f' with local mask available at {self._path_folder_ramdata_mask}'}\n\twith the following layers : {self.layers}\n\t\tcurrent layer is '{self.layer.name if self.layer is not None else None}'>"
         )  # show the number of records of the current layer if available.
-        self._delete_cached_metadata( )
+        self._delete_cached_metadata()
 
     def _repr_html_(self, index_component=None):
         """# 2023-11-18 01:08:23
@@ -12968,8 +12993,8 @@ class RamData:
 
         'index_component' : an integer indices of the component RamData
         """
-        self._cache_metadata( ) # cache metadata
-        
+        self._cache_metadata()  # cache metadata
+
         dict_data = {
             f"ramdata_{self.identifier}": {
                 "barcodes": {
@@ -13043,7 +13068,7 @@ class RamData:
             # %% COMBINED %%
             for index, ram in enumerate(self._l_ramdata):  # for each component RamData
                 str_html += ram._repr_html_(index_component=index)
-        self._delete_cached_metadata( ) # delete cached metadata
+        self._delete_cached_metadata()  # delete cached metadata
         return str_html
 
     def create_view(self):
@@ -16236,8 +16261,8 @@ class RamData:
         name_col_filter_filtered_barcode: str = "filtered_barcodes",
         min_counts: int = 500,
         min_features: int = 100,
-        max_counts : int = 15000, 
-        max_features : int = 2500,
+        max_counts: int = 15000,
+        max_features: int = 2500,
         int_total_count_target: int = 10000,
         int_num_highly_variable_features: int = 2000,
         max_value: float = 10,
@@ -16284,7 +16309,7 @@ class RamData:
         name_col_filter_filtered_barcode : str = 'filtered_barcodes' # the name of metadata column that will contain filter containing active barcode entries after barcode filtering
 
         'int_total_count_target' : total count target for normalization
-        'min_counts' = 500, 'min_features' = 100, 'max_counts' = 15000, 'max_features' = 2500 : for barcode filtering        
+        'min_counts' = 500, 'min_features' = 100, 'max_counts' = 15000, 'max_features' = 2500 : for barcode filtering
 
         === highly variable feature detection ===
         'int_num_highly_variable_features' : the number of highly variable genes to retrieve
@@ -16455,18 +16480,10 @@ class RamData:
                         if self.bc.filter is None
                         else self.bc.filter
                     )
-                    & BA.to_bitarray(
-                        arr_n_counts >= min_counts
-                    )
-                    & BA.to_bitarray(
-                       arr_n_features >= min_features
-                    )
-                    & BA.to_bitarray(
-                        arr_n_counts <= max_counts
-                    )
-                    & BA.to_bitarray(
-                        arr_n_features <= max_features
-                    )
+                    & BA.to_bitarray(arr_n_counts >= min_counts)
+                    & BA.to_bitarray(arr_n_features >= min_features)
+                    & BA.to_bitarray(arr_n_counts <= max_counts)
+                    & BA.to_bitarray(arr_n_features <= max_features)
                 )  # set 'flag_return_valid_entries_in_the_currently_active_layer' to False in order to avoid surveying the combined RamData layer
                 self.bc.save_filter(
                     name_col_filter_filtered_barcode
