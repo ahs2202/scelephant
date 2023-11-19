@@ -78,7 +78,7 @@ logger.setLevel(logging.INFO)
 
 
 # define version
-_version_ = "0.2.3"
+_version_ = "0.2.4"
 _scelephant_version_ = _version_
 _last_modified_time_ = "2023-11-19 01:02:57"
 
