@@ -20,6 +20,8 @@ Tutorials can be found at `doc/jn/`
 
 **[Tutorial 3) Combine 10x MEX count matrices memory-efficiently using SC-Elephant](https://scelephant-free.s3.amazonaws.com/doc/SC-Elephant_Combine_10x_MEX_Count_Matrices.html)**
 
+**[Tutorial 4) Convert existing AnnData into RamData for collaborative data sharing](https://scelephant-free.s3.amazonaws.com/doc/SC-Elephant_Convert_AnnData_to_RamData_for_collaborative_data_sharing.html)**
+
 
 
 Briefly, a <tt>RamData</tt> object is composed of two <b><tt>RamDataAxis</tt></b> (<b>Axis</b>) objects and multiple <b><tt>RamDataLayer</tt></b> (<b>Layer</b>) objects.
