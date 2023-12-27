@@ -3152,9 +3152,7 @@ class ZarrDataFrame:
                             chunks=prop_za_source["chunks"],
                             fill_value=prop_za_source["fill_value"],
                             dtype=str
-                            if isinstance(
-                                prop_za_source["dtype"], np.dtypes.ObjectDType
-                            )
+                            if prop_za_source["dtype"] == np.dtype( object )
                             else prop_za_source["dtype"],
                         )
                         self._zs.set_attrs(
@@ -3236,9 +3234,7 @@ class ZarrDataFrame:
                             if not self._fo.zarr_exists(path_column_sink):
                                 dtype = (
                                     str
-                                    if isinstance(
-                                        prop_za_source["dtype"], np.dtypes.ObjectDType
-                                    )
+                                    if prop_za_source["dtype"] == np.dtype( object )
                                     else prop_za_source["dtype"]
                                 )  # retrieve dtype
                                 chunks_not_primary_axis = list(
@@ -3565,7 +3561,7 @@ class ZarrDataFrame:
 
         # interpret object dtype as the string datatype
         if (
-            isinstance(dtype, np.dtypes.ObjectDType)
+            dtype == np.dtype( object )
             or dtype == np.dtype("O")
             or dtype == "object"
         ):
