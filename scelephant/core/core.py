@@ -9751,8 +9751,8 @@ class RAMtx:
 
                     """ if batch is full, flush the batch """
                     index_chunk_end = (
-                        ( en - 1 ) // int_num_records_in_a_chunk
-                    )  # retrieve the index of the last chunk
+                        en - 1
+                    ) // int_num_records_in_a_chunk  # retrieve the index of the last chunk
                     if (
                         index_chunk_start_current_batch is not None
                         and index_chunk_end
