@@ -14,7 +14,6 @@ import gzip
 import subprocess
 import shutil
 import csv
-import intervaltree
 from multiprocessing import (
     Pool,
     get_context,
