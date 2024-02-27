@@ -219,6 +219,101 @@ def SCANPY_Retrieve_Markers_as_DataFrame(adata):
     df_marker = pd.concat(l_df)
     return df_marker
 
+def summarize_expression_for_each_clus( 
+    adata,
+    name_col_cluster : str,
+) :
+    """
+    summarize expression of each cluster for the given adata
+    # 2024-02-26 21:01:16 
+    """
+    l_df = [ ]
+    def _parse_array( arr ) :
+        if len( arr.shape ) == 1 :
+            return arr
+        else :
+            return arr[ 0 ]
+    for name_cluster in set( adata.obs[ name_col_cluster ].values ) :
+        adata_subset = adata[ adata.obs[ name_col_cluster ] == name_cluster ] # retrieve 
+        arr_num_cell_with_expr = _parse_array( np.array( ( adata_subset.X > 0 ).sum( axis = 0 ) ) )
+        arr_avg_expr = _parse_array( np.array( adata_subset.X.sum( axis = 0 ) ) ) / arr_num_cell_with_expr # calculate average expression in cells expressing the gene
+        arr_avg_expr[ np.isnan( arr_avg_expr ) ] = 0 # when number of cells expressing is zero, set expression values as 0
+        arr_prop_expr = arr_num_cell_with_expr / len( adata_subset.obs )
+        _df = pd.DataFrame( { 'avg_expr' : arr_avg_expr, 'prop_expr' : arr_prop_expr } )
+        _df[ name_col_cluster ] = name_cluster
+        _df[ 'gene_name' ] = adata_subset.var.index.values
+        l_df.append( _df )
+    df_gene_expr = pd.concat( l_df )
+    df_gene_expr[ 'score' ] = df_gene_expr.avg_expr * df_gene_expr.prop_expr # calculate the score
+    return df_gene_expr
+def search_uniquely_expressed_marker_genes( 
+    adata,  
+    name_col_cluster : str,
+    float_max_score : float = 1000,
+) :
+    """
+    find unique markers for each clusters.
+    *score is calculated as the product of the proportion expressed and the average expression values
+
+    name_col_cluster : str, # name of the column in the 'adata.obs' containing cluster labels 
+    float_max_score : 1000, # 'infinite' score ratios will be replaced by this value
+
+    # 2024-02-20 13:24:17 
+    """
+    '''
+    survey proportion expressed and avg expression
+    '''
+    df_gene_expr = summarize_expression_for_each_clus( adata, name_col_cluster )
+
+    '''
+    identify marker genes uniquely expressed in a single cluster
+    '''
+    l_l = [ ]
+    for gene_name, _df in df_gene_expr.groupby( 'gene_name' ) :
+        # retrieve values
+        arr_avg_expr, arr_prop_expr, arr_str_int_cell_type_subclustered_temp, _, arr_score = _df.values.T
+        # sort by score
+        arr_score_argsort = arr_score.argsort( )
+        arr_avg_expr, arr_prop_expr, arr_str_int_cell_type_subclustered_temp, arr_score = arr_avg_expr[ arr_score_argsort ], arr_prop_expr[ arr_score_argsort ], arr_str_int_cell_type_subclustered_temp[ arr_score_argsort ], arr_score[ arr_score_argsort ]
+
+        avg_expr_highest, prop_expr_highest = arr_avg_expr.max( ), arr_prop_expr.max( )
+        avg_expr_2nd, avg_expr_1st = arr_avg_expr[ -2 : ]
+        prop_expr_2nd, prop_expr_1st = arr_prop_expr[ -2 : ]
+        str_int_cell_type_subclustered_temp_2nd, str_int_cell_type_subclustered_temp_1st = arr_str_int_cell_type_subclustered_temp[ -2 : ]
+        score_2nd, score_1st = arr_score[ -2 : ]
+        l_l.append( [ gene_name, str_int_cell_type_subclustered_temp_1st, avg_expr_1st, prop_expr_1st, score_1st, avg_expr_2nd, prop_expr_2nd, score_2nd, avg_expr_highest, prop_expr_highest ] ) # add a record
+    df_unique_marker_gene = pd.DataFrame( l_l, columns = [ 'gene_name', 'str_int_cell_type_subclustered_temp_1st', 'avg_expr_1st', 'prop_expr_1st', 'score_1st', 'avg_expr_2nd', 'prop_expr_2nd', 'score_2nd', 'avg_expr_highest', 'prop_expr_highest' ] )
+    arr_score_ratio = df_unique_marker_gene.score_1st.values / df_unique_marker_gene.score_2nd.values
+    arr_score_ratio[ np.isnan( arr_score_ratio ) ] = float_max_score
+    df_unique_marker_gene[ 'score_ratio' ] = arr_score_ratio
+    return df_unique_marker_gene
+def identify_batch_specific_genes( 
+    adata,
+    name_col_batch : str,
+    name_col_cluster : str = None,
+    l_name_cluster = None,
+    min_prop_expr = 0.15,
+    min_score_ratio = 3,
+) :
+    """
+    Identify genes that are consistently differently expressed in each sample for multiple clusters
+    Note)
+    The primary aim of this function is for identifying batch specific genes in an entire dataset or in a set of clusters to improve UMAP embedding/clustering without/with the help of other batch-correction algorithms.
+    Empirically, batch effect can be significantly reduced (with some loss of information) simply by excluding a set of genes contributing to the batch effects, which is often sufficient for clustering analysis.
+    # 2024-02-26 22:34:55 
+    """
+    def _filter_marker_gene( df_unique_marker_gene ) :
+        return bk.PD_Threshold( df_unique_marker_gene, prop_expr_1sta = min_prop_expr, score_ratioa = min_score_ratio )
+
+    if l_name_cluster is None :
+        set_name_gene_to_exclude = set( _filter_marker_gene( search_uniquely_expressed_marker_genes( adata, name_col_batch ) ).gene_name.values )
+    else :
+        l_l_name_gene = list( _filter_marker_gene( search_uniquely_expressed_marker_genes( adata[ adata.obs[ name_col_cluster ] == name_cluster ].copy( ), name_col_batch ) ).gene_name.values for name_cluster in l_name_cluster ) # retrieve batch specific genes for each cluster
+        # identify batch specific genes shared between all clusters
+        set_name_gene_to_exclude = set( l_l_name_gene[ 0 ] ) # initialize 'set_name_gene_to_exclude'
+        for l_name_gene in l_l_name_gene[ 1 : ] :
+            set_name_gene_to_exclude = set_name_gene_to_exclude.intersection( l_name_gene )
+    return set_name_gene_to_exclude
 
 def CB_detect_cell_barcode_from_id_cell(
     id_cell, int_min_number_atgc_in_cell_barcode=16
