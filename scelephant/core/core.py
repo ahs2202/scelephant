@@ -1889,9 +1889,9 @@ class ZarrDataFrame:
             if "int_num_bytes_in_a_chunk" not in self._dict_metadata:
                 # update metadata that were create before 2023-01-18 20:06:29
                 del self._dict_metadata["int_num_rows_in_a_chunk"]
-                self._dict_metadata[
-                    "int_num_bytes_in_a_chunk"
-                ] = int_num_bytes_in_a_chunk
+                self._dict_metadata["int_num_bytes_in_a_chunk"] = (
+                    int_num_bytes_in_a_chunk
+                )
                 self.set_metadata(dict_metadata=self._dict_metadata)
             # handle the old versions of the zarrdataframe columns
             if "columns" in self._dict_metadata:
@@ -2736,9 +2736,9 @@ class ZarrDataFrame:
                         )  # update 'dict_col_metadata_description' using the 'dict_col_metadata_description' from the 'dict_col_metadata_to_be_updated'
                     else:  # reset 'dict_metadata_description'
                         dict_metadata_description = None
-                    dict_col_metadata_to_be_updated[
-                        "dict_metadata_description"
-                    ] = dict_metadata_description  # set the updated 'dict_col_metadata_description'
+                    dict_col_metadata_to_be_updated["dict_metadata_description"] = (
+                        dict_metadata_description  # set the updated 'dict_col_metadata_description'
+                    )
 
                     # update metadata (sycn. with metadata of the current object)
                     self.update_metadata(
@@ -2908,9 +2908,11 @@ class ZarrDataFrame:
                         l_name_categories  # retrieve the mapping
                     )
                     l_name_categories = list(
-                        dict_name_cat_prev_to_name_cat_new[e]
-                        if e in dict_name_cat_prev_to_name_cat_new
-                        else e
+                        (
+                            dict_name_cat_prev_to_name_cat_new[e]
+                            if e in dict_name_cat_prev_to_name_cat_new
+                            else e
+                        )
                         for e in l_name_cat_existing
                     )
 
@@ -3044,9 +3046,11 @@ class ZarrDataFrame:
                 self.is_combined and l_path_column_source is None
             ):  # if combined mode is active, pathes of the input component zarr objects will be retrieved
                 l_path_column_source = list(
-                    f"{self._path_folder_zdf}{name_folder_sink}/"
-                    if name_col_sink in zdf
-                    else None
+                    (
+                        f"{self._path_folder_zdf}{name_folder_sink}/"
+                        if name_col_sink in zdf
+                        else None
+                    )
                     for zdf in self._l_zdf
                 )
             if (
@@ -3107,9 +3111,9 @@ class ZarrDataFrame:
             if (
                 not flag_will_be_fully_loaded
             ):  # if the column will be fully loaded, do not update the availability column
-                self[
-                    name_col_availability, queries
-                ] = True  # update availability column
+                self[name_col_availability, queries] = (
+                    True  # update availability column
+                )
         else:
             flag_created_in_a_single_access_from_stacked_axes = (
                 flag_created_in_a_single_access and not self.is_interleaved
@@ -3119,9 +3123,11 @@ class ZarrDataFrame:
                 l_int_entry_that_needs_fetching = self.get_integer_indices(
                     queries, flag_return_as_an_array=True
                 )[
-                    slice(None)
-                    if flag_created_in_a_single_access
-                    else ~self[name_col_availability, queries]
+                    (
+                        slice(None)
+                        if flag_created_in_a_single_access
+                        else ~self[name_col_availability, queries]
+                    )
                 ]  # retrieve int_entry that need updates
 
             if (
@@ -3151,9 +3157,11 @@ class ZarrDataFrame:
                             shape=prop_za_source["shape"],
                             chunks=prop_za_source["chunks"],
                             fill_value=prop_za_source["fill_value"],
-                            dtype=str
-                            if prop_za_source["dtype"] == np.dtype(object)
-                            else prop_za_source["dtype"],
+                            dtype=(
+                                str
+                                if prop_za_source["dtype"] == np.dtype(object)
+                                else prop_za_source["dtype"]
+                            ),
                         )
                         self._zs.set_attrs(
                             path_column_sink, flag_is_being_lazy_loaded=True
@@ -3309,9 +3317,9 @@ class ZarrDataFrame:
                                         if not ba_retrieved[
                                             int_entry_combined
                                         ]:  # if value for the current entry was not retrieved
-                                            ba_retrieved[
-                                                int_entry_combined
-                                            ] = 1  # update the flag
+                                            ba_retrieved[int_entry_combined] = (
+                                                1  # update the flag
+                                            )
                                             l_int_entry_combined.append(
                                                 int_entry_combined
                                             )
@@ -3347,9 +3355,9 @@ class ZarrDataFrame:
                 if (
                     not flag_will_be_fully_loaded
                 ):  # if the column will be fully loaded, do not update the availability column
-                    self[
-                        name_col_availability, l_int_entry_that_needs_fetching
-                    ] = True  # update availability
+                    self[name_col_availability, l_int_entry_that_needs_fetching] = (
+                        True  # update availability
+                    )
             else:
                 self._zs.open(path_column_sink, mode="a")  # open sink zarr object
 
@@ -3621,9 +3629,9 @@ class ZarrDataFrame:
                         categorical_values is not None
                     ):  # if 'categorical_values' has been given
                         fill_value = -1  # set fill_value to -1 to represent null values
-                        dict_col_metadata[
-                            "flag_categorical"
-                        ] = True  # set metadata for categorical datatype
+                        dict_col_metadata["flag_categorical"] = (
+                            True  # set metadata for categorical datatype
+                        )
                         set_value_unique = set(
                             categorical_values
                         )  # retrieve a set of unique values
@@ -3632,9 +3640,9 @@ class ZarrDataFrame:
                             if (
                                 "flag_contains_nan" not in dict_col_metadata
                             ):  # update metadata
-                                dict_col_metadata[
-                                    "flag_contains_nan"
-                                ] = True  # mark that the column contains np.nan values
+                                dict_col_metadata["flag_contains_nan"] = (
+                                    True  # mark that the column contains np.nan values
+                                )
                             set_value_unique.remove(
                                 np.nan
                             )  # removes np.nan from the category
@@ -3655,9 +3663,9 @@ class ZarrDataFrame:
                                 for val in list(set_value_unique)
                                 if val not in set_value_unique_previously_set
                             )  # extend 'l_value_unique'
-                            dict_col_metadata[
-                                "l_value_unique"
-                            ] = l_value_unique  # update metadata
+                            dict_col_metadata["l_value_unique"] = (
+                                l_value_unique  # update metadata
+                            )
 
                         # retrieve appropriate datatype for encoding unique categorical values
                         int_min_number_of_bits = (
@@ -4301,9 +4309,9 @@ class ZarrDataFrame:
                     flag_update_dict_col_metadata = (
                         True  # indicate that the column metadata should be updated
                     )
-                    dict_col_metadata[
-                        "flag_categorical"
-                    ] = True  # set metadata for categorical datatype
+                    dict_col_metadata["flag_categorical"] = (
+                        True  # set metadata for categorical datatype
+                    )
 
                 """ retrieve unique values for categorical data """
                 if flag_broadcasting_active:
@@ -4329,9 +4337,9 @@ class ZarrDataFrame:
                         flag_update_dict_col_metadata = (
                             True  # indicate that the column metadata should be updated
                         )
-                        dict_col_metadata[
-                            "flag_contains_nan"
-                        ] = True  # mark that the column contains np.nan values
+                        dict_col_metadata["flag_contains_nan"] = (
+                            True  # mark that the column contains np.nan values
+                        )
                     set_value_unique.remove(np.nan)  # removes np.nan from the category
 
                 # compose a list of unique categorical values and save it as a column metadata
@@ -4342,9 +4350,9 @@ class ZarrDataFrame:
                     l_value_unique = list(
                         set_value_unique
                     )  # retrieve a list of unique values # can contain mixed types (int, float, str)
-                    dict_col_metadata[
-                        "l_value_unique"
-                    ] = l_value_unique  # update metadata
+                    dict_col_metadata["l_value_unique"] = (
+                        l_value_unique  # update metadata
+                    )
                 else:  # update existing categories
                     l_value_unique = dict_col_metadata[
                         "l_value_unique"
@@ -4363,9 +4371,9 @@ class ZarrDataFrame:
                             dict_col_metadata["l_value_unique"]
                             + l_value_unique_newly_added
                         )  # extend 'l_value_unique'
-                        dict_col_metadata[
-                            "l_value_unique"
-                        ] = l_value_unique  # update metadata
+                        dict_col_metadata["l_value_unique"] = (
+                            l_value_unique  # update metadata
+                        )
 
                 # retrieve appropriate datatype for encoding unique categorical values
                 int_min_number_of_bits = (
@@ -4399,15 +4407,17 @@ class ZarrDataFrame:
 
                 # open Zarr object representing the current column
                 path_za = path_folder_col
-                self._zs.open(
-                    path_za, mode="a"
-                ) if flag_col_already_exists else self._zs.open(
-                    path_za,
-                    mode="w",
-                    shape=shape_inferred,
-                    chunks=chunks_inferred,
-                    dtype=dtype,
-                    fill_value=fill_value,
+                (
+                    self._zs.open(path_za, mode="a")
+                    if flag_col_already_exists
+                    else self._zs.open(
+                        path_za,
+                        mode="w",
+                        shape=shape_inferred,
+                        chunks=chunks_inferred,
+                        dtype=dtype,
+                        fill_value=fill_value,
+                    )
                 )  # create a new Zarr object if the object does not exist.
                 prop_za = self._zs.properties[path_za]
 
@@ -4481,15 +4491,17 @@ class ZarrDataFrame:
 
             # open zarr object and write data
             path_za = path_folder_col
-            self._zs.open(
-                path_za, mode="a"
-            ) if flag_col_already_exists else self._zs.open(
-                path_za,
-                mode="w",
-                shape=shape_inferred,
-                chunks=chunks_inferred,
-                dtype=dtype,
-                fill_value=fill_value,
+            (
+                self._zs.open(path_za, mode="a")
+                if flag_col_already_exists
+                else self._zs.open(
+                    path_za,
+                    mode="w",
+                    shape=shape_inferred,
+                    chunks=chunks_inferred,
+                    dtype=dtype,
+                    fill_value=fill_value,
+                )
             )  # create a new Zarr object if the object does not exist.
 
             if (
@@ -4504,10 +4516,12 @@ class ZarrDataFrame:
                 self._zs.set_coordinate_selection(path_za, coords, values)
             else:
                 # use orthogonal selection as a default
-                self._zs.set_orthogonal_selection(
-                    path_za, tuple([coords] + list(coords_rest)), values
-                ) if flag_indexing_in_non_primary_axis else self._zs.set_orthogonal_selection(
-                    path_za, coords, values
+                (
+                    self._zs.set_orthogonal_selection(
+                        path_za, tuple([coords] + list(coords_rest)), values
+                    )
+                    if flag_indexing_in_non_primary_axis
+                    else self._zs.set_orthogonal_selection(path_za, coords, values)
                 )
             # save/update column metadata
             if flag_update_dict_col_metadata:
@@ -4646,10 +4660,12 @@ class ZarrDataFrame:
         for name_col in l_name_col:
             self._add_column(
                 name_col,
-                dict_name_col_to_metadata_description[name_col]
-                if isinstance(dict_name_col_to_metadata_description, dict)
-                and name_col in dict_name_col_to_metadata_description
-                else None,
+                (
+                    dict_name_col_to_metadata_description[name_col]
+                    if isinstance(dict_name_col_to_metadata_description, dict)
+                    and name_col in dict_name_col_to_metadata_description
+                    else None
+                ),
             )
 
         if flag_use_multiprocessing:
@@ -4727,9 +4743,11 @@ class ZarrDataFrame:
 
         # initialize dataframe using the index (integer representations of all entries or entries of the active entries of the filter only)
         df = pd.DataFrame(
-            index=np.arange(self._n_rows_unfiltered, dtype=int)
-            if self.filter is None
-            else BA.to_integer_indices(self.filter)
+            index=(
+                np.arange(self._n_rows_unfiltered, dtype=int)
+                if self.filter is None
+                else BA.to_integer_indices(self.filter)
+            )
         )
 
         if (
@@ -4977,9 +4995,9 @@ class ZarrDataFrame:
             ):  # iterate through data values of the active rows
                 dict_data[int_index_row] = val
             del values
-            self.dict[
-                name_col
-            ] = dict_data  # add column loaded as a dictionary to the cache
+            self.dict[name_col] = (
+                dict_data  # add column loaded as a dictionary to the cache
+            )
 
         self.flag_retrieve_categorical_data_as_integers = flag_retrieve_categorical_data_as_integers_back_up  # restore the previous settings
 
@@ -6118,9 +6136,9 @@ class RamDataAxis:
                                 )  # retrieve a corrected integer representation of the current entry
                                 # add the str_entry to the combined axis (if it does not exist)
                                 if str_entry not in dict_str_entry_to_int_entry:
-                                    dict_str_entry_to_int_entry[
-                                        str_entry
-                                    ] = int_entry_new_combined  # add the str_entry to the combined axis
+                                    dict_str_entry_to_int_entry[str_entry] = (
+                                        int_entry_new_combined  # add the str_entry to the combined axis
+                                    )
                                     int_entry_new_combined += (
                                         1  # update 'int_entry_new_combined'
                                     )
@@ -6463,11 +6481,9 @@ class RamDataAxis:
                                                     )
                                                 )
                                             )
-                                    arr_str_rep_buffer[
-                                        :int_num_entries_in_a_chunk
-                                    ] = arr_str_rep_buffer[
-                                        int_num_entries_in_a_chunk:
-                                    ]  # remove the values written to the disk as a chunk from the buffer
+                                    arr_str_rep_buffer[:int_num_entries_in_a_chunk] = (
+                                        arr_str_rep_buffer[int_num_entries_in_a_chunk:]
+                                    )  # remove the values written to the disk as a chunk from the buffer
                                     len_arr_str_rep_buffer -= int_num_entries_in_a_chunk  # update length of the buffer
                                     index_chunk += 1  # update 'index_chunk'
 
@@ -6501,18 +6517,20 @@ class RamDataAxis:
 
         self.meta = ZarrDataFrame(
             f"{path_folder}{name_axis}.num_and_cat.zdf",
-            l_zdf=list(ax.meta for ax in self._l_ax)
-            if self._l_ax is not None
-            else None,
+            l_zdf=(
+                list(ax.meta for ax in self._l_ax) if self._l_ax is not None else None
+            ),
             index_zdf_data_source_when_interleaved=self.index_ax_data_source_when_interleaved,
             l_dict_index_mapping_interleaved=self._l_dict_index_mapping_interleaved,
             l_dict_index_mapping_from_combined_to_component=self._l_dict_index_mapping_from_combined_to_component,
             l_dict_index_mapping_from_component_to_combined=self._l_dict_index_mapping_from_component_to_combined,
             ba_filter=ba_filter,
             mode=mode,
-            path_folder_mask=None
-            if path_folder_mask is None
-            else f"{path_folder_mask}{name_axis}.num_and_cat.zdf",
+            path_folder_mask=(
+                None
+                if path_folder_mask is None
+                else f"{path_folder_mask}{name_axis}.num_and_cat.zdf"
+            ),
             flag_is_read_only=self._flag_is_read_only,
             spinlockfileholder=self._lh,  # use the same lock file holder
             int_num_cpus=int_num_cpus,
@@ -6815,9 +6833,11 @@ class RamDataAxis:
                 self.load_str(int_index_col=int_index_str_rep)
                 dict_mapping = self.map_str  # retrieve the mapping of the current axis
                 l_int_entry_view = list(
-                    dict_mapping[str_entry_view]
-                    if str_entry_view in dict_mapping
-                    else -1
+                    (
+                        dict_mapping[str_entry_view]
+                        if str_entry_view in dict_mapping
+                        else -1
+                    )
                     for str_entry_view in l_entry_view
                 )  # convert to 'l_int_entry_view'
 
@@ -7016,14 +7036,20 @@ class RamDataAxis:
             flag_mode_write=False,  # read-mode, without modification of original string representations
             path_column_sink=path_folder_str_zarr,
             path_column_source=f"{self._path_folder}{self._name_axis}.str.zarr/",  # retrieve column path
-            l_path_column_source=list(
-                f"{ax._path_folder}{ax._name_axis}.str.zarr/"
-                if self._fo.zarr_exists(f"{ax._path_folder}{ax._name_axis}.str.zarr/")
+            l_path_column_source=(
+                list(
+                    (
+                        f"{ax._path_folder}{ax._name_axis}.str.zarr/"
+                        if self._fo.zarr_exists(
+                            f"{ax._path_folder}{ax._name_axis}.str.zarr/"
+                        )
+                        else None
+                    )
+                    for ax in self._l_ax
+                )
+                if self.is_combined
                 else None
-                for ax in self._l_ax
-            )
-            if self.is_combined
-            else None,
+            ),
             name_col_availability="__str__availability__",
             flag_retrieve_from_all_interleaved_components=True,  # retrieve string representations from all component
         )
@@ -7347,12 +7373,12 @@ class RamDataAxis:
         ns = (
             dict()
         )  # namespace that can be safely modified across the scopes of the functions
-        ns[
-            "int_num_entries_written"
-        ] = 0  # initialize the last position of written entries (after filter applied)
-        ns[
-            "int_num_bytes_written"
-        ] = 0  # initialize the last position of written entries (after filter applied)
+        ns["int_num_entries_written"] = (
+            0  # initialize the last position of written entries (after filter applied)
+        )
+        ns["int_num_bytes_written"] = (
+            0  # initialize the last position of written entries (after filter applied)
+        )
         ns["l_buffer"] = []  # initialize the buffer
         ns["flag_axis_initialized"] = False  # initialize the flag to False
         ns["index_chunk"] = 0  # initialize the index of the chunk
@@ -7578,9 +7604,9 @@ class RamDataAxis:
                         ns["l_int_entry_current_batch"].append(
                             int_entry
                         )  # collect 'int_entry' of the selected entry
-                        ba_remaining[
-                            int_entry
-                        ] = False  # remove the entry from the 'ba_remaining' bitarray
+                        ba_remaining[int_entry] = (
+                            False  # remove the entry from the 'ba_remaining' bitarray
+                        )
                         int_num_entries_added += 1
                     # once the batch is full, yield the batch
                     if (
@@ -7599,9 +7625,9 @@ class RamDataAxis:
                         ns["int_num_of_previously_returned_entries"] += len(
                             ns["l_int_entry_current_batch"]
                         )  # update the number of returned entries
-                        ns[
-                            "l_int_entry_current_batch"
-                        ] = []  # initialize the next batch
+                        ns["l_int_entry_current_batch"] = (
+                            []
+                        )  # initialize the next batch
                         ns["index_batch"] += 1
             # return the remaining int_entries as the last batch (if available)
             if len(ns["l_int_entry_current_batch"]) > 0:
@@ -8797,14 +8823,12 @@ class RAMtx:
                     for r in l_r:
                         sl, arr_num_records = r  # parse r
                         int_num_entries_in_r = len(arr_num_records)
-                        arr_coord_combined[
-                            pos : pos + int_num_entries_in_r
-                        ] = np.arange(
-                            sl.start, sl.stop
+                        arr_coord_combined[pos : pos + int_num_entries_in_r] = (
+                            np.arange(sl.start, sl.stop)
                         )  # update 'arr_coord_combined'
-                        arr_num_records_combined[
-                            pos : pos + int_num_entries_in_r
-                        ] = arr_num_records  # update 'arr_coord_combined'
+                        arr_num_records_combined[pos : pos + int_num_entries_in_r] = (
+                            arr_num_records  # update 'arr_coord_combined'
+                        )
                         pos += int_num_entries_in_r  # update 'pos'
                     del l_r, r
 
@@ -9183,9 +9207,9 @@ class RAMtx:
                         ram.is_combined
                         and ram.int_index_component_reference is not None
                     ):  # if reference component is active
-                        self._l_rtx[
-                            ram.int_index_component_reference
-                        ] = None  # set the rtx object of the reference to None (ignore the data of reference)
+                        self._l_rtx[ram.int_index_component_reference] = (
+                            None  # set the rtx object of the reference to None (ignore the data of reference)
+                        )
             self._reference_dropped = (
                 True  # set the attribute indicating the reference has been dropped
             )
@@ -9656,12 +9680,14 @@ class RAMtx:
                     # iterate through each entry on the axis for querying for the current subbatch
                     for int_entry, arr_data in zip(
                         l_int_entry_in_a_batch,
-                        self._zs.get_orthogonal_selection(
-                            path_za_mtx, (sl_secondary, l_int_entry_in_a_batch)
-                        ).T
-                        if is_for_querying_features
-                        else self._zs.get_orthogonal_selection(
-                            path_za_mtx, (l_int_entry_in_a_batch, sl_secondary)
+                        (
+                            self._zs.get_orthogonal_selection(
+                                path_za_mtx, (sl_secondary, l_int_entry_in_a_batch)
+                            ).T
+                            if is_for_querying_features
+                            else self._zs.get_orthogonal_selection(
+                                path_za_mtx, (l_int_entry_in_a_batch, sl_secondary)
+                            )
                         ),
                     ):  # fetch data from the Zarr object for the current subbatch and iterate through each entry and its data
                         arr_int_entry_of_axis_not_for_querying = np.where(arr_data)[
@@ -9961,9 +9987,9 @@ class RAMtx:
                 l_arr_int_entry_of_axis_not_for_querying,
             ):
                 n = len(a)
-                arr_int_entry_of_axis_for_querying[
-                    int_pos : int_pos + n
-                ] = int_entry_of_axis_for_querying  # compose 'arr_int_entry_of_axis_for_querying'
+                arr_int_entry_of_axis_for_querying[int_pos : int_pos + n] = (
+                    int_entry_of_axis_for_querying  # compose 'arr_int_entry_of_axis_for_querying'
+                )
                 int_pos += n  # update the current position
             if flag_return_as_arrays:
                 l_int_num_records = list(
@@ -10077,9 +10103,9 @@ class RAMtx:
                 )  # if weight is not available, assumes all records are available (number of entries in non-indexed axis) for each entry
             """ update total number of records """
             ns["int_num_records"] += arr_weight.sum()  # update total number of records
-            ns[
-                "l_int_entry_for_weight_calculation_batch"
-            ] = []  # empty the weight calculation batch
+            ns["l_int_entry_for_weight_calculation_batch"] = (
+                []
+            )  # empty the weight calculation batch
 
         for int_entry in BA.find(
             ba
@@ -10852,12 +10878,14 @@ class RamDataLayer:
             if set_int_index_component_to_exclude is None:
                 set_int_index_component_to_exclude = set()
             l_rtx = list(
-                None
-                if int_index_component in set_int_index_component_to_exclude
-                or layer is None
-                else layer.get_ramtx(
-                    flag_is_for_querying_features=flag_is_for_querying_features,
-                    flag_prefer_dense=flag_prefer_dense,
+                (
+                    None
+                    if int_index_component in set_int_index_component_to_exclude
+                    or layer is None
+                    else layer.get_ramtx(
+                        flag_is_for_querying_features=flag_is_for_querying_features,
+                        flag_prefer_dense=flag_prefer_dense,
+                    )
                 )
                 for int_index_component, layer in enumerate(self._l_layer)
             )  # retrieve list of rtx with the given settings
@@ -10873,9 +10901,11 @@ class RamDataLayer:
                 "verbose": self.verbose,
                 "flag_debugging": False,
                 "mode": self._mode,
-                "path_folder_ramtx_mask": f"{self._path_folder_ramdata_layer_mask}{mode}/"
-                if self._mask_available
-                else None,
+                "path_folder_ramtx_mask": (
+                    f"{self._path_folder_ramdata_layer_mask}{mode}/"
+                    if self._mask_available
+                    else None
+                ),
                 "flag_is_read_only": self._flag_is_read_only,
                 "l_rtx": l_rtx,  # retrieve list of rtx objects for the current mode
                 "spinlockfileholder": self._lh,
@@ -11240,9 +11270,11 @@ class RamData:
             index_ax_data_source_when_interleaved=index_ramdata_source_for_combined_barcodes_shared_across_ramdata,
             flag_is_interleaved=flag_combined_ramdata_barcodes_shared_across_ramdata,
             int_index_str_rep=int_index_str_rep_for_barcodes,
-            l_ax=list(ram.bc for ram in self._l_ramdata)
-            if self._l_ramdata is not None
-            else None,
+            l_ax=(
+                list(ram.bc for ram in self._l_ramdata)
+                if self._l_ramdata is not None
+                else None
+            ),
             dict_kw_zdf=(
                 dict_kw_zdf
                 if _dm_bc is None
@@ -11257,9 +11289,11 @@ class RamData:
             index_ax_data_source_when_interleaved=index_ramdata_source_for_combined_features_shared_across_ramdata,
             flag_is_interleaved=flag_combined_ramdata_features_shared_across_ramdata,
             int_index_str_rep=int_index_str_rep_for_features,
-            l_ax=list(ram.ft for ram in self._l_ramdata)
-            if self._l_ramdata is not None
-            else None,
+            l_ax=(
+                list(ram.ft for ram in self._l_ramdata)
+                if self._l_ramdata is not None
+                else None
+            ),
             dict_kw_zdf=(
                 dict_kw_zdf
                 if _dm_ft is None
@@ -12425,9 +12459,9 @@ class RamData:
                 bk.PICKLE_Write(
                     f"{path_prefix_model}/metadata.pickle", model
                 )  # save metadata as a pickle file
-                model[
-                    "dl_model"
-                ] = dl_model  # put 'dl_model' back to the 'model' for its downstream usage without reloading the model from the storage
+                model["dl_model"] = (
+                    dl_model  # put 'dl_model' back to the 'model' for its downstream usage without reloading the model from the storage
+                )
                 tar_create(
                     path_file_model, path_prefix_model
                 )  # create tar.gz file of pumap object for efficient retrieval and download
@@ -12453,9 +12487,9 @@ class RamData:
 
         # update the metadata
         dict_metadata_description["file_size_in_bytes"] = int_file_size
-        dict_metadata_description[
-            "identifier_of_the_ramdata_of_origin"
-        ] = self.identifier  # record the ramdata of origin
+        dict_metadata_description["identifier_of_the_ramdata_of_origin"] = (
+            self.identifier
+        )  # record the ramdata of origin
         self.update_metadata(
             dict_metadata_to_be_updated={
                 "models": {f"{name_model}|{type_model}": dict_metadata_description}
@@ -13021,16 +13055,18 @@ class RamData:
                         },
                     },
                 },
-                "currently_active_layer": None
-                if self.layer is None
-                else {
-                    "name": self.layer.name,
-                    "modes": list(self.layer.modes),
-                    "total_number_of_records": self.layer.int_num_records,
-                    "settings": {
-                        "int_num_cpus_for_fetching_data": self.layer.int_num_cpus,
-                    },
-                },
+                "currently_active_layer": (
+                    None
+                    if self.layer is None
+                    else {
+                        "name": self.layer.name,
+                        "modes": list(self.layer.modes),
+                        "total_number_of_records": self.layer.int_num_records,
+                        "settings": {
+                            "int_num_cpus_for_fetching_data": self.layer.int_num_cpus,
+                        },
+                    }
+                ),
                 "layers": sorted(self.layers),
                 "models": self.models,
                 "settings": {
@@ -13388,9 +13424,9 @@ class RamData:
                     arr_value
                 )  # retrieve the number of records of the current entry
                 dict_summary = {
-                    "sum": np.sum(arr_value)
-                    if int_num_records > 30
-                    else sum(arr_value),
+                    "sum": (
+                        np.sum(arr_value) if int_num_records > 30 else sum(arr_value)
+                    ),
                     "num_nonzero_values": int_num_records,
                 }  # if an input array has more than 30 elements, use np.sum to calculate the sum
                 dict_summary["mean"] = (
@@ -13415,9 +13451,9 @@ class RamData:
                     arr_value
                 )  # retrieve the number of records of the current entry
                 dict_summary = {
-                    "sum": np.sum(arr_value)
-                    if int_num_records > 30
-                    else sum(arr_value),
+                    "sum": (
+                        np.sum(arr_value) if int_num_records > 30 else sum(arr_value)
+                    ),
                     "num_nonzero_values": int_num_records,
                 }  # if an input array has more than 30 elements, use np.sum to calculate the sum
                 dict_summary["mean"] = (
@@ -13455,12 +13491,16 @@ class RamData:
                 )  # retrieve the number of records of the current entry
                 dict_summary = {
                     "count": int_num_records,
-                    "max": np.max(arr_value)
-                    if int_num_records > int_min_num_records_for_numpy
-                    else max(arr_value),
-                    "min": np.min(arr_value)
-                    if int_num_records > int_min_num_records_for_numpy
-                    else min(arr_value),
+                    "max": (
+                        np.max(arr_value)
+                        if int_num_records > int_min_num_records_for_numpy
+                        else max(arr_value)
+                    ),
+                    "min": (
+                        np.min(arr_value)
+                        if int_num_records > int_min_num_records_for_numpy
+                        else min(arr_value)
+                    ),
                 }  # if an input array has more than 'int_min_num_records_for_numpy' elements, use numpy to calculate min/max values
                 return dict_summary
 
@@ -13955,9 +13995,9 @@ class RamData:
             ns = (
                 dict()
             )  # create a namespace that can safely shared between different scopes of the functions
-            ns[
-                "int_num_records_written_to_ramtx"
-            ] = 0  # initlaize the total number of records written to ramtx object
+            ns["int_num_records_written_to_ramtx"] = (
+                0  # initlaize the total number of records written to ramtx object
+            )
             # create a temporary folder
             path_folder_temp = f"{self.path_folder_temp}tmp{bk.UUID( )}/"  # retrieve temporary folder specific to the current run
             self._fo.mkdir(path_folder_temp, exist_ok=True)
@@ -14018,9 +14058,9 @@ class RamData:
                     0
                 ]  # retrieve the number of records in a chunk of output zarr matrix
 
-                ns[
-                    "index_batch_waiting_to_be_written_sparse"
-                ] = 0  # index of the batch currently waiting to be written.
+                ns["index_batch_waiting_to_be_written_sparse"] = (
+                    0  # index of the batch currently waiting to be written.
+                )
                 ns["l_res_sparse"] = []
 
             """ convert matrix values and save it to the output RAMtx object """
@@ -14172,9 +14212,9 @@ class RamData:
                         l_arr_int_entry_of_axis_not_for_querying,
                     ):
                         n = len(a)
-                        arr_int_entry_of_axis_for_querying[
-                            int_pos : int_pos + n
-                        ] = int_entry_of_axis_for_querying  # compose 'arr_int_entry_of_axis_for_querying'
+                        arr_int_entry_of_axis_for_querying[int_pos : int_pos + n] = (
+                            int_entry_of_axis_for_querying  # compose 'arr_int_entry_of_axis_for_querying'
+                        )
                         int_pos += n  # update the current position
                     del (
                         l_int_entry_of_axis_for_querying,
@@ -14186,24 +14226,26 @@ class RamData:
                         self._zs.set_coordinate_selection(
                             path_za_mtx_dense,
                             (
-                                arr_int_entry_of_axis_not_for_querying,
-                                arr_int_entry_of_axis_for_querying,
-                            )
-                            if rtx.is_for_querying_features
-                            else (
-                                arr_int_entry_of_axis_for_querying,
-                                arr_int_entry_of_axis_not_for_querying,
+                                (
+                                    arr_int_entry_of_axis_not_for_querying,
+                                    arr_int_entry_of_axis_for_querying,
+                                )
+                                if rtx.is_for_querying_features
+                                else (
+                                    arr_int_entry_of_axis_for_querying,
+                                    arr_int_entry_of_axis_not_for_querying,
+                                )
                             ),
                             arr_value,
                         )  # write dense zarr matrix
 
                     """ %% SPARSE %% """
                     if flag_sparse_ramtx_output:  # if sparse output is present
-                        self._zs[
-                            path_za_output_sparse, :int_num_records_written
-                        ] = np.vstack(
-                            (arr_int_entry_of_axis_not_for_querying, arr_value)
-                        ).T  # save transformed data
+                        self._zs[path_za_output_sparse, :int_num_records_written] = (
+                            np.vstack(
+                                (arr_int_entry_of_axis_not_for_querying, arr_value)
+                            ).T
+                        )  # save transformed data
                         self._zs.resize(
                             path_za_output_sparse, int_num_records_written, 2
                         )  # resize the output Zarr object
@@ -15455,17 +15497,19 @@ class RamData:
             name_layer_new,
             func=(
                 (
-                    func_norm_log_transform_cap_barcode_indexed,
-                    func_norm_log_transform_cap_feature_indexed,
+                    (
+                        func_norm_log_transform_cap_barcode_indexed,
+                        func_norm_log_transform_cap_feature_indexed,
+                    )
+                    if flag_create_normalized_log1p_capped_output
+                    else (
+                        func_norm_log_transform_barcode_indexed,
+                        func_norm_log_transform_feature_indexed,
+                    )
                 )
-                if flag_create_normalized_log1p_capped_output
-                else (
-                    func_norm_log_transform_barcode_indexed,
-                    func_norm_log_transform_feature_indexed,
-                )
-            )
-            if flag_log_transform
-            else (func_norm_barcode_indexed, func_norm_feature_indexed),
+                if flag_log_transform
+                else (func_norm_barcode_indexed, func_norm_feature_indexed)
+            ),
             int_num_threads=int_num_threads,
             mode_instructions=mode_instructions,
             **kwargs,
@@ -15758,9 +15802,9 @@ class RamData:
                 dict_metadata = ax.meta.get_column_metadata(
                     name_col
                 )  # retrieve metadata
-                dict_metadata[
-                    "l_labels_1"
-                ] = l_name_batch  # add cluster label information
+                dict_metadata["l_labels_1"] = (
+                    l_name_batch  # add cluster label information
+                )
                 ax.meta.set_column_metadata(
                     name_col, dict_metadata
                 )  # update column metadata
@@ -15946,12 +15990,12 @@ class RamData:
                                 ] = (var - var_expected)
 
                     # add data to feature metadata
-                    zdf_meta[
-                        name_col_ratio_for_selection_with_prefix, None, batch
-                    ] = arr_ratio_of_variance_to_expected_variance_from_mean
-                    zdf_meta[
-                        name_col_diff_for_selection_with_prefix, None, batch
-                    ] = arr_diff_of_variance_to_expected_variance_from_mean
+                    zdf_meta[name_col_ratio_for_selection_with_prefix, None, batch] = (
+                        arr_ratio_of_variance_to_expected_variance_from_mean
+                    )
+                    zdf_meta[name_col_diff_for_selection_with_prefix, None, batch] = (
+                        arr_diff_of_variance_to_expected_variance_from_mean
+                    )
 
                     """
                     Calculate 'highly variable' score
@@ -15983,9 +16027,9 @@ class RamData:
                         * arr_ratio_of_variance_to_expected_variance_from_mean
                         * arr_diff_of_variance_to_expected_variance_from_mean
                     )  # calculate the product of the ratio and difference of variance to expected variance for scoring and sorting highly variable features
-                    zdf_meta[
-                        name_col_score_for_selection_with_prefix, None, batch
-                    ] = arr_score  # save the calculated scores
+                    zdf_meta[name_col_score_for_selection_with_prefix, None, batch] = (
+                        arr_score  # save the calculated scores
+                    )
 
                     p_s.send(arr_score)  # return the result
                     del (
@@ -16160,12 +16204,12 @@ class RamData:
                         if (
                             var_expected == 0
                         ):  # handle the case when the current expected variance is zero
-                            arr_ratio_of_variance_to_expected_variance_from_mean[
-                                i
-                            ] = np.nan
-                            arr_diff_of_variance_to_expected_variance_from_mean[
-                                i
-                            ] = np.nan
+                            arr_ratio_of_variance_to_expected_variance_from_mean[i] = (
+                                np.nan
+                            )
+                            arr_diff_of_variance_to_expected_variance_from_mean[i] = (
+                                np.nan
+                            )
                         else:
                             arr_ratio_of_variance_to_expected_variance_from_mean[i] = (
                                 var / var_expected
@@ -16527,9 +16571,9 @@ class RamData:
                     arr_value
                 )  # retrieve the number of records of the current entry
                 dict_summary = {
-                    name_key_sum: np.sum(arr_value)
-                    if int_num_records > 30
-                    else sum(arr_value)
+                    name_key_sum: (
+                        np.sum(arr_value) if int_num_records > 30 else sum(arr_value)
+                    )
                 }  # if an input array has more than 30 elements, use np.sum to calculate the sum
                 dict_summary[name_key_mean] = (
                     dict_summary[name_key_sum] / int_total_num_barcodes
@@ -16667,9 +16711,9 @@ class RamData:
                             )  # retrieve standard deviation of the current feature from the variance # perform scaling of data for each feature
 
                     if flag_cap_value:
-                        arr_value[
-                            arr_value > max_value
-                        ] = max_value  # capping values above 'max_value'
+                        arr_value[arr_value > max_value] = (
+                            max_value  # capping values above 'max_value'
+                        )
 
                     # return results
                     return (
@@ -16820,9 +16864,11 @@ class RamData:
             # identify highly variable features (with filtered barcodes)
             if name_col_filter_highly_variable is not None:
                 self.identify_highly_variable_features(
-                    name_layer_capped
-                    if name_layer_log_transformed is None
-                    else name_layer_log_transformed,  # if 'name_layer_log_transformed' is not available, use 'name_layer_capped' instead as a fallback
+                    (
+                        name_layer_capped
+                        if name_layer_log_transformed is None
+                        else name_layer_log_transformed
+                    ),  # if 'name_layer_log_transformed' is not available, use 'name_layer_capped' instead as a fallback
                     int_num_highly_variable_features=int_num_highly_variable_features,
                     flag_show_graph=True,
                     flag_load_filter=False,  # clear feature filter (in order to contain records of every features in the output layer)
@@ -17227,9 +17273,9 @@ class RamData:
                             for index in dict_cat_to_l_index[
                                 cat
                             ]:  # for each entry of the selected category
-                                ba[
-                                    index
-                                ] = True  # include entry of the selected category in the filter
+                                ba[index] = (
+                                    True  # include entry of the selected category in the filter
+                                )
 
                 else:
                     ba = ax_not_for_querying._convert_to_bitarray(
@@ -17265,9 +17311,9 @@ class RamData:
                     ba_filter, name_new_col
                 )  # save a filter
             else:
-                ax_not_for_querying.meta[
-                    name_new_col, :
-                ] = arr_expr  # save expression values
+                ax_not_for_querying.meta[name_new_col, :] = (
+                    arr_expr  # save expression values
+                )
         return (
             ba_filter if flag_retrieve_mask else arr_expr
         )  # return retrieved expression values or mask of active entries
@@ -18097,9 +18143,9 @@ class RamData:
             ax.meta[name_col_label] = arr_cluster_label
         else:
             # update a single column in the meatadata column 'name_col_label'
-            ax.meta[
-                name_col_label, None, index_col_of_name_col_label
-            ] = arr_cluster_label
+            ax.meta[name_col_label, None, index_col_of_name_col_label] = (
+                arr_cluster_label
+            )
 
         # report
         if self.verbose:
@@ -18294,9 +18340,9 @@ class RamData:
             ax.meta[name_col_label] = arr_cluster_label
         else:
             # update a single column in the meatadata column 'name_col_label'
-            ax.meta[
-                name_col_label, None, index_col_of_name_col_label
-            ] = arr_cluster_label
+            ax.meta[name_col_label, None, index_col_of_name_col_label] = (
+                arr_cluster_label
+            )
 
         # report
         if self.verbose:
@@ -18988,9 +19034,9 @@ class RamData:
                             ] -= 1  # update 'int_num_entries_remaining_to_reject'
 
                 # write the subsampled result to the axis metadata
-                ax.meta[
-                    name_col_filter_subsampled, l_int_entry_current_batch
-                ] = arr_selection
+                ax.meta[name_col_filter_subsampled, l_int_entry_current_batch] = (
+                    arr_selection
+                )
 
                 pbar.update(int_num_retrieved_entries)  # update the progress bar
 
@@ -19079,9 +19125,9 @@ class RamData:
             )
 
             # retrieve the number of subsampled entries for each cluster
-            dict_name_clus_to_num_entries_to_be_subsampled[
-                name_clus
-            ] = int_num_entries_to_be_subsampled_for_a_clus
+            dict_name_clus_to_num_entries_to_be_subsampled[name_clus] = (
+                int_num_entries_to_be_subsampled_for_a_clus
+            )
 
             # update tne number of entries and clusters
             int_num_entries_to_subsample_remaining -= (
@@ -20625,9 +20671,9 @@ class RamData:
             dict_metadata = self.ft.meta.get_column_metadata(
                 name_col
             )  # retrieve metadata
-            dict_metadata[
-                "l_labels_1"
-            ] = l_unique_cluster_label  # add cluster label information
+            dict_metadata["l_labels_1"] = (
+                l_unique_cluster_label  # add cluster label information
+            )
             self.ft.meta.set_column_metadata(
                 name_col, dict_metadata
             )  # update column metadata
@@ -20661,9 +20707,9 @@ class RamData:
             arr_expr = np.zeros(
                 int_num_barcodes
             )  # initialize expression values in dense format
-            arr_expr[
-                arr_int_entries_of_axis_not_for_querying
-            ] = arr_value  # convert sparse to dense format
+            arr_expr[arr_int_entries_of_axis_not_for_querying] = (
+                arr_value  # convert sparse to dense format
+            )
 
             # for each cluster
             for name_clus in l_unique_cluster_label_to_analyze:
@@ -21111,9 +21157,11 @@ class RamData:
                             )  # use group name as a title
                             ax.axis("off")
                             wc = WordCloud(
-                                colormap=kwargs_wordcloud["colormap"]
-                                if "colormap" in kwargs_wordcloud
-                                else l_cmap[int(np.random.random() * int_num_cmap)],
+                                colormap=(
+                                    kwargs_wordcloud["colormap"]
+                                    if "colormap" in kwargs_wordcloud
+                                    else l_cmap[int(np.random.random() * int_num_cmap)]
+                                ),
                                 **kwargs_wordcloud_default,
                             )
                             wc.generate_from_frequencies(word_count[group])
@@ -21174,9 +21222,11 @@ class RamData:
 
                 ax.axis("off")
                 wc = WordCloud(
-                    colormap=kwargs_wordcloud["colormap"]
-                    if "colormap" in kwargs_wordcloud
-                    else l_cmap[int(np.random.random() * int_num_cmap)],
+                    colormap=(
+                        kwargs_wordcloud["colormap"]
+                        if "colormap" in kwargs_wordcloud
+                        else l_cmap[int(np.random.random() * int_num_cmap)]
+                    ),
                     **kwargs_wordcloud_default,
                 )
                 wc.generate_from_frequencies(word_count)
@@ -21301,11 +21351,11 @@ class RamData:
                     l_name_feaure_category_detailed.append(
                         str_category_feature_detailed
                     )
-                arr_int_feature_category_detailed[
-                    int_feature
-                ] = dict_name_feaure_category_detailed_to_int[
-                    str_category_feature_detailed
-                ]
+                arr_int_feature_category_detailed[int_feature] = (
+                    dict_name_feaure_category_detailed_to_int[
+                        str_category_feature_detailed
+                    ]
+                )
 
             # accessory function
             def get_int_feature_category_detailed(int_feature):

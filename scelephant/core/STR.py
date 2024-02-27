@@ -294,13 +294,13 @@ def Search_Subsequences(
     def _add_search_results_of_a_subsequence_(str_subseq, int_num_errors):
         len_subseq = len(str_subseq)
         for index_found in Find_all(str_seq_of_a_given_window, str_subseq):
-            ba[
-                index_found : index_found + len_subseq
-            ] = 1  # set the mask to mark the region matched with the subsequence
+            ba[index_found : index_found + len_subseq] = (
+                1  # set the mask to mark the region matched with the subsequence
+            )
             sr = _initialize_search_result_()
-            sr[
-                "matched_subsequence"
-            ] = str_subseq  # return the index after the subsequence
+            sr["matched_subsequence"] = (
+                str_subseq  # return the index after the subsequence
+            )
             sr["index_start_subsequence"] = index_start_window + index_found
             sr["index_end_subsequence"] = sr["index_start_subsequence"] + len_subseq
             sr["num_errors"] = int_num_errors

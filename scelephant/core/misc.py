@@ -97,9 +97,11 @@ def pl_umap(
         color=name_col_color,
         hover_data=["name_dataset", "name_sample"],
         color_continuous_scale=px.colors.sequential.Reds,
-        title=f"gene expression of {color}"
-        if flag_is_gene_expression_data_being_plotted
-        else name_col_color,
+        title=(
+            f"gene expression of {color}"
+            if flag_is_gene_expression_data_being_plotted
+            else name_col_color
+        ),
     )
     return fig
 

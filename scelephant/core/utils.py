@@ -120,10 +120,10 @@ def CB_Match_Batch(
     df_id_cell_2.rename(
         columns={"id_sample_from_id_cell": "id_sample_from_id_cell_2"}, inplace=True
     )
-    df_id_cell_1[
-        "id_sample_from_id_cell_2"
-    ] = df_id_cell_1.id_sample_from_id_cell_1.apply(
-        bk.Map(df_sample_matched.set_index("id_sample_1").id_sample_2.to_dict()).a2b
+    df_id_cell_1["id_sample_from_id_cell_2"] = (
+        df_id_cell_1.id_sample_from_id_cell_1.apply(
+            bk.Map(df_sample_matched.set_index("id_sample_1").id_sample_2.to_dict()).a2b
+        )
     )
     df_id_cell_1.dropna(
         subset=["id_sample_from_id_cell_2"], inplace=True
@@ -219,101 +219,186 @@ def SCANPY_Retrieve_Markers_as_DataFrame(adata):
     df_marker = pd.concat(l_df)
     return df_marker
 
-def summarize_expression_for_each_clus( 
+
+def summarize_expression_for_each_clus(
     adata,
-    name_col_cluster : str,
-) :
+    name_col_cluster: str,
+):
     """
     summarize expression of each cluster for the given adata
-    # 2024-02-26 21:01:16 
+    # 2024-02-26 21:01:16
     """
-    l_df = [ ]
-    def _parse_array( arr ) :
-        if len( arr.shape ) == 1 :
+    l_df = []
+
+    def _parse_array(arr):
+        if len(arr.shape) == 1:
             return arr
-        else :
-            return arr[ 0 ]
-    for name_cluster in set( adata.obs[ name_col_cluster ].values ) :
-        adata_subset = adata[ adata.obs[ name_col_cluster ] == name_cluster ] # retrieve 
-        arr_num_cell_with_expr = _parse_array( np.array( ( adata_subset.X > 0 ).sum( axis = 0 ) ) )
-        arr_avg_expr = _parse_array( np.array( adata_subset.X.sum( axis = 0 ) ) ) / arr_num_cell_with_expr # calculate average expression in cells expressing the gene
-        arr_avg_expr[ np.isnan( arr_avg_expr ) ] = 0 # when number of cells expressing is zero, set expression values as 0
-        arr_prop_expr = arr_num_cell_with_expr / len( adata_subset.obs )
-        _df = pd.DataFrame( { 'avg_expr' : arr_avg_expr, 'prop_expr' : arr_prop_expr } )
-        _df[ name_col_cluster ] = name_cluster
-        _df[ 'gene_name' ] = adata_subset.var.index.values
-        l_df.append( _df )
-    df_gene_expr = pd.concat( l_df )
-    df_gene_expr[ 'score' ] = df_gene_expr.avg_expr * df_gene_expr.prop_expr # calculate the score
+        else:
+            return arr[0]
+
+    for name_cluster in set(adata.obs[name_col_cluster].values):
+        adata_subset = adata[adata.obs[name_col_cluster] == name_cluster]  # retrieve
+        arr_num_cell_with_expr = _parse_array(
+            np.array((adata_subset.X > 0).sum(axis=0))
+        )
+        arr_avg_expr = (
+            _parse_array(np.array(adata_subset.X.sum(axis=0))) / arr_num_cell_with_expr
+        )  # calculate average expression in cells expressing the gene
+        arr_avg_expr[np.isnan(arr_avg_expr)] = (
+            0  # when number of cells expressing is zero, set expression values as 0
+        )
+        arr_prop_expr = arr_num_cell_with_expr / len(adata_subset.obs)
+        _df = pd.DataFrame({"avg_expr": arr_avg_expr, "prop_expr": arr_prop_expr})
+        _df[name_col_cluster] = name_cluster
+        _df["gene_name"] = adata_subset.var.index.values
+        l_df.append(_df)
+    df_gene_expr = pd.concat(l_df)
+    df_gene_expr["score"] = (
+        df_gene_expr.avg_expr * df_gene_expr.prop_expr
+    )  # calculate the score
     return df_gene_expr
-def search_uniquely_expressed_marker_genes( 
-    adata,  
-    name_col_cluster : str,
-    float_max_score : float = 1000,
-) :
+
+
+def search_uniquely_expressed_marker_genes(
+    adata,
+    name_col_cluster: str,
+    float_max_score: float = 1000,
+):
     """
     find unique markers for each clusters.
     *score is calculated as the product of the proportion expressed and the average expression values
 
-    name_col_cluster : str, # name of the column in the 'adata.obs' containing cluster labels 
+    name_col_cluster : str, # name of the column in the 'adata.obs' containing cluster labels
     float_max_score : 1000, # 'infinite' score ratios will be replaced by this value
 
-    # 2024-02-20 13:24:17 
+    # 2024-02-20 13:24:17
     """
-    '''
+    """
     survey proportion expressed and avg expression
-    '''
-    df_gene_expr = summarize_expression_for_each_clus( adata, name_col_cluster )
+    """
+    df_gene_expr = summarize_expression_for_each_clus(adata, name_col_cluster)
 
-    '''
+    """
     identify marker genes uniquely expressed in a single cluster
-    '''
-    l_l = [ ]
-    for gene_name, _df in df_gene_expr.groupby( 'gene_name' ) :
+    """
+    l_l = []
+    for gene_name, _df in df_gene_expr.groupby("gene_name"):
         # retrieve values
-        arr_avg_expr, arr_prop_expr, arr_str_int_cell_type_subclustered_temp, _, arr_score = _df.values.T
+        (
+            arr_avg_expr,
+            arr_prop_expr,
+            arr_str_int_cell_type_subclustered_temp,
+            _,
+            arr_score,
+        ) = _df.values.T
         # sort by score
-        arr_score_argsort = arr_score.argsort( )
-        arr_avg_expr, arr_prop_expr, arr_str_int_cell_type_subclustered_temp, arr_score = arr_avg_expr[ arr_score_argsort ], arr_prop_expr[ arr_score_argsort ], arr_str_int_cell_type_subclustered_temp[ arr_score_argsort ], arr_score[ arr_score_argsort ]
+        arr_score_argsort = arr_score.argsort()
+        (
+            arr_avg_expr,
+            arr_prop_expr,
+            arr_str_int_cell_type_subclustered_temp,
+            arr_score,
+        ) = (
+            arr_avg_expr[arr_score_argsort],
+            arr_prop_expr[arr_score_argsort],
+            arr_str_int_cell_type_subclustered_temp[arr_score_argsort],
+            arr_score[arr_score_argsort],
+        )
 
-        avg_expr_highest, prop_expr_highest = arr_avg_expr.max( ), arr_prop_expr.max( )
-        avg_expr_2nd, avg_expr_1st = arr_avg_expr[ -2 : ]
-        prop_expr_2nd, prop_expr_1st = arr_prop_expr[ -2 : ]
-        str_int_cell_type_subclustered_temp_2nd, str_int_cell_type_subclustered_temp_1st = arr_str_int_cell_type_subclustered_temp[ -2 : ]
-        score_2nd, score_1st = arr_score[ -2 : ]
-        l_l.append( [ gene_name, str_int_cell_type_subclustered_temp_1st, avg_expr_1st, prop_expr_1st, score_1st, avg_expr_2nd, prop_expr_2nd, score_2nd, avg_expr_highest, prop_expr_highest ] ) # add a record
-    df_unique_marker_gene = pd.DataFrame( l_l, columns = [ 'gene_name', 'str_int_cell_type_subclustered_temp_1st', 'avg_expr_1st', 'prop_expr_1st', 'score_1st', 'avg_expr_2nd', 'prop_expr_2nd', 'score_2nd', 'avg_expr_highest', 'prop_expr_highest' ] )
-    arr_score_ratio = df_unique_marker_gene.score_1st.values / df_unique_marker_gene.score_2nd.values
-    arr_score_ratio[ np.isnan( arr_score_ratio ) ] = float_max_score
-    df_unique_marker_gene[ 'score_ratio' ] = arr_score_ratio
+        avg_expr_highest, prop_expr_highest = arr_avg_expr.max(), arr_prop_expr.max()
+        avg_expr_2nd, avg_expr_1st = arr_avg_expr[-2:]
+        prop_expr_2nd, prop_expr_1st = arr_prop_expr[-2:]
+        (
+            str_int_cell_type_subclustered_temp_2nd,
+            str_int_cell_type_subclustered_temp_1st,
+        ) = arr_str_int_cell_type_subclustered_temp[-2:]
+        score_2nd, score_1st = arr_score[-2:]
+        l_l.append(
+            [
+                gene_name,
+                str_int_cell_type_subclustered_temp_1st,
+                avg_expr_1st,
+                prop_expr_1st,
+                score_1st,
+                avg_expr_2nd,
+                prop_expr_2nd,
+                score_2nd,
+                avg_expr_highest,
+                prop_expr_highest,
+            ]
+        )  # add a record
+    df_unique_marker_gene = pd.DataFrame(
+        l_l,
+        columns=[
+            "gene_name",
+            "str_int_cell_type_subclustered_temp_1st",
+            "avg_expr_1st",
+            "prop_expr_1st",
+            "score_1st",
+            "avg_expr_2nd",
+            "prop_expr_2nd",
+            "score_2nd",
+            "avg_expr_highest",
+            "prop_expr_highest",
+        ],
+    )
+    arr_score_ratio = (
+        df_unique_marker_gene.score_1st.values / df_unique_marker_gene.score_2nd.values
+    )
+    arr_score_ratio[np.isnan(arr_score_ratio)] = float_max_score
+    df_unique_marker_gene["score_ratio"] = arr_score_ratio
     return df_unique_marker_gene
-def identify_batch_specific_genes( 
+
+
+def identify_batch_specific_genes(
     adata,
-    name_col_batch : str,
-    name_col_cluster : str = None,
-    l_name_cluster = None,
-    min_prop_expr = 0.15,
-    min_score_ratio = 3,
-) :
+    name_col_batch: str,
+    name_col_cluster: str = None,
+    l_name_cluster=None,
+    min_prop_expr=0.15,
+    min_score_ratio=3,
+):
     """
     Identify genes that are consistently differently expressed in each sample for multiple clusters
     Note)
     The primary aim of this function is for identifying batch specific genes in an entire dataset or in a set of clusters to improve UMAP embedding/clustering without/with the help of other batch-correction algorithms.
     Empirically, batch effect can be significantly reduced (with some loss of information) simply by excluding a set of genes contributing to the batch effects, which is often sufficient for clustering analysis.
-    # 2024-02-26 22:34:55 
+    # 2024-02-26 22:34:55
     """
-    def _filter_marker_gene( df_unique_marker_gene ) :
-        return bk.PD_Threshold( df_unique_marker_gene, prop_expr_1sta = min_prop_expr, score_ratioa = min_score_ratio )
 
-    if l_name_cluster is None :
-        set_name_gene_to_exclude = set( _filter_marker_gene( search_uniquely_expressed_marker_genes( adata, name_col_batch ) ).gene_name.values )
-    else :
-        l_l_name_gene = list( _filter_marker_gene( search_uniquely_expressed_marker_genes( adata[ adata.obs[ name_col_cluster ] == name_cluster ].copy( ), name_col_batch ) ).gene_name.values for name_cluster in l_name_cluster ) # retrieve batch specific genes for each cluster
+    def _filter_marker_gene(df_unique_marker_gene):
+        return bk.PD_Threshold(
+            df_unique_marker_gene,
+            prop_expr_1sta=min_prop_expr,
+            score_ratioa=min_score_ratio,
+        )
+
+    if l_name_cluster is None:
+        set_name_gene_to_exclude = set(
+            _filter_marker_gene(
+                search_uniquely_expressed_marker_genes(adata, name_col_batch)
+            ).gene_name.values
+        )
+    else:
+        l_l_name_gene = list(
+            _filter_marker_gene(
+                search_uniquely_expressed_marker_genes(
+                    adata[adata.obs[name_col_cluster] == name_cluster].copy(),
+                    name_col_batch,
+                )
+            ).gene_name.values
+            for name_cluster in l_name_cluster
+        )  # retrieve batch specific genes for each cluster
         # identify batch specific genes shared between all clusters
-        set_name_gene_to_exclude = set( l_l_name_gene[ 0 ] ) # initialize 'set_name_gene_to_exclude'
-        for l_name_gene in l_l_name_gene[ 1 : ] :
-            set_name_gene_to_exclude = set_name_gene_to_exclude.intersection( l_name_gene )
+        set_name_gene_to_exclude = set(
+            l_l_name_gene[0]
+        )  # initialize 'set_name_gene_to_exclude'
+        for l_name_gene in l_l_name_gene[1:]:
+            set_name_gene_to_exclude = set_name_gene_to_exclude.intersection(
+                l_name_gene
+            )
     return set_name_gene_to_exclude
+
 
 def CB_detect_cell_barcode_from_id_cell(
     id_cell, int_min_number_atgc_in_cell_barcode=16
@@ -1547,9 +1632,9 @@ def MTX_10X_Summarize_Counts(
                                 arr_id_feature, "|mode=atac"
                             )
                         )
-                        dict_name_set_feature_to_l_id_feature[
-                            "atac_all"
-                        ] = arr_id_feature_atac
+                        dict_name_set_feature_to_l_id_feature["atac_all"] = (
+                            arr_id_feature_atac
+                        )
                     elif str_preset == "atac":
                         arr_id_feature_atac = arr_id_feature
                     # add sets of promoter and gene_body features
@@ -1569,9 +1654,9 @@ def MTX_10X_Summarize_Counts(
                     dict_name_set_feature_to_l_id_feature[
                         "atac_promoter_and_gene_body"
                     ] = arr_id_feature_atac_promoter_and_gene_body
-                    dict_name_set_feature_to_l_id_feature[
-                        "atac_promoter"
-                    ] = arr_id_feature_atac_promoter
+                    dict_name_set_feature_to_l_id_feature["atac_promoter"] = (
+                        arr_id_feature_atac_promoter
+                    )
 
             # make sure that 'name_set_feature' does not contains characters incompatible with linux file path
             for name_set_feature in dict_name_set_feature_to_l_id_feature:
@@ -2670,8 +2755,10 @@ def __Merge_Sort_MTX_10X__(
                 float(float_value),
             )  # 0-based coordinates
             yield index_row if flag_ramtx_sorted_by_id_feature else index_column, (
-                line if flag_input_binary else line.encode()
-            ) if flag_output_binary else line_decoded
+                (line if flag_input_binary else line.encode())
+                if flag_output_binary
+                else line_decoded
+            )
 
     Merge_Sort_Files(
         file_output, *list(__decorate_mtx_file__(file) for file in l_file_input)
@@ -2759,8 +2846,10 @@ def __Merge_Sort_and_Index_MTX_10X__(
                 float(float_value),
             )  # 0-based coordinates
             yield index_row if flag_ramtx_sorted_by_id_feature else index_column, (
-                line if flag_input_binary else line.encode()
-            ) if flag_output_binary else line_decoded
+                (line if flag_input_binary else line.encode())
+                if flag_output_binary
+                else line_decoded
+            )
 
     # perform merge sorting
     index_entry_currently_being_written = -1
@@ -6750,9 +6839,9 @@ def MTX_Convert_10x_MEX_to_10x_HDF5_Format(
         arr = np.rint(arr).astype(
             int
         )  # convert to integer type (round to the nearest integer)
-        arr[
-            arr == 0
-        ] = 1  # convert entries with 0 values counts to 1, so that the minimum value in the matrix is 1
+        arr[arr == 0] = (
+            1  # convert entries with 0 values counts to 1, so that the minimum value in the matrix is 1
+        )
         flag_dtype_is_integer = True  # update the flag
     mtx.create_dataset("data", (len(arr),), "i8" if flag_dtype_is_integer else "f", arr)
 
@@ -6777,16 +6866,16 @@ def MTX_Convert_10x_MEX_to_10x_HDF5_Format(
                 id_col_current + 1 < id_col
             ):  # if there are some skipped columns ('barcodes' with zero number of records)
                 for id_col_with_no_records in range(id_col_current + 1, id_col):
-                    arr_indptr[
-                        id_col_with_no_records
-                    ] = i  # add 'indptr' for the 'barcodes' with zero number of records
+                    arr_indptr[id_col_with_no_records] = (
+                        i  # add 'indptr' for the 'barcodes' with zero number of records
+                    )
             id_col_current = id_col  # update 'id_col_current'
             arr_indptr[id_col] = i
     if id_col_current + 1 < int_num_bc:
         for id_col_with_no_records in range(id_col_current + 1, int_num_bc):
-            arr_indptr[
-                id_col_with_no_records
-            ] = int_num_records  # add 'indptr' for the 'barcodes' with zero number of records
+            arr_indptr[id_col_with_no_records] = (
+                int_num_records  # add 'indptr' for the 'barcodes' with zero number of records
+            )
     mtx.create_dataset("indptr", (len(arr_indptr),), "i8", arr_indptr)
 
     # create matrix group
