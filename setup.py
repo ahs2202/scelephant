@@ -12,14 +12,14 @@ with open(os.path.join(HERE, "README.md")) as fid:
 
 setup(
     name="scelephant",
-    version="0.2.6",
+    version="0.2.7",
     author="Hyunsu An",
     author_email="ahs2202@gm.gist.ac.kr",
     description="SC-Elephant (Single-Cell Extremely Large Data Analysis Platform)",
     long_description=README,
     long_description_content_type="text/markdown",
     url="https://github.com/ahs2202/scelephant",
-    license="GPLv3",
+    license="MIT",
     packages=find_packages(),
     python_requires=">=3.8",
     include_package_data=True,
